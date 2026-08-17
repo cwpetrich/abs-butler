@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Secrets and local config
+.env
+.env.local
+config.json
+config.local.json
+
+# Runtime output
+*.log
+.cache/
+out/
+reports/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
