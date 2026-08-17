@@ -6,8 +6,9 @@ scheme, and — the reason it exists — tag books with **age bands and content 
 be filtered by what's appropriate for whom.
 
 Servers are managed over their HTTP API, so **abs-butler does not need to run on the same machine**.
-The one exception is file organization, which moves files and therefore needs the media mounted
-locally; abs-butler detects this per server and tells you which side of the line each one is on.
+The one exception is file organization: it moves files, abs-butler has no remote file transport, and
+so it is **disabled entirely** for any server whose media this machine cannot reach. That is detected
+per server and stated plainly in the UI, rather than failing once a job is already running.
 
 Every operation is a **dry run by default**. Nothing is written until you explicitly apply it.
 
@@ -124,18 +125,32 @@ Default layout is `Author/Series/01 - Title`. Placeholders: `{author}`, `{title}
 `{sequence}`, `{year}`. Empty segments collapse, so a standalone book renders `Author/Title` rather
 than leaving an empty series folder. Sequence numbers are zero-padded so book 2 sorts before book 10.
 
-This is the one command that needs local filesystem access. For each server, abs-butler translates
-the paths AudiobookShelf reports into local paths and probes them, then reports one of:
+**This is the one command that needs the media mounted where abs-butler runs.** It moves files
+directly, and abs-butler has no remote file transport — no SSH, no agent. So for any server whose
+media this machine cannot reach, organization is **disabled outright**: not offered in the UI, not
+schedulable, and refused by the CLI and API with the reason. It does not generate a plan it could
+never carry out.
+
+"Where abs-butler runs" means a writable local path, which you get either by running on the same
+machine as the media or by mounting it over NFS/SMB. Either satisfies the check; abs-butler probes
+the library root and reports one of:
 
 | State | Meaning |
 | --- | --- |
-| `read-write` | Files can be organized from here. |
-| `read-only` | The path exists but this process cannot write to it. |
-| `unreachable` | The path does not exist on this machine. |
-| `not-configured` | No library root set — this server is managed over the API only. |
+| `read-write` | Organization available. |
+| `read-only` | The path exists but this process cannot write to it — still disabled. |
+| `unreachable` | The path does not exist on this machine — still disabled. |
+| `not-configured` | No library root set. This server is managed over the API only. |
 
-A run that would move files is refused up front when the capability check fails, rather than erroring
-partway through a batch of moves. Take a backup and run without applying first. Always.
+The probe runs at three points: when the UI lists servers (a local stat, no call to
+AudiobookShelf), when a run or schedule is created, and again immediately before the job executes —
+because a mount can disappear between queueing a job and running it, and a half-finished
+reorganization is far worse than one that never started.
+
+Everything else — `audit`, `rate`, `metadata` — works purely over the API, so a server on another
+machine is fully manageable for those.
+
+Take a backup and run without applying first. Always.
 
 ## Development
 

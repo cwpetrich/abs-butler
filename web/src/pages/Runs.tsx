@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, type Meta, type RunCommand, type Server } from '../api';
 import { Banner, Empty, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 
@@ -155,8 +155,15 @@ function NewRunForm({
   const [starting, setStarting] = useState(false);
 
   const server = servers.find((s) => String(s.id) === serverId);
-  const needsFiles = meta.fileCommands.includes(command);
-  const fileBlocked = needsFiles && !server?.libraryRoot;
+  const canManageFiles = server?.files.canManageFiles ?? false;
+  const isFileCommand = (c: RunCommand) => meta.fileCommands.includes(c);
+
+  // Switching to a server whose files are out of reach must not leave a
+  // now-impossible command selected in a form that looks ready to submit.
+  useEffect(() => {
+    if (isFileCommand(command) && !canManageFiles) setCommand('audit');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId, canManageFiles]);
 
   const start = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -200,11 +207,15 @@ function NewRunForm({
         <label>
           Command
           <select value={command} onChange={(e) => setCommand(e.target.value as RunCommand)}>
-            {meta.commands.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+            {meta.commands.map((c) => {
+              const blocked = isFileCommand(c) && !canManageFiles;
+              return (
+                <option key={c} value={c} disabled={blocked}>
+                  {c}
+                  {blocked ? ' — needs local file access' : ''}
+                </option>
+              );
+            })}
           </select>
         </label>
 
@@ -223,21 +234,17 @@ function NewRunForm({
         </label>
       )}
 
-      {fileBlocked && (
+      {!canManageFiles && (
         <Banner tone="warn">
-          {server?.name} has no library root configured, so this machine cannot move its files. The
-          run will produce a plan but cannot apply it.
+          File organization is unavailable for {server?.name}: {server?.files.reason} It moves files
+          directly, so it only works when the media is mounted where abs-butler runs. Every other
+          command works over the API.
         </Banner>
       )}
 
       <div className="actions" style={{ marginBottom: 12 }}>
         <label className="checkbox" style={{ marginBottom: 0 }}>
-          <input
-            type="checkbox"
-            checked={apply}
-            onChange={(e) => setApply(e.target.checked)}
-            disabled={fileBlocked}
-          />
+          <input type="checkbox" checked={apply} onChange={(e) => setApply(e.target.checked)} />
           Apply changes (otherwise this is a dry run)
         </label>
 

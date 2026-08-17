@@ -103,20 +103,27 @@ function ServerCard({
             )}
           </h2>
           <div className="mono dim">{server.url}</div>
-          <div className="dim" style={{ marginTop: 6 }}>
-            {server.libraryRoot ? (
-              <>
-                Files at <span className="mono">{server.libraryRoot}</span>
-                {server.pathPrefix && (
-                  <>
-                    {' '}
-                    (server reports <span className="mono">{server.pathPrefix}</span>)
-                  </>
-                )}
-              </>
+          <div style={{ marginTop: 8 }}>
+            {server.files.canManageFiles ? (
+              <span className="badge ok">file organization available</span>
             ) : (
-              'API-only — no library root set, so file organization is unavailable.'
+              <span className="badge dim">API-only — organization disabled</span>
             )}
+            <div className="dim" style={{ marginTop: 4 }}>
+              {server.files.canManageFiles ? (
+                <>
+                  Media reachable at <span className="mono">{server.files.path}</span>
+                  {server.pathPrefix && (
+                    <>
+                      {' '}
+                      (this server reports it as <span className="mono">{server.pathPrefix}</span>)
+                    </>
+                  )}
+                </>
+              ) : (
+                server.files.reason
+              )}
+            </div>
           </div>
         </div>
         <div className="actions">

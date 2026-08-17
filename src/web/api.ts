@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import { AbsClient } from '../abs/client.js';
-import { assessCapability } from '../core/capability.js';
+import { assessCapability, checkLocalRoot } from '../core/capability.js';
 import { hasSecret } from '../core/crypto.js';
 import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
 import { AUDIT_CODES } from '../core/audit.js';
 import { FILLABLE } from '../core/metadata.js';
-import { DEFAULT_TEMPLATE } from '../core/organize.js';
+import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
@@ -73,7 +73,23 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
 function publicServer(db: Db, id: number) {
   const server = getServer(db, id);
   if (!server) throw notFound(`No server with id ${id}`);
-  return { ...server, key: serverKeyStatus(db, id) };
+  // `files` comes from a local stat, not a call to AudiobookShelf, so listing
+  // servers stays cheap while still letting the UI disable organize up front.
+  return { ...server, key: serverKeyStatus(db, id), files: checkLocalRoot(server) };
+}
+
+/**
+ * Refuses a file-touching command for a server whose media this machine cannot
+ * reach. Checked here so the caller gets an immediate, explained rejection
+ * instead of a queued run that only fails once it reaches the front.
+ */
+function assertFileCommandAllowed(db: Db, serverId: number, command: RunCommand): void {
+  if (!FILE_COMMANDS.has(command)) return;
+  const server = getServer(db, serverId);
+  if (!server) throw notFound(`No server with id ${serverId}`);
+
+  const local = checkLocalRoot(server);
+  if (!local.canManageFiles) throw badRequest(unavailableMessage(server.name, local.reason));
 }
 
 export interface ApiDeps {
@@ -196,6 +212,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
   router.post('/api/runs', (ctx) => {
     const input = parse(RunInputSchema, ctx.body);
     if (!getServer(db, input.serverId)) throw notFound(`No server with id ${input.serverId}`);
+    assertFileCommandAllowed(db, input.serverId, input.command as RunCommand);
     return runner.enqueue({
       serverId: input.serverId,
       command: input.command as RunCommand,
@@ -237,6 +254,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
   router.post('/api/schedules', (ctx) => {
     const input = parse(ScheduleInputSchema, ctx.body);
     if (!getServer(db, input.serverId)) throw notFound(`No server with id ${input.serverId}`);
+    assertFileCommandAllowed(db, input.serverId, input.command as RunCommand);
     return createSchedule(db, { ...input, command: input.command as RunCommand });
   });
 

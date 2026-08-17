@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { assessCapability, toLocalPath } from './capability.js';
+import { assessCapability, checkLocalRoot, toLocalPath } from './capability.js';
 import type { AbsLibrary } from '../abs/types.js';
 import type { ServerRecord } from '../db/servers.js';
 
@@ -52,11 +52,52 @@ describe('toLocalPath', () => {
   });
 });
 
+describe('checkLocalRoot', () => {
+  it('disables file management when no library root is set', () => {
+    const status = checkLocalRoot(server());
+    expect(status.canManageFiles).toBe(false);
+    expect(status.access).toBe('not-configured');
+    expect(status.reason).toMatch(/not running where this server/);
+    expect(status.path).toBeNull();
+  });
+
+  // The decisive case: abs-butler on a different machine from the media.
+  it('disables file management when the root does not exist here', () => {
+    const status = checkLocalRoot({ libraryRoot: '/mnt/some-other-machine/audiobooks' });
+    expect(status.canManageFiles).toBe(false);
+    expect(status.access).toBe('unreachable');
+  });
+
+  it('enables file management for a writable local root', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'butler-local-'));
+    const status = checkLocalRoot({ libraryRoot: dir });
+    expect(status.canManageFiles).toBe(true);
+    expect(status.access).toBe('read-write');
+    expect(status.path).toBe(dir);
+  });
+
+  // A read-only mount is not "same machine enough" — moving files would fail.
+  it('does not enable file management for a read-only root', () => {
+    if (process.getuid?.() === 0) return;
+    const base = mkdtempSync(join(tmpdir(), 'butler-localro-'));
+    const dir = join(base, 'locked');
+    mkdirSync(dir);
+    chmodSync(dir, 0o500);
+    try {
+      const status = checkLocalRoot({ libraryRoot: dir });
+      expect(status.canManageFiles).toBe(false);
+      expect(status.access).toBe('read-only');
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+  });
+});
+
 describe('assessCapability', () => {
   it('reports API-only, with a reason, when no library root is set', () => {
     const result = assessCapability(server(), [library('/audiobooks')]);
     expect(result.canManageFiles).toBe(false);
-    expect(result.reason).toMatch(/No library root configured/);
+    expect(result.reason).toMatch(/No library root is configured/);
     expect(result.libraries[0]!.access).toBe('not-configured');
   });
 

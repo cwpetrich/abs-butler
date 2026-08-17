@@ -151,13 +151,12 @@ export async function runOrganizeTask(
   const allLibraries = await ctx.client.listLibraries();
   const capability = assessCapability(ctx.server, allLibraries);
 
-  // Refuse before planning rather than failing partway through a batch of moves.
-  if (options.apply && !capability.canManageFiles) {
-    throw new Error(`Cannot organize files on "${ctx.server.name}": ${capability.reason}`);
-  }
+  // Organizing is unavailable outright when the media is not mounted here —
+  // not "plan now, fail later". abs-butler has no remote file transport, so a
+  // plan it could never carry out is a false promise, and one built against
+  // paths this machine cannot see is not even verifiable.
   if (!capability.canManageFiles) {
-    log.warn(`Files are not manageable from this machine: ${capability.reason}`);
-    log.warn('Showing the plan anyway, but it cannot be applied from here.');
+    throw new Error(unavailableMessage(ctx.server.name, capability.reason));
   }
 
   const libraries = await resolveLibraries(ctx, options.library);
@@ -205,6 +204,19 @@ export async function runOrganizeTask(
   }
 
   return { template, planned: plans.length, moved, skipped, applied: true, rescanned, capability, plans };
+}
+
+/**
+ * The one message explaining why organizing is off, used by the CLI, the API,
+ * and the job runner so the answer never varies by where it is asked.
+ */
+export function unavailableMessage(serverName: string, reason: string): string {
+  return (
+    `File organization is unavailable for "${serverName}" from this machine. ${reason}\n` +
+    'organize moves files directly and abs-butler has no remote file access, so it only works ' +
+    'when the media is mounted where abs-butler runs — on the same machine, or over a network ' +
+    'share such as NFS or SMB. Every other command works against this server over the API.'
+  );
 }
 
 async function moveBlockedReason(plan: MovePlan): Promise<string | null> {
