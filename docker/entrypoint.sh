@@ -26,6 +26,14 @@ parse_interval() {
   esac
 }
 
+# `serve` runs the web UI, which has its own scheduler that survives restarts and
+# is configurable from the UI. Wrapping it in a sleep loop would be redundant at
+# best and confusing at worst, so BUTLER_SCHEDULE is ignored for it.
+if [ "${1:-}" = "serve" ] && [ -n "${BUTLER_SCHEDULE:-}" ]; then
+  echo "abs-butler: ignoring BUTLER_SCHEDULE — 'serve' schedules jobs itself (see the Schedules page)" >&2
+  exec node "$CLI" "$@"
+fi
+
 if [ -z "${BUTLER_SCHEDULE:-}" ]; then
   exec node "$CLI" "$@"
 fi

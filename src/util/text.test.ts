@@ -10,6 +10,18 @@ describe('normalizeTitle', () => {
     );
   });
 
+  // Regression: sort-friendly titles are the most common duplicate form, and
+  // "Hobbit, The" previously normalized to "hobbit the" — never matching "hobbit".
+  it('treats sort-friendly trailing articles as equivalent', () => {
+    expect(normalizeTitle('Hobbit, The (Unabridged)')).toBe(normalizeTitle('The Hobbit'));
+    expect(normalizeTitle('Wind in the Willows, The')).toBe(normalizeTitle('The Wind in the Willows'));
+    expect(normalizeTitle('Christmas Carol, A')).toBe(normalizeTitle('A Christmas Carol'));
+  });
+
+  it('keeps an interior article that is part of the title', () => {
+    expect(normalizeTitle('The Wind in the Willows')).toBe('wind in the willows');
+  });
+
   it('folds accents so imported and local titles match', () => {
     expect(normalizeTitle('Les Misérables')).toBe(normalizeTitle('Les Miserables'));
   });

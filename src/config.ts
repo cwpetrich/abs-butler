@@ -1,87 +1,78 @@
-import { readFileSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
 
 loadDotenv();
 
-const ConfigSchema = z
-  .object({
-    absUrl: z.string().url('ABS_URL must be a full URL, e.g. http://localhost:13378'),
-    absToken: z.string().min(1).optional(),
-    absUsername: z.string().min(1).optional(),
-    absPassword: z.string().min(1).optional(),
-    googleBooksApiKey: z.string().min(1).optional(),
-    libraryRoot: z.string().min(1).optional(),
-    absPathPrefix: z.string().min(1).optional(),
-    providerConcurrency: z.coerce.number().int().positive().max(16).default(4),
-  })
-  .refine((c) => Boolean(c.absToken) || Boolean(c.absUsername && c.absPassword), {
-    message: 'Set ABS_TOKEN, or both ABS_USERNAME and ABS_PASSWORD.',
+/**
+ * Environment configuration.
+ *
+ * Since 0.2 the database is the source of truth for servers and settings — the
+ * web UI edits them live. Environment variables cover only what must be known
+ * before the database can be opened (where it lives, how it is encrypted, how
+ * the web server listens), plus a one-time import of a pre-0.2 single-server
+ * `.env` so upgrades keep working.
+ */
+
+const EnvServerSchema = z.object({
+  name: z.string().min(1).optional(),
+  absUrl: z.string().url(),
+  absToken: z.string().min(1).optional(),
+  libraryRoot: z.string().min(1).optional(),
+  absPathPrefix: z.string().min(1).optional(),
+  googleBooksApiKey: z.string().min(1).optional(),
+  providerConcurrency: z.coerce.number().int().positive().max(16).optional(),
+});
+
+export type EnvServerConfig = z.infer<typeof EnvServerSchema>;
+
+function clean(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/** Returns null when no legacy server configuration is present, which is normal. */
+export function loadEnvConfig(): EnvServerConfig | null {
+  const absUrl = clean(process.env.ABS_URL);
+  if (!absUrl) return null;
+
+  const parsed = EnvServerSchema.safeParse({
+    name: clean(process.env.ABS_SERVER_NAME),
+    absUrl: absUrl.replace(/\/+$/, ''),
+    absToken: clean(process.env.ABS_TOKEN),
+    libraryRoot: clean(process.env.LIBRARY_ROOT),
+    absPathPrefix: clean(process.env.ABS_PATH_PREFIX),
+    googleBooksApiKey: clean(process.env.GOOGLE_BOOKS_API_KEY),
+    providerConcurrency: clean(process.env.PROVIDER_CONCURRENCY),
   });
 
-export type Config = z.infer<typeof ConfigSchema>;
-
-/** A config file lets you keep settings out of the environment. Env always wins. */
-function readConfigFile(explicitPath?: string): Record<string, unknown> {
-  const candidates = explicitPath
-    ? [explicitPath]
-    : [
-        join(process.cwd(), 'config.json'),
-        join(homedir(), '.config', 'abs-butler', 'config.json'),
-      ];
-
-  for (const path of candidates) {
-    if (!existsSync(path)) continue;
-    try {
-      return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    } catch (err) {
-      throw new Error(`Could not parse config file ${path}: ${(err as Error).message}`);
-    }
-  }
-  return {};
-}
-
-/** camelCase config key -> the env var that sets it, for error messages. */
-function envVarFor(field: string): string {
-  return field.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase() || 'config';
-}
-
-function pick(...values: Array<unknown>): string | undefined {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim() !== '') return value.trim();
-    if (typeof value === 'number') return String(value);
-  }
-  return undefined;
-}
-
-export function loadConfig(options: { configPath?: string } = {}): Config {
-  const file = readConfigFile(options.configPath);
-  const env = process.env;
-
-  const merged = {
-    absUrl: pick(env.ABS_URL, file.absUrl)?.replace(/\/+$/, ''),
-    absToken: pick(env.ABS_TOKEN, file.absToken),
-    absUsername: pick(env.ABS_USERNAME, file.absUsername),
-    absPassword: pick(env.ABS_PASSWORD, file.absPassword),
-    googleBooksApiKey: pick(env.GOOGLE_BOOKS_API_KEY, file.googleBooksApiKey),
-    libraryRoot: pick(env.LIBRARY_ROOT, file.libraryRoot),
-    absPathPrefix: pick(env.ABS_PATH_PREFIX, file.absPathPrefix),
-    providerConcurrency: pick(env.PROVIDER_CONCURRENCY, file.providerConcurrency) ?? 4,
-  };
-
-  const parsed = ConfigSchema.safeParse(merged);
   if (!parsed.success) {
-    const details = parsed.error.issues
-      .map((i) => {
-        const field = i.path.join('.');
-        // Zod's bare "Required" is useless without the field and its env var.
-        const message = i.message === 'Required' ? `${envVarFor(field)} is required` : i.message;
-        return `  - ${message}`;
-      })
-      .join('\n');
-    throw new Error(`Invalid configuration:\n${details}\n\nSee .env.example for the full list.`);
+    const details = parsed.error.issues.map((i) => `  - ${i.path.join('.') || 'config'}: ${i.message}`);
+    throw new Error(`Invalid environment configuration:\n${details.join('\n')}`);
+  }
+  return parsed.data;
+}
+
+const WebSchema = z.object({
+  host: z.string().default('0.0.0.0'),
+  port: z.coerce.number().int().min(1).max(65535).default(8478),
+  /** When set, the UI requires this password to log in. */
+  password: z.string().min(1).optional(),
+  /** When set, API keys are encrypted at rest with a key derived from it. */
+  secret: z.string().min(1).optional(),
+});
+
+export type WebConfig = z.infer<typeof WebSchema>;
+
+export function loadWebConfig(): WebConfig {
+  const parsed = WebSchema.safeParse({
+    host: clean(process.env.BUTLER_HOST) ?? '0.0.0.0',
+    port: clean(process.env.BUTLER_PORT) ?? 8478,
+    password: clean(process.env.BUTLER_PASSWORD),
+    secret: clean(process.env.BUTLER_SECRET),
+  });
+  if (!parsed.success) {
+    const details = parsed.error.issues.map((i) => `  - ${i.path.join('.') || 'config'}: ${i.message}`);
+    throw new Error(`Invalid web configuration:\n${details.join('\n')}`);
   }
   return parsed.data;
 }

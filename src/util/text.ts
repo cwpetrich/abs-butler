@@ -1,6 +1,12 @@
 /** Normalization helpers shared by dedupe, matching, and path building. */
 
 const LEADING_ARTICLE = /^(the|a|an)\s+/i;
+/**
+ * Sort-friendly titles put the article last ("Hobbit, The"), which is how most
+ * taggers and many ABS libraries store them. Both forms must normalize alike or
+ * duplicate detection misses the most common kind of duplicate there is.
+ */
+const TRAILING_ARTICLE = /\s+(the|a|an)$/i;
 
 /** Lowercase, strip punctuation and articles — for comparing titles across sources. */
 export function normalizeTitle(value: string | null | undefined): string {
@@ -11,8 +17,10 @@ export function normalizeTitle(value: string | null | undefined): string {
     .toLowerCase()
     .replace(/\b(unabridged|abridged|audiobook)\b/g, '')
     .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(LEADING_ARTICLE, '')
     .replace(/\s+/g, ' ')
+    .trim()
+    .replace(LEADING_ARTICLE, '')
+    .replace(TRAILING_ARTICLE, '')
     .trim();
 }
 

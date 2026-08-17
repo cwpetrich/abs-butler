@@ -1,11 +1,11 @@
 {
   "name": "abs-butler",
-  "version": "0.1.0",
-  "description": "A butler for your AudiobookShelf server: audit libraries, repair metadata, organize files, and tag books with age-appropriateness ratings.",
+  "version": "0.2.0",
+  "description": "A butler for your AudiobookShelf servers: manage many servers from one place, audit libraries, repair metadata, organize files, and tag books with age-appropriateness ratings.",
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "bin": {
     "abs-butler": "./dist/index.js"
@@ -15,10 +15,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:web": "vite build",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev:web": "vite",
+    "serve": "node dist/index.js serve",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -28,9 +31,15 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "vite": "^6.0.3",
     "vitest": "^2.1.8"
   }
 }
