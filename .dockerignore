@@ -1,0 +1,21 @@
+node_modules
+dist
+.git
+.gitignore
+
+# Never bake secrets into an image layer
+.env
+.env.local
+config.json
+config.local.json
+
+*.log
+.cache
+out
+reports
+docs
+README.md
+LICENSE
+.vscode
+.idea
+.DS_Store

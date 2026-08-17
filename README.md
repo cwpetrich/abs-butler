@@ -10,6 +10,23 @@ AudiobookShelf or moved on disk until you add `--apply`.
 
 ## Setup
 
+### With Docker
+
+```bash
+cp .env.example .env      # fill in ABS_URL, ABS_TOKEN
+docker compose build
+docker compose run --rm butler libraries      # connectivity check
+docker compose run --rm butler audit --details
+```
+
+Anything after the service name is passed to the CLI. For recurring runs,
+`docker compose up -d scheduled-audit` re-audits every `BUTLER_SCHEDULE` (default 12h).
+
+Two things that catch people out — `localhost` inside a container isn't your host, and `organize`
+needs the library mounted read-write. Both are covered in **[docs/docker.md](docs/docker.md)**.
+
+### Without Docker
+
 ```bash
 npm install
 cp .env.example .env   # then fill in ABS_URL and ABS_TOKEN
@@ -21,6 +38,9 @@ For development without building, `npm run dev -- <command>` runs straight from 
 
 Configuration is read from environment variables, a `.env` file, `./config.json`, or
 `~/.config/abs-butler/config.json` — in that precedence order. See `.env.example` for every setting.
+
+Commands are shown below as `node dist/index.js <command>`; under Docker the equivalent is
+`docker compose run --rm butler <command>`. Flags are identical either way.
 
 ## Commands
 
@@ -104,9 +124,10 @@ Sequence numbers are zero-padded so book 2 sorts before book 10.
 
 This command **touches your files directly**, so:
 
-- It needs filesystem access to the library from the machine it runs on.
+- It needs filesystem access to the library from the machine it runs on. Under Docker that means
+  setting `HOST_LIBRARY_PATH` and `LIBRARY_MOUNT_MODE=rw` — the mount is read-only by default.
 - If AudiobookShelf runs in Docker, set `LIBRARY_ROOT` (host path) and `ABS_PATH_PREFIX`
-  (in-container path) so reported paths can be translated.
+  (in-container path) so reported paths can be translated. `libraries` prints the paths ABS reports.
 - It skips any move whose destination already exists, rather than merging.
 - It triggers a library rescan afterwards so AudiobookShelf picks up the new paths (`--no-scan` to
   skip).
