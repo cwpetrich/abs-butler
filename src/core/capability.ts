@@ -66,6 +66,42 @@ function probe(path: string): { access: FileAccess; reason?: string } {
   }
 }
 
+export interface LocalRootStatus {
+  /** False means organize is unavailable for this server, full stop. */
+  canManageFiles: boolean;
+  access: FileAccess;
+  reason: string;
+  path: string | null;
+}
+
+/**
+ * Cheap answer to "can this machine touch that server's files?", from the
+ * configured library root alone.
+ *
+ * Unlike assessCapability this makes no network call, so the servers list can
+ * report it for every server at once and the UI can disable organize up front
+ * rather than offering an action that would be refused.
+ */
+export function checkLocalRoot(server: Pick<ServerRecord, 'libraryRoot'>): LocalRootStatus {
+  if (!server.libraryRoot) {
+    return {
+      canManageFiles: false,
+      access: 'not-configured',
+      reason:
+        'No library root is configured, so abs-butler is not running where this server’s media is mounted.',
+      path: null,
+    };
+  }
+
+  const { access, reason } = probe(server.libraryRoot);
+  return {
+    canManageFiles: access === 'read-write',
+    access,
+    reason: reason ?? 'The library root is reachable and writable from this machine.',
+    path: server.libraryRoot,
+  };
+}
+
 export function assessCapability(server: ServerRecord, libraries: AbsLibrary[]): ServerCapability {
   const bookLibraries = libraries.filter((l) => l.mediaType === 'book');
 
@@ -73,8 +109,9 @@ export function assessCapability(server: ServerRecord, libraries: AbsLibrary[]):
     return {
       canManageFiles: false,
       reason:
-        'No library root configured. Set one to the path where this machine can see the media, ' +
-        'or leave it blank to manage this server over the API only.',
+        'No library root is configured, so abs-butler is not running where this server’s media is ' +
+        'mounted. Set one if the files are reachable here; leave it blank to manage this server ' +
+        'over the API only.',
       libraries: bookLibraries.flatMap((library) =>
         library.folders.map((folder) => ({
           libraryId: library.id,

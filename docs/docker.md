@@ -93,6 +93,12 @@ networks:
 Only `organize` touches the filesystem. `audit`, `rate`, and `metadata` work purely over the API and
 need no mount at all — a server on another machine is fully manageable for those.
 
+`organize` is **disabled outright** for any server whose media is not mounted into this container.
+abs-butler has no remote file transport, so rather than offering an action it cannot complete, the
+command is greyed out in the UI with the reason and refused by the API. Mounting the media over
+NFS/SMB into the container works just as well as being on the same host — the check is simply
+whether the library root is a writable local path.
+
 There are up to three different names for the same directory, which is where this usually goes wrong:
 
 | Setting | Whose view | Example |

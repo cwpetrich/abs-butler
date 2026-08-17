@@ -5,6 +5,14 @@ export interface ServerKeyStatus {
   masked: string;
 }
 
+export interface LocalRootStatus {
+  /** False means file organization is unavailable for this server, full stop. */
+  canManageFiles: boolean;
+  access: 'read-write' | 'read-only' | 'unreachable' | 'not-configured';
+  reason: string;
+  path: string | null;
+}
+
 export interface Server {
   id: number;
   name: string;
@@ -15,6 +23,7 @@ export interface Server {
   createdAt: number;
   updatedAt: number;
   key: ServerKeyStatus;
+  files: LocalRootStatus;
 }
 
 export type RunCommand = 'audit' | 'rate' | 'metadata' | 'organize';

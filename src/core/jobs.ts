@@ -18,7 +18,8 @@ import { pruneSessions } from '../db/sessions.js';
 import { openServerContext } from '../context.js';
 import { log, withLogSink } from '../logger.js';
 import { runTask, summarizeResult, FILE_COMMANDS } from './tasks.js';
-import { assessCapability } from './capability.js';
+import { unavailableMessage } from './organize.js';
+import { checkLocalRoot } from './capability.js';
 
 export interface EnqueueInput {
   serverId: number;
@@ -124,13 +125,13 @@ export class JobRunner extends EventEmitter {
     try {
       const ctx = openServerContext(this.db, String(run.serverId));
 
+      // Re-checked here as well as at enqueue: a mount can disappear between
+      // queueing a job and running it, and a half-finished reorganization is
+      // far worse than one that never started.
       if (FILE_COMMANDS.has(run.command)) {
-        const libraries = await ctx.client.listLibraries();
-        const capability = assessCapability(ctx.server, libraries);
-        if (!capability.canManageFiles && run.options.apply) {
-          throw new Error(
-            `"${run.command}" needs filesystem access to this server's media, which this machine does not have. ${capability.reason}`,
-          );
+        const local = checkLocalRoot(ctx.server);
+        if (!local.canManageFiles) {
+          throw new Error(unavailableMessage(ctx.server.name, local.reason));
         }
       }
 

@@ -1,4 +1,5 @@
-import { DEFAULT_TEMPLATE, runOrganizeTask } from '../core/organize.js';
+import { DEFAULT_TEMPLATE, runOrganizeTask, unavailableMessage } from '../core/organize.js';
+import { checkLocalRoot } from '../core/capability.js';
 import { openServerContext, openStore, type GlobalOptions } from '../context.js';
 import { color, log } from '../logger.js';
 import { printJson, printTable } from '../util/table.js';
@@ -15,6 +16,12 @@ export interface OrganizeOptions extends GlobalOptions {
 export async function runOrganize(options: OrganizeOptions): Promise<void> {
   const db = openStore();
   const ctx = openServerContext(db, options.server);
+
+  // Checked before any network call so an unavailable server answers instantly
+  // with the reason, rather than after reading the whole library.
+  const local = checkLocalRoot(ctx.server);
+  if (!local.canManageFiles) throw new Error(unavailableMessage(ctx.server.name, local.reason));
+
   const result = await runOrganizeTask(ctx, options);
 
   if (options.json) {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, type Meta, type RunCommand, type Server } from '../api';
 import { Banner, Empty, formatInterval, formatTime, Spinner, useAsync } from '../lib';
 
@@ -130,7 +130,13 @@ function ScheduleForm({
   const [saving, setSaving] = useState(false);
 
   const server = servers.find((s) => String(s.id) === serverId);
-  const fileBlocked = meta.fileCommands.includes(command) && !server?.libraryRoot;
+  const canManageFiles = server?.files.canManageFiles ?? false;
+  const isFileCommand = (c: RunCommand) => meta.fileCommands.includes(c);
+
+  useEffect(() => {
+    if (isFileCommand(command) && !canManageFiles) setCommand('audit');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId, canManageFiles]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -171,11 +177,15 @@ function ScheduleForm({
         <label>
           Command
           <select value={command} onChange={(e) => setCommand(e.target.value as RunCommand)}>
-            {meta.commands.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+            {meta.commands.map((c) => {
+              const blocked = isFileCommand(c) && !canManageFiles;
+              return (
+                <option key={c} value={c} disabled={blocked}>
+                  {c}
+                  {blocked ? ' — needs local file access' : ''}
+                </option>
+              );
+            })}
           </select>
         </label>
 
@@ -191,19 +201,15 @@ function ScheduleForm({
         </label>
       </div>
 
-      {fileBlocked && (
+      {!canManageFiles && (
         <Banner tone="warn">
-          {server?.name} has no library root, so this machine cannot move its files.
+          File organization is unavailable for {server?.name}: {server?.files.reason} Every other
+          command works over the API.
         </Banner>
       )}
 
       <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={apply}
-          onChange={(e) => setApply(e.target.checked)}
-          disabled={fileBlocked}
-        />
+        <input type="checkbox" checked={apply} onChange={(e) => setApply(e.target.checked)} />
         Apply changes automatically
       </label>
 
