@@ -1,12 +1,13 @@
-# abs-butler is a CLI, not a server, so there are two ways to run it:
+# abs-butler runs as a web service, with the same CLI available for one-off work:
 #
-#   One-shot:    docker compose run --rm butler audit --details
-#   Scheduled:   docker compose up -d scheduled-audit
+#   docker compose up -d butler                      # web UI on :8478
+#   docker compose run --rm butler server list       # one-shot CLI
 #
-# Settings come from .env (see .env.example). Two of them are compose-level
-# rather than app-level, and are documented in docs/docker.md:
+# Settings come from .env (see .env.example). The ones that matter here:
 #
-#   HOST_LIBRARY_PATH  where your audiobooks live on THIS machine
+#   BUTLER_PASSWORD    required to log in to the UI — set it
+#   BUTLER_SECRET      encrypts stored AudiobookShelf API keys — set it
+#   HOST_LIBRARY_PATH  where your audiobooks live on THIS machine (only for `organize`)
 #   PUID / PGID        the user that owns them, so `organize` writes as you
 
 x-butler: &butler
@@ -17,52 +18,44 @@ x-butler: &butler
     - path: .env
       required: false
   environment:
+    # The database always lives at /data inside the container; persist it with
+    # the butler-data volume below.
+    BUTLER_DATA_DIR: /data
     # Inside the container the library is always at /library, whatever the host
     # path is. This deliberately overrides any LIBRARY_ROOT set in .env, which
     # describes the host and would be meaningless in here.
     LIBRARY_ROOT: /library
   volumes:
+    - butler-data:/data
     # Read-only by default, so nothing can touch your files by accident.
     # `organize --apply` needs LIBRARY_MOUNT_MODE=rw — see docs/docker.md.
     - ${HOST_LIBRARY_PATH:-./library}:/library:${LIBRARY_MOUNT_MODE:-ro}
+  # Files created by `organize` inherit this ownership. Default matches the
+  # image's built-in `node` user.
+  user: "${PUID:-1000}:${PGID:-1000}"
   extra_hosts:
     # Lets ABS_URL=http://host.docker.internal:13378 reach an AudiobookShelf
     # running directly on this host rather than in the compose network.
     - "host.docker.internal:host-gateway"
-  # Files created by `organize` inherit this ownership. Default matches the
-  # image's built-in `node` user.
-  user: "${PUID:-1000}:${PGID:-1000}"
-  restart: "no"
 
 services:
-  # One-shot CLI. Everything after the service name is passed to abs-butler:
-  #   docker compose run --rm butler libraries
-  #   docker compose run --rm butler audit --details
-  #   docker compose run --rm butler rate --max-age 12
+  # The web UI and job scheduler. This is the main way to run abs-butler.
   butler:
     <<: *butler
+    container_name: abs-butler
+    ports:
+      - "${BUTLER_PORT:-8478}:8478"
+    restart: unless-stopped
+
+  # One-shot CLI against the same database. Everything after the service name
+  # is passed straight to abs-butler:
+  #   docker compose run --rm cli server add --name home --url ... --api-key ...
+  #   docker compose run --rm cli audit --details
+  cli:
+    <<: *butler
     profiles: ["cli"]
+    restart: "no"
     command: ["--help"]
 
-  # Long-running: re-audits on an interval and logs the result.
-  # Read-only and non-mutating by design — see docs/docker.md before adding --apply.
-  scheduled-audit:
-    <<: *butler
-    container_name: abs-butler-scheduled-audit
-    environment:
-      LIBRARY_ROOT: /library
-      BUTLER_SCHEDULE: ${BUTLER_SCHEDULE:-12h}
-    command: ["audit", "--details"]
-    restart: unless-stopped
-
-  # Writes age/content tags back to AudiobookShelf on a schedule.
-  # Not started by default: `docker compose --profile tagging up -d`.
-  scheduled-rate:
-    <<: *butler
-    container_name: abs-butler-scheduled-rate
-    profiles: ["tagging"]
-    environment:
-      LIBRARY_ROOT: /library
-      BUTLER_SCHEDULE: ${BUTLER_SCHEDULE:-24h}
-    command: ["rate", "--apply"]
-    restart: unless-stopped
+volumes:
+  butler-data:

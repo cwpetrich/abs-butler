@@ -1,85 +1,99 @@
 # abs-butler
 
-A command-line butler for an [AudiobookShelf](https://www.audiobookshelf.org/) server. It audits a
-library for problems, fills in missing metadata, enforces a folder naming scheme, and — the reason it
-exists — tags books with **age bands and content flags** so the library can be filtered by what's
-appropriate for whom.
+A butler for your [AudiobookShelf](https://www.audiobookshelf.org/) servers. Manage one or many from
+a single web UI: audit libraries for problems, fill in missing metadata, enforce a folder naming
+scheme, and — the reason it exists — tag books with **age bands and content flags** so a library can
+be filtered by what's appropriate for whom.
 
-Every command that changes something is a **dry run by default**. Nothing is written to
-AudiobookShelf or moved on disk until you add `--apply`.
+Servers are managed over their HTTP API, so **abs-butler does not need to run on the same machine**.
+The one exception is file organization, which moves files and therefore needs the media mounted
+locally; abs-butler detects this per server and tells you which side of the line each one is on.
 
-## Setup
+Every operation is a **dry run by default**. Nothing is written until you explicitly apply it.
 
-### With Docker
-
-```bash
-cp .env.example .env      # fill in ABS_URL, ABS_TOKEN
-docker compose build
-docker compose run --rm butler libraries      # connectivity check
-docker compose run --rm butler audit --details
-```
-
-Anything after the service name is passed to the CLI. For recurring runs,
-`docker compose up -d scheduled-audit` re-audits every `BUTLER_SCHEDULE` (default 12h).
-
-Two things that catch people out — `localhost` inside a container isn't your host, and `organize`
-needs the library mounted read-write. Both are covered in **[docs/docker.md](docs/docker.md)**.
-
-### Without Docker
+## Quick start
 
 ```bash
-npm install
-cp .env.example .env   # then fill in ABS_URL and ABS_TOKEN
-npm run build
-node dist/index.js libraries   # connectivity check
+cp .env.example .env       # set BUTLER_PASSWORD and BUTLER_SECRET
+docker compose up -d butler
 ```
 
-For development without building, `npm run dev -- <command>` runs straight from source.
+Open <http://localhost:8478>, sign in, and add a server with its URL and an API key
+(AudiobookShelf → Settings → Users → your user → API Token).
 
-Configuration is read from environment variables, a `.env` file, `./config.json`, or
-`~/.config/abs-butler/config.json` — in that precedence order. See `.env.example` for every setting.
+Without Docker:
 
-Commands are shown below as `node dist/index.js <command>`; under Docker the equivalent is
-`docker compose run --rm butler <command>`. Flags are identical either way.
+```bash
+npm install && npm run build
+BUTLER_PASSWORD=... BUTLER_SECRET=... node dist/index.js serve
+```
+
+## The web UI
+
+| Page | What it does |
+| --- | --- |
+| **Servers** | Add, edit, and test servers. Each card shows whether files are manageable from this machine, and exactly which paths were probed. |
+| **Runs** | Start a job and watch it. Full history of every run — manual, scheduled, or from the CLI — with the result summary. |
+| **Run detail** | Live-tailing log, options used, and a breakdown of what the run found or changed. |
+| **Schedules** | Recurring jobs per server and command, at an interval you choose. |
+| **Logs** | Every line from every run, filterable by level and searchable. |
+| **Settings** | Provider keys, concurrency, rating confidence threshold, and history/log retention. |
+
+Jobs run **one at a time**. They hammer both AudiobookShelf and third-party metadata providers, and
+two concurrent rating runs against the same library would double the request rate for no gain. The
+queue lives in the database, so a restart doesn't lose it — and any run interrupted by a restart is
+marked failed rather than left claiming to be running forever.
+
+## Configuration
+
+Servers and settings live in a SQLite database and are edited from the UI. Only what must be known
+*before* the database opens stays an environment variable:
+
+| Variable | Purpose |
+| --- | --- |
+| `BUTLER_PASSWORD` | Required to log in. **Without it the UI is unauthenticated.** |
+| `BUTLER_SECRET` | Encrypts stored API keys at rest with AES-256-GCM. Without it they are stored in plaintext, and the UI says so. |
+| `BUTLER_HOST` / `BUTLER_PORT` | Listen address. Defaults to `0.0.0.0:8478`. |
+| `BUTLER_DATA_DIR` | Where the database lives. Defaults to `./data`, and `/data` in Docker. |
+
+Set `BUTLER_SECRET` to a long random string (`openssl rand -base64 32`) and keep it. Changing it
+makes existing keys unreadable — abs-butler will say so plainly rather than failing mysteriously,
+but you will have to re-enter each key.
+
+Upgrading from 0.1? Leave your old `ABS_URL` and `ABS_TOKEN` in `.env` and they are imported into the
+database once, on first run.
 
 ## Commands
 
-| Command | What it does |
-| --- | --- |
-| `libraries` | Lists libraries on the server. Use it to confirm your token works. |
-| `audit` | Reports metadata and file problems: missing covers, unmatched books, duplicates, items missing from disk. |
-| `rate` | Looks books up in external sources and tags them with an age band and content flags. |
-| `metadata` | Fills blank metadata fields (description, publisher, year, ISBN) from providers. |
-| `organize` | Moves book folders on disk into a consistent `Author/Series/Vol - Title` layout. |
-
-Global flags: `--library <idOrName>` to target one library, `--config <path>`, `--verbose`, `--quiet`.
-Most commands also accept `--json` for piping and `--limit <n>` for a quick trial run.
-
-### Auditing
+Everything in the UI is also a CLI command. Use `--server <name>` to pick a server when more than one
+is configured.
 
 ```bash
-node dist/index.js audit                      # summary counts by issue
-node dist/index.js audit --details            # list every affected item
-node dist/index.js audit --only unmatched duplicate
-node dist/index.js audit --json > reports/audit.json
+abs-butler server add --name home --url http://192.168.1.10:13378 --api-key <key>
+abs-butler server list
+abs-butler server test                  # connectivity + file capability, per server
+
+abs-butler audit --details              # metadata and file problems
+abs-butler rate                         # age bands and content flags
+abs-butler metadata                     # fill blank description/year/publisher/ISBN
+abs-butler organize                     # plan a folder reorganization
+
+abs-butler serve                        # the web UI and scheduler
 ```
+
+Under Docker, prefix with `docker compose run --rm cli`. Add `--json` to anything for piping, and
+`--limit N` for a quick trial against part of a library.
+
+### Auditing
 
 Issue codes: `missing-on-disk`, `invalid`, `no-audio`, `missing-title`, `missing-author`,
 `missing-cover`, `unmatched`, `missing-description`, `missing-year`, `missing-narrator`, `unrated`,
 `duplicate`.
 
-Duplicates are found by normalizing title and author, so `The Hobbit` and `Hobbit, The (Unabridged)`
-by `Tolkien, J.R.R.` land in the same group.
+Duplicates are found by normalizing title and author, so `The Hobbit` by `J.R.R. Tolkien` and
+`Hobbit, The (Unabridged)` by `Tolkien, J.R.R.` land in the same group.
 
 ### Age ratings and content flags
-
-```bash
-node dist/index.js rate                        # dry run, prints what it would tag
-node dist/index.js rate --apply                # write tags to AudiobookShelf
-node dist/index.js rate --max-age 12           # show only books banded above age 12
-node dist/index.js rate --min-confidence 0.6   # only tag when fairly sure
-node dist/index.js rate --force --apply        # re-rate books already tagged
-```
 
 AudiobookShelf has no rating field, so results are written as **tags**, which its filter UI already
 supports:
@@ -94,56 +108,54 @@ Tags outside those namespaces are never touched, so your own tags survive a re-r
 **Read [docs/content-ratings.md](docs/content-ratings.md) before trusting this for parental
 controls.** The short version: this infers audience from how librarians and publishers *shelve* a
 book. It is reliable for "this is shelved as juvenile fiction" and blind to "chapter 14 is graphic".
-Low-confidence results are a prompt to check a title yourself, not a verdict.
+Low confidence is how the tool asks a human to look.
 
 ### Filling in metadata
 
-```bash
-node dist/index.js metadata                              # dry run
-node dist/index.js metadata --apply
-node dist/index.js metadata --fields description publisher --apply
-```
-
-Only fields that are safe to infer are eligible: `description`, `publishedYear`, `publisher`, `isbn`,
-`language`. Blank fields are filled; existing values are left alone unless you pass `--overwrite`.
+Only fields safe to infer are eligible: `description`, `publishedYear`, `publisher`, `isbn`,
+`language`. Blank fields are filled; existing values are left alone unless you ask to overwrite.
 Title and author are deliberately never written — a bad provider match would rename the book, and
-matching is a job for AudiobookShelf's own quick-match. As a further guard, a fuzzy (non-ISBN) match
-is only used when the provider's title agrees with yours.
+matching is AudiobookShelf's own job. As a further guard, a fuzzy (non-ISBN) match is only used when
+the provider's title agrees with yours.
 
 ### Organizing files on disk
 
-```bash
-node dist/index.js organize                                    # dry run: prints the move plan
-node dist/index.js organize --apply
-node dist/index.js organize --template '{author}/{title} ({year})' --apply
-```
+Default layout is `Author/Series/01 - Title`. Placeholders: `{author}`, `{title}`, `{series}`,
+`{sequence}`, `{year}`. Empty segments collapse, so a standalone book renders `Author/Title` rather
+than leaving an empty series folder. Sequence numbers are zero-padded so book 2 sorts before book 10.
 
-Template placeholders: `{author}`, `{title}`, `{series}`, `{sequence}`, `{year}`. Empty segments
-collapse, so a standalone book renders `Author/Title` rather than leaving an empty series folder.
-Sequence numbers are zero-padded so book 2 sorts before book 10.
+This is the one command that needs local filesystem access. For each server, abs-butler translates
+the paths AudiobookShelf reports into local paths and probes them, then reports one of:
 
-This command **touches your files directly**, so:
+| State | Meaning |
+| --- | --- |
+| `read-write` | Files can be organized from here. |
+| `read-only` | The path exists but this process cannot write to it. |
+| `unreachable` | The path does not exist on this machine. |
+| `not-configured` | No library root set — this server is managed over the API only. |
 
-- It needs filesystem access to the library from the machine it runs on. Under Docker that means
-  setting `HOST_LIBRARY_PATH` and `LIBRARY_MOUNT_MODE=rw` — the mount is read-only by default.
-- If AudiobookShelf runs in Docker, set `LIBRARY_ROOT` (host path) and `ABS_PATH_PREFIX`
-  (in-container path) so reported paths can be translated. `libraries` prints the paths ABS reports.
-- It skips any move whose destination already exists, rather than merging.
-- It triggers a library rescan afterwards so AudiobookShelf picks up the new paths (`--no-scan` to
-  skip).
-
-Take a backup, and run without `--apply` first. Always.
+A run that would move files is refused up front when the capability check fails, rather than erroring
+partway through a batch of moves. Take a backup and run without applying first. Always.
 
 ## Development
 
 ```bash
-npm run typecheck
-npm test
+npm run typecheck    # server and web
+npm test             # 85 tests
 npm run build
+
+npm run dev:web      # Vite dev server on :5473, proxying /api to :8478
 ```
 
-Tests cover the rating heuristic, path templating, and text normalization — the pieces with real
-logic. There are no tests against a live server; the ABS client is a thin pass-through.
+Layout: `src/core/` holds the logic and task runners, `src/commands/` is thin CLI presentation,
+`src/db/` is the SQLite layer, `src/web/` is the HTTP API, and `web/` is the React UI. The CLI and
+the job runner call the same task functions, so a scheduled run and a typed one take exactly the same
+code path.
+
+## Documentation
+
+- [docs/docker.md](docs/docker.md) — running in Docker, networking, and paths
+- [docs/content-ratings.md](docs/content-ratings.md) — where rating data comes from, and its limits
 
 ## License
 

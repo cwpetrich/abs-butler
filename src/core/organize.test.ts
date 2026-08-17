@@ -76,28 +76,35 @@ function item(overrides: Partial<AbsLibraryItem> = {}): AbsLibraryItem {
   };
 }
 
+const localServer = { libraryRoot: '/audiobooks', pathPrefix: null };
+
 describe('planMove', () => {
   it('plans a move to the templated path', () => {
-    const plan = planMove(item(), library, DEFAULT_TEMPLATE, {});
+    const plan = planMove(item(), library, DEFAULT_TEMPLATE, localServer);
     expect(plan?.to).toBe('Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings');
-    expect(plan?.toAbsolute).toBe(
+    expect(plan?.toLocal).toBe(
       '/audiobooks/Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings',
     );
   });
 
   it('returns null when the item is already in place', () => {
     const inPlace = item({ relPath: 'Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings' });
-    expect(planMove(inPlace, library, DEFAULT_TEMPLATE, {})).toBeNull();
+    expect(planMove(inPlace, library, DEFAULT_TEMPLATE, localServer)).toBeNull();
   });
 
   it('translates container paths to host paths', () => {
     const plan = planMove(item(), library, DEFAULT_TEMPLATE, {
-      absPathPrefix: '/audiobooks',
+      pathPrefix: '/audiobooks',
       libraryRoot: '/mnt/media/books',
     });
-    expect(plan?.fromAbsolute).toBe('/mnt/media/books/misc/kings');
-    expect(plan?.toAbsolute).toBe(
+    expect(plan?.fromLocal).toBe('/mnt/media/books/misc/kings');
+    expect(plan?.toLocal).toBe(
       '/mnt/media/books/Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings',
     );
+  });
+
+  // An API-only server has no local path, so there is nothing to move.
+  it('returns null when no library root is configured', () => {
+    expect(planMove(item(), library, DEFAULT_TEMPLATE, { libraryRoot: null, pathPrefix: null })).toBeNull();
   });
 });

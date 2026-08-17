@@ -1,21 +1,29 @@
-import type { Config } from '../config.js';
 import { log } from '../logger.js';
 import { GoogleBooksProvider } from './googlebooks.js';
 import { OpenLibraryProvider } from './openlibrary.js';
 import type { MetadataProvider } from './types.js';
 
+export interface ProviderConfig {
+  googleBooksApiKey?: string | undefined;
+  providerConcurrency?: number;
+}
+
+let warnedAboutKey = false;
+
 /**
- * Build the active provider set.
+ * Build the active provider set, ordered by how much their answers are trusted.
  *
  * Goodreads is deliberately absent: its public API was retired in 2020 and its
  * terms forbid scraping. See docs/content-ratings.md for the sources that could
  * be added here (Hardcover, StoryGraph, Common Sense Media) and what each needs.
  */
-export function buildProviders(config: Config, only?: string[]): MetadataProvider[] {
-  if (!config.googleBooksApiKey) {
+export function buildProviders(config: ProviderConfig, only?: string[]): MetadataProvider[] {
+  if (!config.googleBooksApiKey && !warnedAboutKey) {
     // The keyless quota is shared across everyone on your IP and is routinely
-    // exhausted, so runs quietly fall back to Open Library alone.
-    log.warn('GOOGLE_BOOKS_API_KEY is not set — Google Books lookups will often be rate limited.');
+    // exhausted, so runs quietly fall back to Open Library alone. Warned once
+    // per process rather than once per run, to keep job logs readable.
+    warnedAboutKey = true;
+    log.warn('No Google Books API key configured — those lookups will often be rate limited.');
   }
 
   const all: MetadataProvider[] = [
@@ -35,6 +43,8 @@ export function buildProviders(config: Config, only?: string[]): MetadataProvide
   }
   return selected;
 }
+
+export const PROVIDER_NAMES = ['openlibrary', 'googlebooks'] as const;
 
 export { OpenLibraryProvider, GoogleBooksProvider };
 export type { MetadataProvider };
