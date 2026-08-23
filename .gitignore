@@ -25,3 +25,9 @@ reports/
 parts/
 prime/
 stage/
+
+# Snap Store credentials from `snapcraft export-login`. A bearer token for
+# publishing under your account — it belongs outside the repo entirely, but
+# ignore the obvious names in case one lands here by accident.
+snapcraft-credentials*
+*.snapcraft-login

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches the runtime the Docker image and the snap both bundle. Ubuntu
+      # 24.04 ships Node 18, and node:sqlite needs 22.5 or newer.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+      # Covers the server and the web project; both have their own tsconfig.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  snap:
+    name: Build snap
+    # Packing bundles a 120 MB Node runtime and takes minutes. On a private
+    # repo those minutes are metered, so this runs for releases and on demand
+    # rather than on every push — `check` already covers the code itself.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snapcore/action-build@v1
+        id: build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abs-butler-snap
+          path: ${{ steps.build.outputs.snap }}
+          if-no-files-found: error
