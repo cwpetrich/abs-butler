@@ -13,6 +13,15 @@ config.local.json
 .cache
 out
 reports
+
+# Snap packaging and its build output: irrelevant to the image, and parts/
+# carries a second copy of node_modules.
+snap
+parts
+prime
+stage
+*.snap
+
 docs
 README.md
 LICENSE

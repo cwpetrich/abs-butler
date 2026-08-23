@@ -18,3 +18,10 @@ reports/
 .DS_Store
 .idea/
 .vscode/
+
+# Snap build artifacts. snapcraft creates these beside the source; only
+# snap/ itself (snapcraft.yaml, hooks, wrappers, icon) is tracked.
+*.snap
+parts/
+prime/
+stage/

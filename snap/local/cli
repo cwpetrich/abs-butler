@@ -1,0 +1,5 @@
+#!/bin/sh
+# One-shot CLI against the same database the daemon uses.
+set -eu
+export BUTLER_DATA_DIR="${SNAP_COMMON}"
+exec "${SNAP}/bin/node" "${SNAP}/app/dist/index.js" "$@"

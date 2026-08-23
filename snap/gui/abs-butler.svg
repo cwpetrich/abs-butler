@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Books on a shelf. Kept to four large shapes so it stays legible at the
+       16px the icon is actually rendered at in a list of snaps. -->
+  <rect width="256" height="256" rx="52" fill="#14161a"/>
+
+  <g>
+    <!-- Upright spines, slightly varied in height the way a real shelf is. -->
+    <rect x="52"  y="62"  width="34" height="126" rx="7" fill="#6ea3dd"/>
+    <rect x="94"  y="48"  width="34" height="140" rx="7" fill="#f6f7f9"/>
+    <rect x="136" y="72"  width="34" height="116" rx="7" fill="#58c07a"/>
+    <!-- One leaning against the rest, which is what makes it read as books
+         rather than a bar chart. -->
+    <rect x="178" y="86"  width="32" height="104" rx="7" fill="#d9a441"
+          transform="rotate(11 194 138)"/>
+  </g>
+
+  <!-- The shelf itself. -->
+  <rect x="40" y="192" width="176" height="14" rx="7" fill="#3b6ea5"/>
+</svg>

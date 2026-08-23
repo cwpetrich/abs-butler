@@ -1,0 +1,24 @@
+#!/bin/sh
+# Entry point for the butler daemon. Translates snap configuration into the
+# environment variables abs-butler already understands, so the snap needs no
+# special handling inside the application itself.
+set -eu
+
+# SNAP_COMMON rather than SNAP_DATA: SNAP_DATA is revision-scoped and snapd
+# copies it on every refresh, and copying a live WAL SQLite database is exactly
+# how you end up with a torn one.
+export BUTLER_DATA_DIR="${SNAP_COMMON}"
+
+host="$(snapctl get host || true)"
+port="$(snapctl get port || true)"
+setup_code="$(snapctl get setup-code || true)"
+
+export BUTLER_HOST="${host:-0.0.0.0}"
+export BUTLER_PORT="${port:-13380}"
+# Assigned with an if rather than `[ -n ... ] && export`, which would return
+# non-zero when unset and take `set -e` down with it.
+if [ -n "${setup_code}" ]; then
+  export BUTLER_SETUP_CODE="${setup_code}"
+fi
+
+exec "${SNAP}/bin/node" "${SNAP}/app/dist/index.js" serve
