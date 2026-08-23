@@ -44,6 +44,9 @@ export class Router {
   post(pattern: string, handler: Handler, options?: { isPublic?: boolean }) {
     return this.add('POST', pattern, handler, options);
   }
+  put(pattern: string, handler: Handler, options?: { isPublic?: boolean }) {
+    return this.add('PUT', pattern, handler, options);
+  }
   patch(pattern: string, handler: Handler, options?: { isPublic?: boolean }) {
     return this.add('PATCH', pattern, handler, options);
   }

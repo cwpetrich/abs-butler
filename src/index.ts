@@ -8,18 +8,17 @@ import { runMetadata, METADATA_FIELDS } from './commands/metadata.js';
 import { runOrganize } from './commands/organize.js';
 import { runRate } from './commands/rate.js';
 import {
-  runServerAdd,
-  runServerList,
-  runServerRemove,
-  runServerTest,
-  runServerUpdate,
-} from './commands/servers.js';
+  runConfigure,
+  runConnect,
+  runDisconnect,
+  runStatus,
+} from './commands/connection.js';
 import { AUDIT_CODES } from './core/audit.js';
 import { DEFAULT_TEMPLATE } from './core/organize.js';
 import { loadWebConfig } from './config.js';
 import { openStore } from './context.js';
 import { closeDb, databasePath } from './db/index.js';
-import { listServers } from './db/servers.js';
+import { getConnection } from './db/connection.js';
 import { log, setLogLevel } from './logger.js';
 import { printTable } from './util/table.js';
 import { startWebServer } from './web/server.js';
@@ -28,9 +27,8 @@ const program = new Command();
 
 program
   .name('abs-butler')
-  .description('Manage and maintain one or many AudiobookShelf servers.')
-  .version('0.2.0')
-  .option('-s, --server <idOrName>', 'which configured server to act on')
+  .description('Keep one AudiobookShelf library clean, enriched, and organized.')
+  .version('0.3.0')
   .option('-l, --library <idOrName>', 'limit to one library (defaults to all book libraries)')
   .option('-v, --verbose', 'print debug logging')
   .option('-q, --quiet', 'only print errors')
@@ -43,51 +41,40 @@ program
 const globals = () => program.opts();
 
 // ---------------------------------------------------------------------------
-// Server management
+// Connection
 // ---------------------------------------------------------------------------
 
-const servers = program.command('server').description('Add and manage AudiobookShelf servers');
-
-servers
-  .command('add')
-  .description('Register a server by URL and API key')
-  .requiredOption('--name <name>', 'a short name you will use to refer to it')
+program
+  .command('connect')
+  .description('Point abs-butler at your AudiobookShelf server')
   .requiredOption('--url <url>', 'base URL, e.g. http://localhost:13378')
   .requiredOption('--api-key <key>', 'API token from Settings → Users → your user')
-  .option('--library-root <path>', 'where this machine sees the media (omit for API-only management)')
+  .option('--library-root <path>', 'where this machine sees the media (needed for organize)')
   .option('--path-prefix <path>', 'the path AudiobookShelf itself reports, if it differs')
   .option('--no-verify', 'skip the connectivity check before saving')
   .option('--json', 'emit JSON')
-  .action(async (opts) => runServerAdd({ ...opts, noVerify: opts.verify === false }));
+  .action(async (opts) => runConnect({ ...opts, noVerify: opts.verify === false }));
 
-servers
-  .command('list')
-  .description('List configured servers')
-  .option('--json', 'emit JSON')
-  .action(async (opts) => runServerList(opts));
-
-servers
-  .command('update <idOrName>')
-  .description('Change a server’s settings')
-  .option('--name <name>')
+program
+  .command('configure')
+  .description('Change the connection, or whether organize may move files')
   .option('--url <url>')
   .option('--api-key <key>')
   .option('--library-root <path>')
   .option('--path-prefix <path>')
-  .option('--enable')
-  .option('--disable')
-  .action(async (idOrName, opts) => runServerUpdate(idOrName, opts));
+  .option('--file-changes <on|off>', 'allow or refuse organize --apply on this install')
+  .action(async (opts) => runConfigure(opts));
 
-servers
-  .command('remove <idOrName>')
-  .description('Remove a server and its run history')
-  .action(async (idOrName) => runServerRemove(idOrName));
-
-servers
-  .command('test [idOrName]')
+program
+  .command('status')
   .description('Check connectivity and whether files are manageable from this machine')
   .option('--json', 'emit JSON')
-  .action(async (idOrName, opts) => runServerTest(idOrName, opts));
+  .action(async (opts) => runStatus(opts));
+
+program
+  .command('disconnect')
+  .description('Forget the AudiobookShelf connection')
+  .action(async () => runDisconnect());
 
 // ---------------------------------------------------------------------------
 // Library maintenance
@@ -97,9 +84,9 @@ program
   .command('libraries')
   .description('List the libraries on a server')
   .action(async () => {
-    const { openServerContext } = await import('./context.js');
+    const { openContext } = await import('./context.js');
     const db = openStore();
-    const ctx = openServerContext(db, globals().server);
+    const ctx = openContext(db);
     const libraries = await ctx.client.listLibraries();
     printTable(libraries, [
       { header: 'NAME', value: (l) => l.name },
@@ -158,7 +145,7 @@ program
 program
   .command('serve')
   .description('Run the web UI and background job scheduler')
-  .option('--port <n>', 'port to listen on (default 8478, or BUTLER_PORT)', Number)
+  .option('--port <n>', 'port to listen on (default 13380, or BUTLER_PORT)', Number)
   .option('--host <host>', 'address to bind (default 0.0.0.0, or BUTLER_HOST)')
   .action(async (opts) => {
     const db = openStore();
@@ -167,12 +154,9 @@ program
     if (opts.host) config.host = opts.host;
 
     log.info(`database: ${databasePath()}`);
-    const configured = listServers(db);
-    if (configured.length === 0) {
-      log.warn('No servers configured yet — add one from the web UI once it starts.');
-    } else {
-      log.info(`managing ${configured.length} server(s): ${configured.map((s) => s.name).join(', ')}`);
-    }
+    const connection = getConnection(db);
+    if (connection) log.info(`managing ${connection.url}`);
+    else log.warn('Not connected to AudiobookShelf yet — set it up in the web UI once it starts.');
 
     const web = await startWebServer(db, config);
 
@@ -197,9 +181,18 @@ async function main(): Promise<void> {
   } catch (err) {
     if (err instanceof AbsApiError && (err.status === 401 || err.status === 403)) {
       log.error(err.message);
-      log.error('Check the API key for this server: abs-butler server test');
+      log.error('Check the API key: abs-butler status');
     } else {
-      log.error((err as Error).message);
+      const message = (err as Error).message;
+      log.error(message);
+      // SQLite's own wording is accurate and unactionable; say who owns the
+      // database and what to do about it.
+      if (/readonly database|unable to open database/i.test(message)) {
+        const { explainReadonlyDatabase } = await import('./core/deployment.js');
+        const { resolveDataDir } = await import('./db/index.js');
+        const hint = explainReadonlyDatabase(resolveDataDir());
+        if (hint) log.error(hint);
+      }
       if (process.env.DEBUG) log.error((err as Error).stack);
     }
     process.exitCode = 1;

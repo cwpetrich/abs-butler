@@ -1,4 +1,4 @@
-import type { ServerContext } from '../context.js';
+import type { TaskContext } from '../context.js';
 import type { RunCommand } from '../db/runs.js';
 import { runAuditTask, type AuditTaskResult } from './audit.js';
 import { runMetadataTask, type MetadataTaskResult } from './metadata.js';
@@ -28,7 +28,7 @@ export function isRunCommand(value: string): value is RunCommand {
  * run and a typed one execute exactly the same code path.
  */
 export async function runTask(
-  ctx: ServerContext,
+  ctx: TaskContext,
   command: RunCommand,
   options: Record<string, unknown> = {},
 ): Promise<TaskResult> {

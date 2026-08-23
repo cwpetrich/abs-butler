@@ -1,7 +1,7 @@
 {
   "name": "abs-butler",
-  "version": "0.2.0",
-  "description": "A butler for your AudiobookShelf servers: manage many servers from one place, audit libraries, repair metadata, organize files, and tag books with age-appropriateness ratings.",
+  "version": "0.3.0",
+  "description": "A butler for your AudiobookShelf server: audit the library, repair metadata, organize files, and tag books with age-appropriateness ratings.",
   "type": "module",
   "license": "MIT",
   "engines": {

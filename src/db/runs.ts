@@ -6,8 +6,6 @@ export type RunTrigger = 'manual' | 'schedule' | 'cli';
 
 export interface RunRecord {
   id: number;
-  serverId: number | null;
-  serverName?: string;
   command: RunCommand;
   options: Record<string, unknown>;
   status: RunStatus;
@@ -22,8 +20,6 @@ export interface RunRecord {
 
 interface RunRow {
   id: number;
-  server_id: number | null;
-  server_name?: string | null;
   command: string;
   options: string;
   status: string;
@@ -48,8 +44,6 @@ function parseJson<T>(value: string | null, fallback: T): T {
 function toRecord(row: RunRow): RunRecord {
   return {
     id: row.id,
-    serverId: row.server_id,
-    serverName: row.server_name ?? undefined,
     command: row.command as RunCommand,
     options: parseJson<Record<string, unknown>>(row.options, {}),
     status: row.status as RunStatus,
@@ -63,15 +57,9 @@ function toRecord(row: RunRow): RunRecord {
   };
 }
 
-const SELECT_WITH_SERVER = `
-  SELECT runs.*, servers.name AS server_name
-  FROM runs LEFT JOIN servers ON servers.id = runs.server_id
-`;
-
 export function createRun(
   db: Db,
   input: {
-    serverId: number | null;
     command: RunCommand;
     options?: Record<string, unknown>;
     dryRun: boolean;
@@ -80,11 +68,10 @@ export function createRun(
 ): RunRecord {
   const result = db
     .prepare(
-      `INSERT INTO runs (server_id, command, options, status, dry_run, trigger, queued_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?)`,
+      `INSERT INTO runs (command, options, status, dry_run, trigger, queued_at)
+       VALUES (?, ?, 'queued', ?, ?, ?)`,
     )
     .run(
-      input.serverId,
       input.command,
       JSON.stringify(input.options ?? {}),
       input.dryRun ? 1 : 0,
@@ -95,7 +82,7 @@ export function createRun(
 }
 
 export function getRun(db: Db, id: number): RunRecord | null {
-  const row = db.prepare(`${SELECT_WITH_SERVER} WHERE runs.id = ?`).get(id) as unknown as
+  const row = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as unknown as
     | RunRow
     | undefined;
   return row ? toRecord(row) : null;
@@ -120,7 +107,6 @@ export function completeRun(
 }
 
 export interface RunQuery {
-  serverId?: number;
   command?: RunCommand;
   status?: RunStatus;
   limit?: number;
@@ -131,10 +117,6 @@ export function listRuns(db: Db, query: RunQuery = {}): { runs: RunRecord[]; tot
   const where: string[] = [];
   const params: Array<string | number> = [];
 
-  if (query.serverId !== undefined) {
-    where.push('runs.server_id = ?');
-    params.push(query.serverId);
-  }
   if (query.command) {
     where.push('runs.command = ?');
     params.push(query.command);
@@ -151,7 +133,7 @@ export function listRuns(db: Db, query: RunQuery = {}): { runs: RunRecord[]; tot
 
   const limit = Math.min(query.limit ?? 50, 200);
   const rows = db
-    .prepare(`${SELECT_WITH_SERVER} ${clause} ORDER BY runs.queued_at DESC, runs.id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT * FROM runs ${clause} ORDER BY runs.queued_at DESC, runs.id DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, query.offset ?? 0) as unknown as RunRow[];
 
   return { runs: rows.map(toRecord), total };

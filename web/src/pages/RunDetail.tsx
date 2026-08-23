@@ -39,7 +39,7 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
       <div className="card">
         <div className="summary-grid">
           <Stat label="Status" value={<StatusBadge status={data.status} />} />
-          <Stat label="Server" value={data.serverName ?? '—'} />
+          <Stat label="Trigger" value={data.trigger} />
           <Stat label="Mode" value={data.dryRun ? 'dry run' : 'applied'} />
           <Stat label="Trigger" value={data.trigger} />
           <Stat label="Started" value={formatTime(data.startedAt ?? data.queuedAt)} />

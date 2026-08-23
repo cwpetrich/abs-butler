@@ -1,14 +1,14 @@
 # abs-butler runs as a web service, with the same CLI available for one-off work:
 #
-#   docker compose up -d butler                      # web UI on :8478
-#   docker compose run --rm butler server list       # one-shot CLI
+#   docker compose up -d butler                  # web UI on :13380
+#   docker compose run --rm cli status           # one-shot CLI
 #
-# Settings come from .env (see .env.example). The ones that matter here:
+# There is nothing you must configure before the first launch. Start it, open
+# http://localhost:13380, and set a password — abs-butler generates its own
+# encryption key and stores everything else in its database.
 #
-#   BUTLER_PASSWORD    required to log in to the UI — set it
-#   BUTLER_SECRET      encrypts stored AudiobookShelf API keys — set it
-#   HOST_LIBRARY_PATH  where your audiobooks live on THIS machine (only for `organize`)
-#   PUID / PGID        the user that owns them, so `organize` writes as you
+# The one setting worth knowing about is HOST_LIBRARY_PATH: point it at the
+# same directory AudiobookShelf uses, and `organize` becomes available.
 
 x-butler: &butler
   build:
@@ -18,24 +18,24 @@ x-butler: &butler
     - path: .env
       required: false
   environment:
-    # The database always lives at /data inside the container; persist it with
-    # the butler-data volume below.
+    # The database and encryption key always live at /data inside the
+    # container; persist them with the butler-data volume below.
     BUTLER_DATA_DIR: /data
-    # Inside the container the library is always at /library, whatever the host
-    # path is. This deliberately overrides any LIBRARY_ROOT set in .env, which
-    # describes the host and would be meaningless in here.
-    LIBRARY_ROOT: /library
   volumes:
     - butler-data:/data
-    # Read-only by default, so nothing can touch your files by accident.
-    # `organize --apply` needs LIBRARY_MOUNT_MODE=rw — see docs/docker.md.
-    - ${HOST_LIBRARY_PATH:-./library}:/library:${LIBRARY_MOUNT_MODE:-ro}
+    # Mounted read-write, but abs-butler will not move a file until "Allow file
+    # changes" is turned on in Settings — a switch you can flip without
+    # recreating the container, unlike this mount flag.
+    #
+    # Enter /audiobooks as the library root in the UI: that is where this
+    # container sees the media, whatever the host path is.
+    - ${HOST_LIBRARY_PATH:-./audiobooks}:/audiobooks:rw
   # Files created by `organize` inherit this ownership. Default matches the
   # image's built-in `node` user.
   user: "${PUID:-1000}:${PGID:-1000}"
   extra_hosts:
-    # Lets ABS_URL=http://host.docker.internal:13378 reach an AudiobookShelf
-    # running directly on this host rather than in the compose network.
+    # Lets you use http://host.docker.internal:13378 as the server URL when
+    # AudiobookShelf runs directly on this host rather than in a container.
     - "host.docker.internal:host-gateway"
 
 services:
@@ -44,12 +44,12 @@ services:
     <<: *butler
     container_name: abs-butler
     ports:
-      - "${BUTLER_PORT:-8478}:8478"
+      - "${BUTLER_PORT:-13380}:13380"
     restart: unless-stopped
 
   # One-shot CLI against the same database. Everything after the service name
   # is passed straight to abs-butler:
-  #   docker compose run --rm cli server add --name home --url ... --api-key ...
+  #   docker compose run --rm cli connect --url ... --api-key ...
   #   docker compose run --rm cli audit --details
   cli:
     <<: *butler

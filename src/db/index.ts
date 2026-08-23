@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -24,11 +25,19 @@ function sqliteModule(): SqliteModule {
 
 let instance: Db | undefined;
 
-/** Where the database lives. BUTLER_DATA_DIR wins; otherwise ./data, then ~/.local/share. */
+/**
+ * Where the database and encryption key live.
+ *
+ * Deliberately not relative to the working directory: running `abs-butler` from
+ * your home directory and later from a checkout would otherwise open two
+ * different databases, the second silently empty and looking like lost config.
+ * Docker sets BUTLER_DATA_DIR=/data and never reaches the fallbacks.
+ */
 export function resolveDataDir(): string {
   if (process.env.BUTLER_DATA_DIR) return resolve(process.env.BUTLER_DATA_DIR);
   if (process.env.BUTLER_HOME) return resolve(process.env.BUTLER_HOME, 'data');
-  return resolve(process.cwd(), 'data');
+  if (process.env.XDG_DATA_HOME) return resolve(process.env.XDG_DATA_HOME, 'abs-butler');
+  return resolve(homedir(), '.local', 'share', 'abs-butler');
 }
 
 export function databasePath(): string {

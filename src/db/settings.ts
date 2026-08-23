@@ -17,8 +17,20 @@ export const SettingsSchema = z.object({
   historyLimit: z.number().int().min(10).max(10_000).default(500),
   /** Days of log retention. */
   logRetentionDays: z.number().int().min(1).max(365).default(30),
-  /** Refuse to start a job that would write, unless explicitly confirmed. */
-  requireDryRunFirst: z.boolean().default(false),
+  /**
+   * Master switch for anything that touches the filesystem.
+   *
+   * `organize --apply` is refused while this is off, whether it comes from the
+   * UI, the CLI, or a schedule. It replaces the read-only bind mount that used
+   * to serve this purpose under Docker: the mount flag was fixed at container
+   * creation and kernel-enforced, so turning it off meant editing .env and
+   * recreating the container — and a guard that costs a restart is one people
+   * set to rw permanently. It also had no equivalent under snap or a native
+   * install, where nothing set the flag at all.
+   *
+   * Off by default, so a fresh install cannot move a file until someone says so.
+   */
+  allowFileChanges: z.boolean().default(false),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

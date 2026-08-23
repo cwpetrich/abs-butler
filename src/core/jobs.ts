@@ -15,14 +15,13 @@ import {
 import { dueSchedules, markScheduleRun } from '../db/schedules.js';
 import { getSettings } from '../db/settings.js';
 import { pruneSessions } from '../db/sessions.js';
-import { openServerContext } from '../context.js';
+import { openContext } from '../context.js';
 import { log, withLogSink } from '../logger.js';
 import { runTask, summarizeResult, FILE_COMMANDS } from './tasks.js';
 import { unavailableMessage } from './organize.js';
 import { checkLocalRoot } from './capability.js';
 
 export interface EnqueueInput {
-  serverId: number;
   command: RunCommand;
   options?: Record<string, unknown>;
   trigger?: RunTrigger;
@@ -64,7 +63,6 @@ export class JobRunner extends EventEmitter {
   enqueue(input: EnqueueInput): RunRecord {
     const options = input.options ?? {};
     const run = createRun(this.db, {
-      serverId: input.serverId,
       command: input.command,
       options,
       dryRun: !options.apply,
@@ -123,16 +121,14 @@ export class JobRunner extends EventEmitter {
     const flushTimer = setInterval(flush, 500);
 
     try {
-      const ctx = openServerContext(this.db, String(run.serverId));
+      const ctx = openContext(this.db);
 
       // Re-checked here as well as at enqueue: a mount can disappear between
       // queueing a job and running it, and a half-finished reorganization is
       // far worse than one that never started.
       if (FILE_COMMANDS.has(run.command)) {
-        const local = checkLocalRoot(ctx.server);
-        if (!local.canManageFiles) {
-          throw new Error(unavailableMessage(ctx.server.name, local.reason));
-        }
+        const local = checkLocalRoot(ctx.connection);
+        if (!local.canManageFiles) throw new Error(unavailableMessage(local.reason));
       }
 
       const result = await withLogSink(
@@ -187,9 +183,8 @@ export class JobRunner extends EventEmitter {
       for (const schedule of dueSchedules(this.db)) {
         // Re-anchor before enqueueing, so a long run cannot stack up duplicates.
         markScheduleRun(this.db, schedule.id, schedule.intervalMinutes);
-        log.info(`schedule ${schedule.id}: queueing ${schedule.command} on ${schedule.serverName}`);
+        log.info(`schedule ${schedule.id}: queueing ${schedule.command}`);
         this.enqueue({
-          serverId: schedule.serverId,
           command: schedule.command,
           options: schedule.options,
           trigger: 'schedule',

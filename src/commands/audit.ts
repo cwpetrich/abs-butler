@@ -1,5 +1,5 @@
 import { ISSUES, runAuditTask, type IssueCode } from '../core/audit.js';
-import { openServerContext, openStore, type GlobalOptions } from '../context.js';
+import { openContext, openStore, type GlobalOptions } from '../context.js';
 import { color, log } from '../logger.js';
 import { printJson, printTable } from '../util/table.js';
 import { truncate } from '../util/text.js';
@@ -13,11 +13,11 @@ export interface AuditOptions extends GlobalOptions {
 
 export async function runAudit(options: AuditOptions): Promise<void> {
   const db = openStore();
-  const ctx = openServerContext(db, options.server);
+  const ctx = openContext(db);
   const result = await runAuditTask(ctx, options);
 
   if (options.json) {
-    printJson({ server: ctx.server.name, ...result });
+    printJson({ server: ctx.connection.url, ...result });
     return;
   }
 

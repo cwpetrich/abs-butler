@@ -1,5 +1,5 @@
 import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
-import { collectItems, itemAuthor, itemTitle, resolveLibraries, type ServerContext } from '../context.js';
+import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
 import { buildProviders } from '../providers/index.js';
@@ -130,7 +130,7 @@ export interface MetadataTaskResult {
 }
 
 export async function runMetadataTask(
-  ctx: ServerContext,
+  ctx: TaskContext,
   options: MetadataTaskOptions = {},
 ): Promise<MetadataTaskResult> {
   const requested = (options.fields ?? [...FILLABLE]) as Fillable[];

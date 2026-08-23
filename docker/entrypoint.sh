@@ -39,8 +39,8 @@ if [ -z "${BUTLER_SCHEDULE:-}" ]; then
 fi
 
 # A schedule needs a subcommand to repeat. Checking for "no arguments" is not
-# enough: the image's default CMD is --help, so an operator who sets a schedule
-# but forgets the command would otherwise loop printing usage forever.
+# enough: the compose `cli` service defaults to --help, so an operator who sets
+# a schedule but forgets the command would otherwise loop printing usage forever.
 case "${1:-}" in
   '' | -*)
     echo "abs-butler: BUTLER_SCHEDULE is set but no subcommand was given (try: audit)" >&2

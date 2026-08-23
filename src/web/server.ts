@@ -19,8 +19,8 @@ export function startWebServer(db: Db, config: WebConfig): Promise<WebServer> {
   runner.recover();
 
   const exposed = config.host !== '127.0.0.1' && config.host !== 'localhost';
-  const auth = new Auth(db, { password: config.password, exposed });
-  auth.warnIfInsecure();
+  const auth = new Auth(db, { exposed });
+  auth.announce();
 
   const router = buildApiRouter({
     db,

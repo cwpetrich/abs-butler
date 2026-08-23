@@ -1,29 +1,44 @@
 /** Typed client for the abs-butler API. All calls are same-origin. */
 
-export interface ServerKeyStatus {
-  encrypted: boolean;
-  masked: string;
-}
+export type FileAccess = 'read-write' | 'read-only' | 'unreachable' | 'not-configured';
 
 export interface LocalRootStatus {
-  /** False means file organization is unavailable for this server, full stop. */
+  /** False means file organization is unavailable, full stop. */
   canManageFiles: boolean;
-  access: 'read-write' | 'read-only' | 'unreachable' | 'not-configured';
+  access: FileAccess;
   reason: string;
   path: string | null;
 }
 
-export interface Server {
-  id: number;
-  name: string;
+export interface Connection {
   url: string;
   libraryRoot: string | null;
   pathPrefix: string | null;
-  enabled: boolean;
   createdAt: number;
   updatedAt: number;
-  key: ServerKeyStatus;
+  key: { encrypted: boolean };
   files: LocalRootStatus;
+}
+
+export interface SetupState {
+  required: boolean;
+  open: boolean;
+  expiresAt: number | null;
+  codeRequired: boolean;
+  claimed: boolean;
+  mine: boolean;
+}
+
+export interface AuthStatus {
+  configured: boolean;
+  authenticated: boolean;
+  setup: SetupState;
+}
+
+export interface SecurityStatus {
+  keySource: 'env' | 'file';
+  keyPath: string | null;
+  apiKeyEncrypted: boolean;
 }
 
 export type RunCommand = 'audit' | 'rate' | 'metadata' | 'organize';
@@ -31,8 +46,6 @@ export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled
 
 export interface Run {
   id: number;
-  serverId: number | null;
-  serverName?: string;
   command: RunCommand;
   options: Record<string, unknown>;
   status: RunStatus;
@@ -55,8 +68,6 @@ export interface LogEntry {
 
 export interface Schedule {
   id: number;
-  serverId: number;
-  serverName?: string;
   command: RunCommand;
   options: Record<string, unknown>;
   intervalMinutes: number;
@@ -70,7 +81,7 @@ export interface LibraryCapability {
   libraryName: string;
   absPath: string;
   localPath: string | null;
-  access: 'read-write' | 'read-only' | 'unreachable' | 'not-configured';
+  access: FileAccess;
   reason?: string;
 }
 
@@ -91,7 +102,7 @@ export interface Settings {
   minConfidence: number;
   historyLimit: number;
   logRetentionDays: number;
-  requireDryRunFirst: boolean;
+  allowFileChanges: boolean;
   googleBooksApiKeySet: boolean;
 }
 
@@ -141,23 +152,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 const body = (value: unknown) => JSON.stringify(value);
 
 export const api = {
-  authStatus: () =>
-    request<{ authRequired: boolean; authenticated: boolean; encryptionEnabled: boolean }>(
-      '/api/auth/status',
-    ),
+  authStatus: () => request<AuthStatus>('/api/auth/status'),
+  claimSetup: () => request<{ ok: true }>('/api/auth/setup/claim', { method: 'POST' }),
+  completeSetup: (password: string, code?: string) =>
+    request<{ ok: true }>('/api/auth/setup', { method: 'POST', body: body({ password, code }) }),
   login: (password: string) =>
     request<{ ok: true }>('/api/auth/login', { method: 'POST', body: body({ password }) }),
   logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
+  changePassword: (current: string, next: string) =>
+    request<{ ok: true }>('/api/auth/password', { method: 'POST', body: body({ current, next }) }),
 
   meta: () => request<Meta>('/api/meta'),
 
-  servers: () => request<Server[]>('/api/servers'),
-  createServer: (input: Record<string, unknown>) =>
-    request<Server>('/api/servers', { method: 'POST', body: body(input) }),
-  updateServer: (id: number, patch: Record<string, unknown>) =>
-    request<Server>(`/api/servers/${id}`, { method: 'PATCH', body: body(patch) }),
-  deleteServer: (id: number) => request<{ ok: true }>(`/api/servers/${id}`, { method: 'DELETE' }),
-  capability: (id: number) => request<CapabilityReport>(`/api/servers/${id}/capability`),
+  connection: () => request<{ connection: Connection | null }>('/api/connection'),
+  saveConnection: (input: Record<string, unknown>) =>
+    request<{ connection: Connection }>('/api/connection', { method: 'PUT', body: body(input) }),
+  updateConnection: (patch: Record<string, unknown>) =>
+    request<{ connection: Connection }>('/api/connection', { method: 'PATCH', body: body(patch) }),
+  disconnect: () => request<{ ok: true }>('/api/connection', { method: 'DELETE' }),
+  capability: () => request<CapabilityReport>('/api/connection/capability'),
 
   runs: (params: Record<string, string | number | undefined> = {}) => {
     const query = new URLSearchParams();
@@ -169,7 +182,7 @@ export const api = {
     );
   },
   run: (id: number) => request<Run>(`/api/runs/${id}`),
-  startRun: (input: { serverId: number; command: RunCommand; options: Record<string, unknown> }) =>
+  startRun: (input: { command: RunCommand; options: Record<string, unknown> }) =>
     request<Run>('/api/runs', { method: 'POST', body: body(input) }),
   cancelRun: (id: number) => request<{ ok: true }>(`/api/runs/${id}/cancel`, { method: 'POST' }),
 
@@ -189,8 +202,9 @@ export const api = {
   deleteSchedule: (id: number) =>
     request<{ ok: true }>(`/api/schedules/${id}`, { method: 'DELETE' }),
 
-  settings: () =>
-    request<{ settings: Settings; encryptionEnabled: boolean; authRequired: boolean }>('/api/settings'),
+  settings: () => request<{ settings: Settings; security: SecurityStatus }>('/api/settings'),
   updateSettings: (patch: Record<string, unknown>) =>
     request<{ settings: Settings }>('/api/settings', { method: 'PATCH', body: body(patch) }),
+  rotateKey: () =>
+    request<{ ok: true; security: SecurityStatus }>('/api/settings/rotate-key', { method: 'POST' }),
 };

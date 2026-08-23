@@ -6,52 +6,60 @@ same database.
 ## Quick start
 
 ```bash
-cp .env.example .env      # set BUTLER_PASSWORD and BUTLER_SECRET
 docker compose up -d butler
 docker compose logs -f butler
 ```
 
-The UI is on <http://localhost:8478>. Add servers there — nothing about them belongs in `.env`.
+Open <http://localhost:13380>, set a password, and add your server's URL and API token. Nothing needs
+to be configured before that first launch — no password file, no secret to generate. `.env` is
+optional and mostly exists to tell abs-butler where your audiobooks are.
 
-Set both secrets before first launch:
+### The setup window
+
+Until a password exists, abs-butler has nothing to authenticate against, so the setup screen has to
+be reachable by an anonymous visitor. Rather than leaving that open indefinitely it is bounded:
+setup accepts a password for **15 minutes after startup**, and the first browser to open the page
+claims it.
+
+Miss the window and the page tells you to restart:
 
 ```bash
-# .env
-BUTLER_PASSWORD=something-long
-BUTLER_SECRET=$(openssl rand -base64 32)
+docker compose restart butler
 ```
 
-Without `BUTLER_PASSWORD` the UI is unauthenticated and anyone who reaches the port can manage your
-servers. Without `BUTLER_SECRET` the AudiobookShelf API keys are stored in plaintext. Both conditions
-are logged loudly at startup and shown as banners in the UI — abs-butler will run, but it will not
-pretend the setup is safe.
+That reopens it for another 15 minutes. If you would rather not restart, the startup log carries a
+setup code that works after the window has closed:
+
+```bash
+docker compose logs butler | grep 'setup code'
+```
+
+For an instance reachable from outside your network, set `BUTLER_SETUP_CODE` in `.env` and the code
+is required always, window or not.
 
 ## The CLI against the same database
 
 ```bash
-docker compose run --rm cli server list
+docker compose run --rm cli status
 docker compose run --rm cli audit --details
 docker compose run --rm cli rate --max-age 12
 ```
 
-The `cli` service shares the `butler-data` volume, so it sees the same servers, settings, and
+The `cli` service shares the `butler-data` volume, so it sees the same connection, settings, and
 history. Anything after the service name is passed straight through.
 
 Without compose:
 
 ```bash
 docker build -t abs-butler .
-docker run -d --name abs-butler -p 8478:8478 \
-  -e BUTLER_PASSWORD=... -e BUTLER_SECRET=... \
-  -v abs-butler-data:/data abs-butler
+docker run -d --name abs-butler -p 13380:13380 -v abs-butler-data:/data abs-butler
 ```
 
 ## Persistence
 
-The SQLite database lives at `/data/abs-butler.db`, backed by the `butler-data` named volume. **It
-holds your servers, API keys, run history, and settings — losing it means re-adding everything.**
-
-To back it up:
+`/data` holds the SQLite database **and** the encryption key (`secret.key`), backed by the
+`butler-data` named volume. **Losing it means re-adding everything**, and a copy of it is a copy of
+your credentials — treat a backup accordingly.
 
 ```bash
 docker compose stop butler
@@ -63,17 +71,21 @@ docker compose start butler
 Stopping first matters: SQLite in WAL mode has a sidecar file, and copying a live database can
 capture a torn state.
 
-## Reaching your AudiobookShelf servers
+If you want the database and its key separated — so a leaked backup is not a leaked token — back up
+`abs-butler.db` on its own and keep `secret.key` somewhere else. Restoring one without the other
+leaves the stored token unreadable, and abs-butler will say so plainly rather than failing
+mysteriously; you would re-enter the API token.
+
+## Reaching AudiobookShelf
 
 `localhost` inside the container means *the container*, so `http://localhost:13378` will not work as
 a server URL. Pick whichever matches your setup:
 
 | Where AudiobookShelf runs | Server URL to enter in the UI |
 | --- | --- |
+| In Docker, same compose project | `http://audiobookshelf:80` — the service name |
 | Directly on this host | `http://host.docker.internal:13378` (the compose file already adds the `host-gateway` mapping) |
 | On this host, simplest fallback | `http://192.168.x.x:13378` — your machine's LAN IP |
-| In Docker, same compose project | `http://audiobookshelf:80` — the service name |
-| On another machine entirely | Its LAN address. This is fully supported — only `organize` needs local files. |
 | In Docker, a different project | Join its network, then use the service name (below) |
 
 To reach a container in another compose project:
@@ -91,48 +103,71 @@ networks:
 ## Paths, for `organize`
 
 Only `organize` touches the filesystem. `audit`, `rate`, and `metadata` work purely over the API and
-need no mount at all — a server on another machine is fully manageable for those.
+need no mount at all.
 
-`organize` is **disabled outright** for any server whose media is not mounted into this container.
-abs-butler has no remote file transport, so rather than offering an action it cannot complete, the
-command is greyed out in the UI with the reason and refused by the API. Mounting the media over
-NFS/SMB into the container works just as well as being on the same host — the check is simply
-whether the library root is a writable local path.
-
-There are up to three different names for the same directory, which is where this usually goes wrong:
-
-| Setting | Whose view | Example |
-| --- | --- | --- |
-| `HOST_LIBRARY_PATH` | This machine | `/mnt/media/audiobooks` |
-| Library root (in the UI) | Inside the butler container | always `/library` — compose sets this |
-| Path prefix (in the UI) | Inside the **AudiobookShelf** container | `/audiobooks` |
-
-The path prefix is what AudiobookShelf itself reports for the library. The Servers page shows it: hit
-**Test** and the table lists each folder's path on the server, the path it maps to here, and whether
-that path is reachable and writable. If AudiobookShelf is not containerized, its paths already match
-the host and you can leave the prefix blank.
-
-The library is mounted **read-only by default**. To actually move files:
+Point `HOST_LIBRARY_PATH` at the same directory AudiobookShelf uses:
 
 ```bash
 # .env
-LIBRARY_MOUNT_MODE=rw
+HOST_LIBRARY_PATH=/mnt/external1/Audiobooks
 ```
 
-Then restart, run `organize` as a dry run, read the plan, and only then apply it. Set the mode back
-to `ro` afterwards.
+Compose mounts that at `/audiobooks` inside the butler container, so **enter `/audiobooks` as the
+library root in the UI**.
+
+There are up to three names for the same directory, which is where this usually goes wrong:
+
+| Name | Whose view | Example |
+| --- | --- | --- |
+| `HOST_LIBRARY_PATH` | This machine | `/mnt/external1/Audiobooks` |
+| Library root (in the UI) | Inside the butler container | `/audiobooks` — compose mounts it there |
+| Path prefix (in the UI) | Inside the **AudiobookShelf** container | whatever ABS maps it to |
+
+The path prefix is what AudiobookShelf itself reports for the library, and it is only needed when
+that differs from the library root. If ABS maps the same directory to `/audiobooks` too, the two
+agree and you can leave the prefix blank. If it maps it to `/library`, set the prefix to `/library`.
+
+**Connection → Test** settles it: the table lists each folder's path on the server, the path it maps
+to here, and whether that path is reachable and writable.
+
+The library is mounted read-write, but that on its own does not let abs-butler move anything.
+**Applying an `organize` plan is refused until "Allow file changes" is turned on** under Settings →
+File changes, and it starts off.
+
+This used to be a `LIBRARY_MOUNT_MODE` flag here instead. The mount flag was strictly stronger — the
+kernel enforced it, so it held even against a bug in abs-butler — but changing it meant editing
+`.env` and recreating the container, which in practice means people set it to `rw` once and leave it
+there forever. A guard you have to dismantle to use is not a guard. The UI switch costs one click,
+so it is realistic to actually turn back off, and it works identically under Docker, snap, and a
+native install.
+
+Run `organize` as a dry run, read the plan, then enable the switch and apply.
 
 ## File ownership
 
-Files created by `organize` are owned by whoever the container runs as. Set `PUID`/`PGID` in `.env`
-to the user that owns your library, or you will end up with folders you cannot write to:
+Set `PUID`/`PGID` in `.env` to the user that owns your library:
 
 ```bash
 id -u    # -> PUID
 id -g    # -> PGID
 ```
 
-The image runs as a non-root user (uid 1000) by default and never needs root.
+The image runs as a non-root user (uid 1000) by default and never needs root. If these do not match
+your library's owner, the container cannot write to it — and often cannot even read it, which looks
+identical to a missing directory.
+
+You should not have to work the numbers out by hand. **Connection → Test** reports the uid and gid
+abs-butler is running as alongside the owner and mode of the library root, and names the values to
+set:
+
+> `/audiobooks` is not writable by abs-butler (running as uid 1000, gid 1000; the directory is owned
+> by uid 1000, gid 1003, mode 0750). Set `PUID=1000` and `PGID=1003` in `.env` and recreate the
+> container. If that is already the case, the mount itself is read-only.
+
+New `Author/` and `Series/` folders created by `organize` inherit their ownership and permissions
+from the directory they are created inside, rather than from whoever abs-butler runs as. A library
+whose folders slowly become unwritable by its real owner is a worse outcome than one that was never
+organized, because nothing announces it.
 
 ## Scheduling
 
@@ -159,4 +194,4 @@ For a cron-style approach instead, use host cron against the `cli` service:
   run's log mid-write. A `docker compose restart` takes about a second.
 - A `HEALTHCHECK` polls `/api/health`, so an unhealthy container is visible in `docker ps`.
 - `.dockerignore` excludes `.env`, `config.json`, and `.git`, so **no credentials are baked into the
-  image**. Secrets are supplied at run time.
+  image**. The encryption key is generated at run time, inside the volume.
