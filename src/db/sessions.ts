@@ -31,9 +31,15 @@ export function destroySession(db: Db, id: string): void {
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
 }
 
-/** Invalidates every login — used when the password changes. */
-export function destroyAllSessions(db: Db): void {
-  db.exec('DELETE FROM sessions');
+/**
+ * Invalidates every login — used when the password changes.
+ *
+ * `keepId` spares the session doing the changing, so you are not logged out of
+ * the page you just used to change your own password.
+ */
+export function destroyAllSessions(db: Db, keepId?: string): void {
+  if (keepId) db.prepare('DELETE FROM sessions WHERE id <> ?').run(keepId);
+  else db.exec('DELETE FROM sessions');
 }
 
 export function pruneSessions(db: Db): number {

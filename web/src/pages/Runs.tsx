@@ -1,23 +1,23 @@
 import { useEffect, useState } from 'react';
-import { api, type Meta, type RunCommand, type Server } from '../api';
+import { api, type Connection, type Meta, type RunCommand } from '../api';
 import { Banner, Empty, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 
 export function RunsPage({
-  servers,
+  connection,
   meta,
   navigate,
 }: {
-  servers: Server[];
+  connection: Connection | null;
   meta: Meta | undefined;
   navigate: (path: string) => void;
 }) {
-  const [filter, setFilter] = useState({ serverId: '', command: '', status: '' });
+  const [filter, setFilter] = useState({ command: '', status: '' });
   const [showForm, setShowForm] = useState(false);
 
   // Polled: a running job's status and the queue change without user action.
   const runs = useAsync(
     () => api.runs({ ...filter, limit: 50 }),
-    [filter.serverId, filter.command, filter.status],
+    [filter.command, filter.status],
     { pollMs: 3000 },
   );
 
@@ -25,7 +25,7 @@ export function RunsPage({
     <>
       <div className="page-head">
         <h1>Runs</h1>
-        <button className="primary" onClick={() => setShowForm((v) => !v)} disabled={servers.length === 0}>
+        <button className="primary" onClick={() => setShowForm((v) => !v)} disabled={!connection}>
           {showForm ? 'Close' : 'New run'}
         </button>
       </div>
@@ -34,12 +34,11 @@ export function RunsPage({
         at a time.
       </p>
 
-      {servers.length === 0 && <Banner tone="warn">Add a server before starting a run.</Banner>}
       {runs.error && <Banner tone="err">{runs.error}</Banner>}
 
-      {showForm && meta && (
+      {showForm && meta && connection && (
         <NewRunForm
-          servers={servers}
+          connection={connection}
           meta={meta}
           onStarted={(id) => {
             setShowForm(false);
@@ -51,18 +50,6 @@ export function RunsPage({
 
       <div className="card">
         <div className="actions" style={{ marginBottom: 12 }}>
-          <select
-            value={filter.serverId}
-            onChange={(e) => setFilter((f) => ({ ...f, serverId: e.target.value }))}
-            style={{ width: 'auto' }}
-          >
-            <option value="">All servers</option>
-            {servers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
           <select
             value={filter.command}
             onChange={(e) => setFilter((f) => ({ ...f, command: e.target.value }))}
@@ -97,8 +84,8 @@ export function RunsPage({
             <thead>
               <tr>
                 <th>Run</th>
-                <th>Server</th>
                 <th>Command</th>
+                <th>Trigger</th>
                 <th>Mode</th>
                 <th>Status</th>
                 <th>Started</th>
@@ -113,8 +100,8 @@ export function RunsPage({
                       #{run.id}
                     </Link>
                   </td>
-                  <td>{run.serverName ?? '—'}</td>
                   <td>{run.command}</td>
+                  <td className="dim">{run.trigger}</td>
                   <td>
                     <span className={`badge ${run.dryRun ? 'dim' : 'warn'}`}>
                       {run.dryRun ? 'dry run' : 'applied'}
@@ -136,15 +123,14 @@ export function RunsPage({
 }
 
 function NewRunForm({
-  servers,
+  connection,
   meta,
   onStarted,
 }: {
-  servers: Server[];
+  connection: Connection;
   meta: Meta;
   onStarted: (runId: number) => void;
 }) {
-  const [serverId, setServerId] = useState(String(servers[0]?.id ?? ''));
   const [command, setCommand] = useState<RunCommand>('audit');
   const [apply, setApply] = useState(false);
   const [limit, setLimit] = useState('');
@@ -154,16 +140,27 @@ function NewRunForm({
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
-  const server = servers.find((s) => String(s.id) === serverId);
-  const canManageFiles = server?.files.canManageFiles ?? false;
+  const settings = useAsync(() => api.settings(), []);
+  const canManageFiles = connection.files.canManageFiles;
   const isFileCommand = (c: RunCommand) => meta.fileCommands.includes(c);
 
-  // Switching to a server whose files are out of reach must not leave a
-  // now-impossible command selected in a form that looks ready to submit.
+  // Reachable files and permission to change them are separate questions, and
+  // organize needs both. This one is abs-butler's own switch, on the Settings
+  // page — not a mount, not a permission bit.
+  const writesBlocked = isFileCommand(command) && settings.data?.settings.allowFileChanges === false;
+
+  // A mount can disappear while this form is open; a now-impossible command
+  // must not stay selected in a form that still looks ready to submit.
   useEffect(() => {
     if (isFileCommand(command) && !canManageFiles) setCommand('audit');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverId, canManageFiles]);
+  }, [canManageFiles]);
+
+  // Unlike an unreachable mount, this does not disqualify the command — a dry
+  // run is still worth doing — so only the apply is withdrawn.
+  useEffect(() => {
+    if (writesBlocked) setApply(false);
+  }, [writesBlocked]);
 
   const start = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -177,7 +174,7 @@ function NewRunForm({
       if (command === 'rate' && force) options.force = true;
       if (command === 'metadata' && overwrite) options.overwrite = true;
 
-      const run = await api.startRun({ serverId: Number(serverId), command, options });
+      const run = await api.startRun({ command, options });
       onStarted(run.id);
     } catch (err) {
       setError((err as Error).message);
@@ -192,18 +189,6 @@ function NewRunForm({
       {error && <Banner tone="err">{error}</Banner>}
 
       <div className="field-grid">
-        <label>
-          Server
-          <select value={serverId} onChange={(e) => setServerId(e.target.value)}>
-            {servers.map((s) => (
-              <option key={s.id} value={s.id} disabled={!s.enabled}>
-                {s.name}
-                {s.enabled ? '' : ' (disabled)'}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <label>
           Command
           <select value={command} onChange={(e) => setCommand(e.target.value as RunCommand)}>
@@ -236,15 +221,33 @@ function NewRunForm({
 
       {!canManageFiles && (
         <Banner tone="warn">
-          File organization is unavailable for {server?.name}: {server?.files.reason} It moves files
-          directly, so it only works when the media is mounted where abs-butler runs. Every other
-          command works over the API.
+          File organization is unavailable: {connection.files.reason} It moves files directly, so it
+          needs the library mounted where abs-butler runs. Every other command works over the API.
+        </Banner>
+      )}
+
+      {writesBlocked && (
+        <Banner tone="warn">
+          File changes are turned off, so organize can plan moves but not carry them out. Turn on
+          "Allow file changes" in Settings to apply a plan — the files themselves are reachable.
+        </Banner>
+      )}
+
+      {writesBlocked && (
+        <Banner tone="warn">
+          File changes are turned off, so organize can plan moves but not carry them out. Turn on
+          "Allow file changes" in Settings to apply a plan — the files themselves are reachable.
         </Banner>
       )}
 
       <div className="actions" style={{ marginBottom: 12 }}>
         <label className="checkbox" style={{ marginBottom: 0 }}>
-          <input type="checkbox" checked={apply} onChange={(e) => setApply(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={apply}
+            disabled={writesBlocked}
+            onChange={(e) => setApply(e.target.checked)}
+          />
           Apply changes (otherwise this is a dry run)
         </label>
 
@@ -269,12 +272,12 @@ function NewRunForm({
 
       {apply && (
         <Banner tone="warn">
-          This will write to {server?.name}
+          This will write to AudiobookShelf
           {command === 'organize' ? ' and move files on disk' : ''}. Run it as a dry run first.
         </Banner>
       )}
 
-      <button className="primary" type="submit" disabled={starting || !serverId}>
+      <button className="primary" type="submit" disabled={starting}>
         {starting ? 'Queueing…' : 'Start run'}
       </button>
     </form>

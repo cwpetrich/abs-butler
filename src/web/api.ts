@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { AbsClient } from '../abs/client.js';
 import { assessCapability, checkLocalRoot } from '../core/capability.js';
-import { hasSecret } from '../core/crypto.js';
+import { keyFilePath, keySource } from '../core/crypto.js';
 import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
 import { AUDIT_CODES } from '../core/audit.js';
@@ -19,42 +19,44 @@ import {
   updateSchedule,
 } from '../db/schedules.js';
 import {
-  createServer,
-  deleteServer,
-  getServer,
-  getServerWithKey,
-  listServers,
-  serverKeyStatus,
-  updateServer,
-} from '../db/servers.js';
+  connectionKeyStatus,
+  deleteConnection,
+  getConnection,
+  getConnectionWithKey,
+  rotateEncryptionKey,
+  saveConnection,
+  updateConnection,
+} from '../db/connection.js';
 import { getSettings, updateSettings, SettingsSchema } from '../db/settings.js';
 import type { Auth } from './auth.js';
-import { clearSessionCookie, setSessionCookie, SESSION_COOKIE } from './auth.js';
+import {
+  clearSessionCookie,
+  clearSetupCookie,
+  setSessionCookie,
+  setSetupCookie,
+  SESSION_COOKIE,
+} from './auth.js';
 import { badRequest, notFound, Router, type RequestContext } from './router.js';
 
-const ServerInputSchema = z.object({
-  name: z.string().min(1, 'Name is required').max(100),
+const ConnectionInputSchema = z.object({
   url: z.string().url('Must be a full URL, e.g. http://localhost:13378'),
   apiKey: z.string().min(1, 'API key is required'),
   libraryRoot: z.string().nullish(),
   pathPrefix: z.string().nullish(),
-  enabled: z.boolean().optional(),
 });
 
-const ServerPatchSchema = ServerInputSchema.partial().extend({
+const ConnectionPatchSchema = ConnectionInputSchema.partial().extend({
   // Blank means "keep the existing key" — the UI never receives the real one
   // to send back, so an empty field must not wipe it.
   apiKey: z.string().optional(),
 });
 
 const RunInputSchema = z.object({
-  serverId: z.number().int().positive(),
   command: z.string().refine(isRunCommand, { message: `Must be one of ${COMMANDS.join(', ')}` }),
   options: z.record(z.unknown()).default({}),
 });
 
 const ScheduleInputSchema = z.object({
-  serverId: z.number().int().positive(),
   command: z.string().refine(isRunCommand, { message: `Must be one of ${COMMANDS.join(', ')}` }),
   options: z.record(z.unknown()).default({}),
   intervalMinutes: z.number().int().min(5).max(60 * 24 * 30),
@@ -69,27 +71,30 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   return result.data;
 }
 
-/** Public shape of a server: never includes the API key, encrypted or not. */
-function publicServer(db: Db, id: number) {
-  const server = getServer(db, id);
-  if (!server) throw notFound(`No server with id ${id}`);
-  // `files` comes from a local stat, not a call to AudiobookShelf, so listing
-  // servers stays cheap while still letting the UI disable organize up front.
-  return { ...server, key: serverKeyStatus(db, id), files: checkLocalRoot(server) };
+/** Public shape of the connection: never includes the API key, encrypted or not. */
+function publicConnection(db: Db) {
+  const connection = getConnection(db);
+  if (!connection) return null;
+  // `files` comes from a local stat, not a call to AudiobookShelf, so this stays
+  // cheap while still letting the UI disable organize up front.
+  return { ...connection, key: connectionKeyStatus(db), files: checkLocalRoot(connection) };
+}
+
+function requireConnection(db: Db) {
+  const connection = getConnection(db);
+  if (!connection) throw badRequest('AudiobookShelf is not connected yet.');
+  return connection;
 }
 
 /**
- * Refuses a file-touching command for a server whose media this machine cannot
- * reach. Checked here so the caller gets an immediate, explained rejection
+ * Refuses a file-touching command when the media is not reachable here.
+ * Checked at this point so the caller gets an immediate, explained rejection
  * instead of a queued run that only fails once it reaches the front.
  */
-function assertFileCommandAllowed(db: Db, serverId: number, command: RunCommand): void {
+function assertFileCommandAllowed(db: Db, command: RunCommand): void {
   if (!FILE_COMMANDS.has(command)) return;
-  const server = getServer(db, serverId);
-  if (!server) throw notFound(`No server with id ${serverId}`);
-
-  const local = checkLocalRoot(server);
-  if (!local.canManageFiles) throw badRequest(unavailableMessage(server.name, local.reason));
+  const local = checkLocalRoot(requireConnection(db));
+  if (!local.canManageFiles) throw badRequest(unavailableMessage(local.reason));
 }
 
 export interface ApiDeps {
@@ -105,10 +110,27 @@ export function buildApiRouter(deps: ApiDeps): Router {
 
   // ---- auth ----
   router.get('/api/auth/status', (ctx) => ({
-    authRequired: auth.enabled,
+    configured: auth.configured,
     authenticated: auth.isAuthenticated(ctx),
-    encryptionEnabled: hasSecret(),
+    setup: auth.setupState(ctx),
   }), { isPublic: true });
+
+  router.post('/api/auth/setup/claim', (ctx) => {
+    const token = auth.claimSetup(ctx);
+    setSetupCookie(ctx.res, token, deps.isSecure(ctx));
+    return { ok: true };
+  }, { isPublic: true });
+
+  router.post('/api/auth/setup', (ctx) => {
+    const { password, code } = parse(
+      z.object({ password: z.string().min(1), code: z.string().optional() }),
+      ctx.body,
+    );
+    const sessionId = auth.completeSetup(ctx, password, code);
+    setSessionCookie(ctx.res, sessionId, deps.isSecure(ctx));
+    clearSetupCookie(ctx.res);
+    return { ok: true };
+  }, { isPublic: true });
 
   router.post('/api/auth/login', (ctx) => {
     const { password } = parse(z.object({ password: z.string().min(1) }), ctx.body);
@@ -123,48 +145,50 @@ export function buildApiRouter(deps: ApiDeps): Router {
     return { ok: true };
   }, { isPublic: true });
 
-  // ---- servers ----
-  router.get('/api/servers', () => listServers(db).map((s) => publicServer(db, s.id)));
-
-  router.post('/api/servers', async (ctx) => {
-    const input = parse(ServerInputSchema, ctx.body);
-    // Verify before saving, so a typo surfaces here rather than on first run.
-    const client = new AbsClient({ baseUrl: input.url, token: input.apiKey });
-    await client.listLibraries();
-    const created = createServer(db, input);
-    return publicServer(db, created.id);
-  });
-
-  router.patch('/api/servers/:id', async (ctx) => {
-    const id = numericParam(ctx, 'id');
-    const patch = parse(ServerPatchSchema, ctx.body);
-
-    if (patch.url || patch.apiKey) {
-      const current = getServerWithKey(db, id);
-      if (!current) throw notFound(`No server with id ${id}`);
-      const client = new AbsClient({
-        baseUrl: patch.url ?? current.url,
-        token: patch.apiKey || current.apiKey,
-      });
-      await client.listLibraries();
-    }
-    updateServer(db, id, patch);
-    return publicServer(db, id);
-  });
-
-  router.delete('/api/servers/:id', (ctx) => {
-    const id = numericParam(ctx, 'id');
-    if (!getServer(db, id)) throw notFound(`No server with id ${id}`);
-    deleteServer(db, id);
+  router.post('/api/auth/password', (ctx) => {
+    const { current, next } = parse(
+      z.object({ current: z.string().min(1), next: z.string().min(1) }),
+      ctx.body,
+    );
+    auth.changePassword(current, next, ctx.cookies[SESSION_COOKIE]);
     return { ok: true };
   });
 
-  /** Connectivity plus the filesystem capability report for this server. */
-  router.get('/api/servers/:id/capability', async (ctx) => {
-    const id = numericParam(ctx, 'id');
-    const server = getServer(db, id);
-    const withKey = getServerWithKey(db, id);
-    if (!server || !withKey) throw notFound(`No server with id ${id}`);
+  // ---- connection ----
+  router.get('/api/connection', () => ({ connection: publicConnection(db) }));
+
+  router.put('/api/connection', async (ctx) => {
+    const input = parse(ConnectionInputSchema, ctx.body);
+    // Verify before saving, so a typo surfaces here rather than on first run.
+    await new AbsClient({ baseUrl: input.url, token: input.apiKey }).listLibraries();
+    saveConnection(db, input);
+    return { connection: publicConnection(db) };
+  });
+
+  router.patch('/api/connection', async (ctx) => {
+    const patch = parse(ConnectionPatchSchema, ctx.body);
+    const current = getConnectionWithKey(db);
+    if (!current) throw badRequest('AudiobookShelf is not connected yet.');
+
+    if (patch.url || patch.apiKey) {
+      await new AbsClient({
+        baseUrl: patch.url ?? current.url,
+        token: patch.apiKey || current.apiKey,
+      }).listLibraries();
+    }
+    updateConnection(db, patch);
+    return { connection: publicConnection(db) };
+  });
+
+  router.delete('/api/connection', () => {
+    deleteConnection(db);
+    return { ok: true };
+  });
+
+  /** Connectivity plus the filesystem capability report. */
+  router.get('/api/connection/capability', async () => {
+    const connection = requireConnection(db);
+    const withKey = getConnectionWithKey(db)!;
 
     const client = new AbsClient({ baseUrl: withKey.url, token: withKey.apiKey });
     try {
@@ -177,7 +201,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
           mediaType: l.mediaType,
           folders: l.folders.map((f) => f.fullPath),
         })),
-        capability: assessCapability(server, libraries),
+        capability: assessCapability(connection, libraries),
       };
     } catch (err) {
       return { reachable: false, error: (err as Error).message, libraries: [], capability: null };
@@ -186,13 +210,11 @@ export function buildApiRouter(deps: ApiDeps): Router {
 
   // ---- runs ----
   router.get('/api/runs', (ctx) => {
-    const serverId = ctx.url.searchParams.get('serverId');
     const command = ctx.url.searchParams.get('command');
     const status = ctx.url.searchParams.get('status');
 
     return {
       ...listRuns(db, {
-        ...(serverId ? { serverId: Number(serverId) } : {}),
         ...(command && isRunCommand(command) ? { command: command as RunCommand } : {}),
         ...(status ? { status: status as RunStatus } : {}),
         limit: Number(ctx.url.searchParams.get('limit') ?? 50),
@@ -211,10 +233,9 @@ export function buildApiRouter(deps: ApiDeps): Router {
 
   router.post('/api/runs', (ctx) => {
     const input = parse(RunInputSchema, ctx.body);
-    if (!getServer(db, input.serverId)) throw notFound(`No server with id ${input.serverId}`);
-    assertFileCommandAllowed(db, input.serverId, input.command as RunCommand);
+    requireConnection(db);
+    assertFileCommandAllowed(db, input.command as RunCommand);
     return runner.enqueue({
-      serverId: input.serverId,
       command: input.command as RunCommand,
       options: input.options,
       trigger: 'manual',
@@ -253,8 +274,8 @@ export function buildApiRouter(deps: ApiDeps): Router {
 
   router.post('/api/schedules', (ctx) => {
     const input = parse(ScheduleInputSchema, ctx.body);
-    if (!getServer(db, input.serverId)) throw notFound(`No server with id ${input.serverId}`);
-    assertFileCommandAllowed(db, input.serverId, input.command as RunCommand);
+    requireConnection(db);
+    assertFileCommandAllowed(db, input.command as RunCommand);
     return createSchedule(db, { ...input, command: input.command as RunCommand });
   });
 
@@ -274,13 +295,17 @@ export function buildApiRouter(deps: ApiDeps): Router {
   // ---- settings ----
   router.get('/api/settings', () => ({
     settings: redactSettings(getSettings(db)),
-    encryptionEnabled: hasSecret(),
-    authRequired: auth.enabled,
+    security: securityStatus(db),
   }));
 
   router.patch('/api/settings', (ctx) => {
     const patch = parse(SettingsSchema.partial(), ctx.body);
     return { settings: redactSettings(updateSettings(db, patch)) };
+  });
+
+  router.post('/api/settings/rotate-key', () => {
+    rotateEncryptionKey(db);
+    return { ok: true, security: securityStatus(db) };
   });
 
   /** Everything the UI needs to render forms without hardcoding server-side vocabulary. */
@@ -295,9 +320,17 @@ export function buildApiRouter(deps: ApiDeps): Router {
     defaultTemplate: DEFAULT_TEMPLATE,
   }));
 
-  router.get('/api/health', () => ({ ok: true, version: '0.2.0' }), { isPublic: true });
+  router.get('/api/health', () => ({ ok: true, version: '0.3.0' }), { isPublic: true });
 
   return router;
+}
+
+function securityStatus(db: Db) {
+  return {
+    keySource: keySource(),
+    keyPath: keySource() === 'file' ? keyFilePath() : null,
+    apiKeyEncrypted: connectionKeyStatus(db).encrypted,
+  };
 }
 
 function numericParam(ctx: RequestContext, name: string): number {

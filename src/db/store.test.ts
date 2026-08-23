@@ -1,100 +1,144 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openMemoryDb, type Db } from './index.js';
 import {
-  createServer,
-  deleteServer,
-  findServer,
-  getServerWithKey,
-  listServers,
-  serverKeyStatus,
-  updateServer,
-} from './servers.js';
+  connectionKeyStatus,
+  deleteConnection,
+  getConnection,
+  getConnectionWithKey,
+  isConfigured,
+  rotateEncryptionKey,
+  saveConnection,
+  updateConnection,
+  upgradeStoredKey,
+} from './connection.js';
+import { resetKeyCache } from '../core/crypto.js';
 import { completeRun, createRun, listRuns, markRunning, pruneRuns, reconcileOrphanedRuns } from './runs.js';
 import { appendLog, listLogs } from './logs.js';
 import { getSettings, updateSettings } from './settings.js';
-import { createSchedule, dueSchedules, markScheduleRun } from './schedules.js';
+import { createSchedule, dueSchedules, markScheduleRun, updateSchedule } from './schedules.js';
 
 let db: Db;
-const ORIGINAL_SECRET = process.env.BUTLER_SECRET;
+const ORIGINAL_DATA_DIR = process.env.BUTLER_DATA_DIR;
 
 beforeEach(() => {
+  process.env.BUTLER_DATA_DIR = mkdtempSync(join(tmpdir(), 'abs-butler-store-'));
+  resetKeyCache();
   db = openMemoryDb();
 });
 
 afterEach(() => {
   db.close();
-  if (ORIGINAL_SECRET === undefined) delete process.env.BUTLER_SECRET;
-  else process.env.BUTLER_SECRET = ORIGINAL_SECRET;
+  process.env.BUTLER_DATA_DIR = ORIGINAL_DATA_DIR;
+  resetKeyCache();
 });
 
-const input = { name: 'home', url: 'http://localhost:13378', apiKey: 'secret-key' };
+const input = { url: 'http://localhost:13378', apiKey: 'secret-key' };
 
-describe('servers', () => {
-  it('creates and reads back a server without exposing the key in the record', () => {
-    const created = createServer(db, input);
-    expect(created.name).toBe('home');
-    expect(JSON.stringify(created)).not.toContain('secret-key');
-    expect(getServerWithKey(db, created.id)?.apiKey).toBe('secret-key');
+describe('connection', () => {
+  it('reports nothing configured on a fresh database', () => {
+    expect(isConfigured(db)).toBe(false);
+    expect(getConnection(db)).toBeNull();
+    expect(getConnectionWithKey(db)).toBeNull();
   });
 
-  it('stores the key encrypted when a secret is configured', () => {
-    process.env.BUTLER_SECRET = 'a-secret';
-    const created = createServer(db, input);
+  it('saves and reads back without exposing the key in the record', () => {
+    const saved = saveConnection(db, input);
+    expect(saved.url).toBe('http://localhost:13378');
+    expect(JSON.stringify(saved)).not.toContain('secret-key');
+    expect(getConnectionWithKey(db)?.apiKey).toBe('secret-key');
+  });
 
-    const raw = db.prepare('SELECT api_key FROM servers WHERE id = ?').get(created.id) as {
+  it('encrypts the key at rest with no configuration needed', () => {
+    saveConnection(db, input);
+
+    const raw = db.prepare('SELECT api_key FROM connection WHERE id = 1').get() as {
       api_key: string;
     };
     expect(raw.api_key).not.toContain('secret-key');
-    expect(serverKeyStatus(db, created.id).encrypted).toBe(true);
-    expect(getServerWithKey(db, created.id)?.apiKey).toBe('secret-key');
+    expect(connectionKeyStatus(db).encrypted).toBe(true);
   });
 
   it('normalizes the URL and rejects a malformed one', () => {
-    const created = createServer(db, { ...input, url: 'http://localhost:13378/' });
-    expect(created.url).toBe('http://localhost:13378');
-    expect(() => createServer(db, { ...input, name: 'bad', url: 'not-a-url' })).toThrow();
+    expect(saveConnection(db, { ...input, url: 'http://localhost:13378/' }).url).toBe(
+      'http://localhost:13378',
+    );
+    expect(() => saveConnection(db, { ...input, url: 'not-a-url' })).toThrow();
   });
 
-  it('refuses a duplicate name with a readable message', () => {
-    createServer(db, input);
-    expect(() => createServer(db, input)).toThrow(/already exists/);
-  });
+  // There is exactly one row by construction, not by convention.
+  it('replaces rather than accumulating when saved twice', () => {
+    saveConnection(db, input);
+    saveConnection(db, { ...input, url: 'http://other:13378', apiKey: 'second-key' });
 
-  it('finds by id or by name, case-insensitively', () => {
-    const created = createServer(db, input);
-    expect(findServer(db, created.id)?.id).toBe(created.id);
-    expect(findServer(db, 'home')?.id).toBe(created.id);
-    expect(findServer(db, 'HOME')?.id).toBe(created.id);
-    expect(findServer(db, 'nope')).toBeNull();
+    const count = db.prepare('SELECT COUNT(*) AS n FROM connection').get() as { n: number };
+    expect(count.n).toBe(1);
+    expect(getConnectionWithKey(db)?.url).toBe('http://other:13378');
+    expect(getConnectionWithKey(db)?.apiKey).toBe('second-key');
   });
 
   // The UI never receives the stored key, so it cannot send it back on save.
   it('keeps the existing key when the patch omits it', () => {
-    const created = createServer(db, input);
-    updateServer(db, created.id, { name: 'renamed' });
-    expect(getServerWithKey(db, created.id)?.apiKey).toBe('secret-key');
-    expect(getServerWithKey(db, created.id)?.name).toBe('renamed');
+    saveConnection(db, input);
+    updateConnection(db, { libraryRoot: '/library' });
+    expect(getConnectionWithKey(db)?.apiKey).toBe('secret-key');
+    expect(getConnection(db)?.libraryRoot).toBe('/library');
   });
 
   it('replaces the key when one is supplied', () => {
-    const created = createServer(db, input);
-    updateServer(db, created.id, { apiKey: 'rotated-key' });
-    expect(getServerWithKey(db, created.id)?.apiKey).toBe('rotated-key');
+    saveConnection(db, input);
+    updateConnection(db, { apiKey: 'rotated-key' });
+    expect(getConnectionWithKey(db)?.apiKey).toBe('rotated-key');
   });
 
-  it('deletes a server and cascades its runs', () => {
-    const created = createServer(db, input);
-    createRun(db, { serverId: created.id, command: 'audit', dryRun: true, trigger: 'manual' });
-    deleteServer(db, created.id);
-    expect(listServers(db)).toHaveLength(0);
-    expect(listRuns(db).total).toBe(0);
+  it('clears the library root when set to empty, disabling organize', () => {
+    saveConnection(db, { ...input, libraryRoot: '/library' });
+    updateConnection(db, { libraryRoot: '' });
+    expect(getConnection(db)?.libraryRoot).toBeNull();
+  });
+
+  it('deletes without touching run history', () => {
+    saveConnection(db, input);
+    createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
+    deleteConnection(db);
+
+    expect(isConfigured(db)).toBe(false);
+    expect(listRuns(db).total).toBe(1);
+  });
+
+  it('re-seals a key stored in plaintext by an older install', () => {
+    saveConnection(db, input);
+    db.prepare('UPDATE connection SET api_key = ? WHERE id = 1').run('plain:legacy-key');
+    expect(connectionKeyStatus(db).encrypted).toBe(false);
+
+    expect(upgradeStoredKey(db)).toBe(true);
+    expect(connectionKeyStatus(db).encrypted).toBe(true);
+    expect(getConnectionWithKey(db)?.apiKey).toBe('legacy-key');
+    expect(upgradeStoredKey(db)).toBe(false);
+  });
+
+  // The failure this replaces: changing BUTLER_SECRET orphaned the stored key.
+  it('rotates the encryption key and keeps the API key readable', () => {
+    saveConnection(db, input);
+    const before = db.prepare('SELECT api_key FROM connection WHERE id = 1').get() as {
+      api_key: string;
+    };
+
+    rotateEncryptionKey(db);
+
+    const after = db.prepare('SELECT api_key FROM connection WHERE id = 1').get() as {
+      api_key: string;
+    };
+    expect(after.api_key).not.toBe(before.api_key);
+    expect(getConnectionWithKey(db)?.apiKey).toBe('secret-key');
   });
 });
 
 describe('runs', () => {
   it('moves through its lifecycle and stores a summary', () => {
-    const server = createServer(db, input);
-    const run = createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
+    const run = createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
     expect(run.status).toBe('queued');
 
     markRunning(db, run.id);
@@ -103,24 +147,21 @@ describe('runs', () => {
     const [stored] = listRuns(db).runs;
     expect(stored?.status).toBe('success');
     expect(stored?.summary).toEqual({ scanned: 42 });
-    expect(stored?.serverName).toBe('home');
   });
 
-  it('filters by server, command, and status', () => {
-    const server = createServer(db, input);
-    createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
-    const rate = createRun(db, { serverId: server.id, command: 'rate', dryRun: false, trigger: 'cli' });
+  it('filters by command and status', () => {
+    createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
+    const rate = createRun(db, { command: 'rate', dryRun: false, trigger: 'cli' });
     completeRun(db, rate.id, { status: 'failed', error: 'boom' });
 
     expect(listRuns(db, { command: 'rate' }).total).toBe(1);
     expect(listRuns(db, { status: 'failed' }).runs[0]?.error).toBe('boom');
-    expect(listRuns(db, { serverId: 999 }).total).toBe(0);
+    expect(listRuns(db, { command: 'organize' }).total).toBe(0);
   });
 
   // A crash leaves rows claiming to be running forever; startup must clear them.
   it('reconciles runs interrupted by a restart', () => {
-    const server = createServer(db, input);
-    const run = createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
+    const run = createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
     markRunning(db, run.id);
 
     expect(reconcileOrphanedRuns(db)).toBe(1);
@@ -130,9 +171,8 @@ describe('runs', () => {
   });
 
   it('prunes history down to the retention limit, keeping the newest', () => {
-    const server = createServer(db, input);
     for (let i = 0; i < 10; i++) {
-      createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
+      createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
     }
     pruneRuns(db, 4);
     const remaining = listRuns(db);
@@ -143,8 +183,7 @@ describe('runs', () => {
 
 describe('logs', () => {
   it('returns entries in chronological order and supports incremental tailing', () => {
-    const server = createServer(db, input);
-    const run = createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
+    const run = createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
 
     appendLog(db, { runId: run.id, level: 'info', message: 'first' });
     appendLog(db, { runId: run.id, level: 'warn', message: 'second' });
@@ -158,8 +197,7 @@ describe('logs', () => {
   });
 
   it('filters by level and searches message text', () => {
-    const server = createServer(db, input);
-    const run = createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
+    const run = createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
     appendLog(db, { runId: run.id, level: 'info', message: 'scanning library' });
     appendLog(db, { runId: run.id, level: 'error', message: 'connection refused' });
 
@@ -169,8 +207,7 @@ describe('logs', () => {
 
   // The newest lines matter most, so the limit must keep the tail, not the head.
   it('keeps the most recent entries when limited', () => {
-    const server = createServer(db, input);
-    const run = createRun(db, { serverId: server.id, command: 'audit', dryRun: true, trigger: 'manual' });
+    const run = createRun(db, { command: 'audit', dryRun: true, trigger: 'manual' });
     for (let i = 0; i < 20; i++) {
       appendLog(db, { runId: run.id, level: 'info', message: `line ${i}` });
     }
@@ -203,12 +240,7 @@ describe('settings', () => {
 
 describe('schedules', () => {
   it('reports a schedule as due only once its next run has passed', () => {
-    const server = createServer(db, input);
-    const schedule = createSchedule(db, {
-      serverId: server.id,
-      command: 'audit',
-      intervalMinutes: 60,
-    });
+    const schedule = createSchedule(db, { command: 'audit', intervalMinutes: 60 });
 
     expect(dueSchedules(db, Date.now())).toHaveLength(0);
     expect(dueSchedules(db, Date.now() + 61 * 60_000)).toHaveLength(1);
@@ -220,10 +252,32 @@ describe('schedules', () => {
     expect(dueSchedules(db, Date.now() + 61 * 60_000)).toHaveLength(1);
   });
 
-  it('skips schedules whose server is disabled', () => {
-    const server = createServer(db, input);
-    createSchedule(db, { serverId: server.id, command: 'audit', intervalMinutes: 5 });
-    updateServer(db, server.id, { enabled: false });
+  it('skips a disabled schedule', () => {
+    const schedule = createSchedule(db, { command: 'audit', intervalMinutes: 5 });
+    updateSchedule(db, schedule.id, { enabled: false });
     expect(dueSchedules(db, Date.now() + 10 * 60_000)).toHaveLength(0);
+  });
+});
+
+describe('settings migration', () => {
+  it('drops requireDryRunFirst, which was never enforced, and defaults its replacement off', () => {
+    // Simulate a database written before the setting was retired.
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(
+      'requireDryRunFirst',
+      JSON.stringify(true),
+    );
+    const stale = db.prepare("SELECT COUNT(*) AS n FROM settings WHERE key = 'requireDryRunFirst'")
+      .get() as { n: number };
+    expect(stale.n).toBe(1);
+
+    // getSettings ignores unknown keys, so the guard must start off regardless
+    // of whatever the retired setting happened to say.
+    expect(getSettings(db).allowFileChanges).toBe(false);
+  });
+
+  it('keeps allowFileChanges off unless it is explicitly turned on', () => {
+    expect(getSettings(db).allowFileChanges).toBe(false);
+    expect(updateSettings(db, { allowFileChanges: true }).allowFileChanges).toBe(true);
+    expect(getSettings(db).allowFileChanges).toBe(true);
   });
 });

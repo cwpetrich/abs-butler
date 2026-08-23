@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Meta, type RunCommand, type Server } from '../api';
+import { api, type Connection, type Meta, type RunCommand } from '../api';
 import { Banner, Empty, formatInterval, formatTime, Spinner, useAsync } from '../lib';
 
 const PRESETS = [
@@ -9,7 +9,13 @@ const PRESETS = [
   { label: 'Weekly', minutes: 10080 },
 ];
 
-export function SchedulesPage({ servers, meta }: { servers: Server[]; meta: Meta | undefined }) {
+export function SchedulesPage({
+  connection,
+  meta,
+}: {
+  connection: Connection | null;
+  meta: Meta | undefined;
+}) {
   const schedules = useAsync(() => api.schedules(), [], { pollMs: 15000 });
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +33,7 @@ export function SchedulesPage({ servers, meta }: { servers: Server[]; meta: Meta
     <>
       <div className="page-head">
         <h1>Schedules</h1>
-        <button className="primary" onClick={() => setShowForm((v) => !v)} disabled={servers.length === 0}>
+        <button className="primary" onClick={() => setShowForm((v) => !v)} disabled={!connection}>
           {showForm ? 'Close' : 'New schedule'}
         </button>
       </div>
@@ -38,9 +44,9 @@ export function SchedulesPage({ servers, meta }: { servers: Server[]; meta: Meta
       {error && <Banner tone="err">{error}</Banner>}
       {schedules.error && <Banner tone="err">{schedules.error}</Banner>}
 
-      {showForm && meta && (
+      {showForm && meta && connection && (
         <ScheduleForm
-          servers={servers}
+          connection={connection}
           meta={meta}
           onSaved={() => {
             setShowForm(false);
@@ -57,7 +63,6 @@ export function SchedulesPage({ servers, meta }: { servers: Server[]; meta: Meta
           <table>
             <thead>
               <tr>
-                <th>Server</th>
                 <th>Command</th>
                 <th>Mode</th>
                 <th>Every</th>
@@ -70,7 +75,6 @@ export function SchedulesPage({ servers, meta }: { servers: Server[]; meta: Meta
             <tbody>
               {schedules.data!.map((schedule) => (
                 <tr key={schedule.id}>
-                  <td>{schedule.serverName}</td>
                   <td>{schedule.command}</td>
                   <td>
                     <span className={`badge ${schedule.options.apply ? 'warn' : 'dim'}`}>
@@ -114,29 +118,27 @@ export function SchedulesPage({ servers, meta }: { servers: Server[]; meta: Meta
 }
 
 function ScheduleForm({
-  servers,
+  connection,
   meta,
   onSaved,
 }: {
-  servers: Server[];
+  connection: Connection;
   meta: Meta;
   onSaved: () => void;
 }) {
-  const [serverId, setServerId] = useState(String(servers[0]?.id ?? ''));
   const [command, setCommand] = useState<RunCommand>('audit');
   const [minutes, setMinutes] = useState(720);
   const [apply, setApply] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const server = servers.find((s) => String(s.id) === serverId);
-  const canManageFiles = server?.files.canManageFiles ?? false;
+  const canManageFiles = connection.files.canManageFiles;
   const isFileCommand = (c: RunCommand) => meta.fileCommands.includes(c);
 
   useEffect(() => {
     if (isFileCommand(command) && !canManageFiles) setCommand('audit');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverId, canManageFiles]);
+  }, [canManageFiles]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -144,7 +146,6 @@ function ScheduleForm({
     setError(null);
     try {
       await api.createSchedule({
-        serverId: Number(serverId),
         command,
         intervalMinutes: minutes,
         options: apply ? { apply: true } : {},
@@ -163,17 +164,6 @@ function ScheduleForm({
       {error && <Banner tone="err">{error}</Banner>}
 
       <div className="field-grid">
-        <label>
-          Server
-          <select value={serverId} onChange={(e) => setServerId(e.target.value)}>
-            {servers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <label>
           Command
           <select value={command} onChange={(e) => setCommand(e.target.value as RunCommand)}>
@@ -203,8 +193,8 @@ function ScheduleForm({
 
       {!canManageFiles && (
         <Banner tone="warn">
-          File organization is unavailable for {server?.name}: {server?.files.reason} Every other
-          command works over the API.
+          File organization is unavailable: {connection.files.reason} Every other command works over
+          the API.
         </Banner>
       )}
 
@@ -215,11 +205,11 @@ function ScheduleForm({
 
       {apply && (
         <Banner tone="warn">
-          This schedule will write to {server?.name} unattended. Verify with a dry run first.
+          This schedule will write to AudiobookShelf unattended. Verify with a dry run first.
         </Banner>
       )}
 
-      <button className="primary" type="submit" disabled={saving || !serverId}>
+      <button className="primary" type="submit" disabled={saving}>
         {saving ? 'Saving…' : 'Create schedule'}
       </button>
     </form>

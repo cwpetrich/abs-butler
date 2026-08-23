@@ -1,6 +1,6 @@
 import type { AbsLibraryItem } from '../abs/types.js';
 import { TAG_PREFIX } from '../content/ageRating.js';
-import { collectItems, itemAuthor, itemTitle, resolveLibraries, type ServerContext } from '../context.js';
+import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
 import { isBlank, normalizeAuthor, normalizeTitle } from '../util/text.js';
 
@@ -123,7 +123,7 @@ export interface AuditTaskResult {
 }
 
 export async function runAuditTask(
-  ctx: ServerContext,
+  ctx: TaskContext,
   options: AuditTaskOptions = {},
 ): Promise<AuditTaskResult> {
   const libraries = await resolveLibraries(ctx, options.library);

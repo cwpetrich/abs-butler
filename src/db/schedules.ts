@@ -3,8 +3,6 @@ import type { RunCommand } from './runs.js';
 
 export interface ScheduleRecord {
   id: number;
-  serverId: number;
-  serverName?: string;
   command: RunCommand;
   options: Record<string, unknown>;
   intervalMinutes: number;
@@ -17,8 +15,6 @@ export interface ScheduleRecord {
 
 interface ScheduleRow {
   id: number;
-  server_id: number;
-  server_name?: string | null;
   command: string;
   options: string;
   interval_minutes: number;
@@ -38,8 +34,6 @@ function toRecord(row: ScheduleRow): ScheduleRecord {
   }
   return {
     id: row.id,
-    serverId: row.server_id,
-    serverName: row.server_name ?? undefined,
     command: row.command as RunCommand,
     options,
     intervalMinutes: row.interval_minutes,
@@ -51,11 +45,7 @@ function toRecord(row: ScheduleRow): ScheduleRecord {
   };
 }
 
-const SELECT = `
-  SELECT schedules.*, servers.name AS server_name
-  FROM schedules JOIN servers ON servers.id = schedules.server_id
-`;
-
+const SELECT = 'SELECT * FROM schedules';
 export function listSchedules(db: Db): ScheduleRecord[] {
   const rows = db.prepare(`${SELECT} ORDER BY schedules.id`).all() as unknown as ScheduleRow[];
   return rows.map(toRecord);
@@ -67,7 +57,6 @@ export function getSchedule(db: Db, id: number): ScheduleRecord | null {
 }
 
 export interface ScheduleInput {
-  serverId: number;
   command: RunCommand;
   options?: Record<string, unknown>;
   intervalMinutes: number;
@@ -78,11 +67,10 @@ export function createSchedule(db: Db, input: ScheduleInput): ScheduleRecord {
   const now = Date.now();
   const result = db
     .prepare(
-      `INSERT INTO schedules (server_id, command, options, interval_minutes, enabled, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO schedules (command, options, interval_minutes, enabled, next_run_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
-      input.serverId,
       input.command,
       JSON.stringify(input.options ?? {}),
       input.intervalMinutes,
@@ -127,12 +115,12 @@ export function deleteSchedule(db: Db, id: number): void {
   db.prepare('DELETE FROM schedules WHERE id = ?').run(id);
 }
 
-/** Enabled schedules whose next run is due, on servers that are themselves enabled. */
+/** Enabled schedules whose next run is due. */
 export function dueSchedules(db: Db, now = Date.now()): ScheduleRecord[] {
   const rows = db
     .prepare(
-      `${SELECT} WHERE schedules.enabled = 1 AND servers.enabled = 1
-       AND schedules.next_run_at IS NOT NULL AND schedules.next_run_at <= ?`,
+      `${SELECT} WHERE enabled = 1
+       AND next_run_at IS NOT NULL AND next_run_at <= ?`,
     )
     .all(now) as unknown as ScheduleRow[];
   return rows.map(toRecord);

@@ -75,4 +75,43 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_schedules_due ON schedules(enabled, next_run_at);
   `,
+
+  // 3 — collapse to a single AudiobookShelf connection
+  //
+  // abs-butler is now one butler to one server, co-located with it. The first
+  // server configured becomes the connection; anything belonging to the others
+  // is removed rather than silently re-attributed to a server it never ran on.
+  `
+  CREATE TABLE connection (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    url           TEXT    NOT NULL,
+    api_key       TEXT    NOT NULL,
+    library_root  TEXT,
+    path_prefix   TEXT,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+  );
+
+  INSERT INTO connection (id, url, api_key, library_root, path_prefix, created_at, updated_at)
+  SELECT 1, url, api_key, library_root, path_prefix, created_at, updated_at
+  FROM servers ORDER BY id LIMIT 1;
+
+  DELETE FROM schedules WHERE server_id <> (SELECT MIN(id) FROM servers);
+  DELETE FROM runs WHERE server_id IS NOT NULL AND server_id <> (SELECT MIN(id) FROM servers);
+
+  DROP INDEX idx_runs_server;
+  ALTER TABLE runs DROP COLUMN server_id;
+  ALTER TABLE schedules DROP COLUMN server_id;
+  DROP TABLE servers;
+  `,
+
+  // 4 — retire requireDryRunFirst
+  //
+  // It was defined, surfaced by the API, and enforced nowhere. Its replacement,
+  // allowFileChanges, is a different question with a different default, so the
+  // old row is dropped rather than renamed — carrying a value over from a
+  // setting that never did anything would be inventing an intent.
+  `
+  DELETE FROM settings WHERE key = 'requireDryRunFirst';
+  `,
 ];

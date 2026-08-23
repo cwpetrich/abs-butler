@@ -7,7 +7,7 @@ import {
   type AgeBand,
   type ContentAssessment,
 } from '../content/ageRating.js';
-import { collectItems, itemAuthor, itemTitle, resolveLibraries, type ServerContext } from '../context.js';
+import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
 import { buildProviders } from '../providers/index.js';
@@ -94,7 +94,7 @@ export interface RateTaskResult {
 }
 
 export async function runRateTask(
-  ctx: ServerContext,
+  ctx: TaskContext,
   options: RateTaskOptions = {},
 ): Promise<RateTaskResult> {
   const providers = buildProviders(

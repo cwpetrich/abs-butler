@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 /**
  * The SPA lives in web/ and builds into dist/public, which the Node server
  * serves. In development `npm run dev:web` proxies /api to a `serve` process
- * on 8478 so the UI runs against real data.
+ * on 13380 so the UI runs against real data.
  */
 export default defineConfig({
   root: 'web',
@@ -17,7 +17,7 @@ export default defineConfig({
     port: 5473,
     proxy: {
       '/api': {
-        target: process.env.BUTLER_DEV_API ?? 'http://localhost:8478',
+        target: process.env.BUTLER_DEV_API ?? 'http://localhost:13380',
         changeOrigin: false,
       },
     },

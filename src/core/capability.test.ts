@@ -4,16 +4,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { assessCapability, checkLocalRoot, toLocalPath } from './capability.js';
 import type { AbsLibrary } from '../abs/types.js';
-import type { ServerRecord } from '../db/servers.js';
+import type { ConnectionRecord } from '../db/connection.js';
 
-function server(patch: Partial<ServerRecord> = {}): ServerRecord {
+function connection(patch: Partial<ConnectionRecord> = {}): ConnectionRecord {
   return {
-    id: 1,
-    name: 'test',
     url: 'http://localhost:13378',
     libraryRoot: null,
     pathPrefix: null,
-    enabled: true,
     createdAt: 0,
     updatedAt: 0,
     ...patch,
@@ -54,10 +51,10 @@ describe('toLocalPath', () => {
 
 describe('checkLocalRoot', () => {
   it('disables file management when no library root is set', () => {
-    const status = checkLocalRoot(server());
+    const status = checkLocalRoot(connection());
     expect(status.canManageFiles).toBe(false);
     expect(status.access).toBe('not-configured');
-    expect(status.reason).toMatch(/not running where this server/);
+    expect(status.reason).toMatch(/No library root is set/);
     expect(status.path).toBeNull();
   });
 
@@ -94,17 +91,17 @@ describe('checkLocalRoot', () => {
 });
 
 describe('assessCapability', () => {
-  it('reports API-only, with a reason, when no library root is set', () => {
-    const result = assessCapability(server(), [library('/audiobooks')]);
+  it('refuses file management, with a reason, when no library root is set', () => {
+    const result = assessCapability(connection(), [library('/audiobooks')]);
     expect(result.canManageFiles).toBe(false);
-    expect(result.reason).toMatch(/No library root is configured/);
+    expect(result.reason).toMatch(/No library root is set/);
     expect(result.libraries[0]!.access).toBe('not-configured');
   });
 
   it('reports read-write for a real writable directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'butler-cap-'));
     const result = assessCapability(
-      server({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
+      connection({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
       [library('/audiobooks')],
     );
     expect(result.canManageFiles).toBe(true);
@@ -114,7 +111,7 @@ describe('assessCapability', () => {
 
   it('reports unreachable when the translated path does not exist here', () => {
     const result = assessCapability(
-      server({ libraryRoot: '/definitely/not/here', pathPrefix: '/audiobooks' }),
+      connection({ libraryRoot: '/definitely/not/here', pathPrefix: '/audiobooks' }),
       [library('/audiobooks')],
     );
     expect(result.canManageFiles).toBe(false);
@@ -129,7 +126,7 @@ describe('assessCapability', () => {
     chmodSync(dir, 0o500);
     try {
       const result = assessCapability(
-        server({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
+        connection({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
         [library('/audiobooks')],
       );
       // Running as root defeats permission bits, so only assert when it applies.
@@ -139,6 +136,28 @@ describe('assessCapability', () => {
       }
     } finally {
       chmodSync(dir, 0o700);
+    }
+  });
+
+  // Confinement and a locked-down parent both surface as EACCES on stat, which
+  // must not be reported as a missing directory: the path is right where the
+  // operator left it, and telling them otherwise sends them hunting for it.
+  it('does not call a path that exists but is hidden "missing"', () => {
+    if (process.getuid?.() === 0) return;
+    const base = mkdtempSync(join(tmpdir(), 'butler-hidden-'));
+    const outer = join(base, 'outer');
+    mkdirSync(join(outer, 'library'), { recursive: true });
+    chmodSync(outer, 0o000);
+    try {
+      const result = assessCapability(
+        connection({ libraryRoot: join(outer, 'library'), pathPrefix: '/audiobooks' }),
+        [library('/audiobooks')],
+      );
+      expect(result.canManageFiles).toBe(false);
+      expect(result.libraries[0]!.access).toBe('unreachable');
+      expect(result.reason).not.toMatch(/does not exist/);
+    } finally {
+      chmodSync(outer, 0o700);
     }
   });
 
@@ -152,7 +171,7 @@ describe('assessCapability', () => {
       folders: [{ id: 'f2', fullPath: '/podcasts', libraryId: 'lib2' }],
     };
     const result = assessCapability(
-      server({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
+      connection({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
       [library('/audiobooks'), podcasts],
     );
     expect(result.libraries).toHaveLength(1);

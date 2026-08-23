@@ -1,6 +1,6 @@
 import type { ContentAssessment } from '../content/ageRating.js';
 import { runRateTask } from '../core/rate.js';
-import { openServerContext, openStore, type GlobalOptions } from '../context.js';
+import { openContext, openStore, type GlobalOptions } from '../context.js';
 import { color, log } from '../logger.js';
 import { printJson, printTable } from '../util/table.js';
 import { truncate } from '../util/text.js';
@@ -17,11 +17,11 @@ export interface RateOptions extends GlobalOptions {
 
 export async function runRate(options: RateOptions): Promise<void> {
   const db = openStore();
-  const ctx = openServerContext(db, options.server);
+  const ctx = openContext(db);
   const result = await runRateTask(ctx, options);
 
   if (options.json) {
-    printJson({ server: ctx.server.name, ...result });
+    printJson({ server: ctx.connection.url, ...result });
     return;
   }
 
