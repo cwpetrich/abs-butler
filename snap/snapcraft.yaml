@@ -1,0 +1,112 @@
+name: abs-butler
+title: abs-butler
+base: core24
+adopt-info: butler
+summary: Audit, enrich, and organize an AudiobookShelf library
+description: |
+  A butler for your AudiobookShelf server. It audits the library for problems,
+  fills in missing metadata, enforces a folder naming scheme, and tags books
+  with age bands and content flags so a library can be filtered by what is
+  appropriate for whom.
+
+  Runs as a web service on port 13380. Open it, set a password, and add your
+  server's URL and API token — everything else is configured in the UI.
+
+  One butler serves one AudiobookShelf server and is meant to run beside it.
+
+  Auditing, rating, and metadata work purely over the AudiobookShelf API and
+  need no access to your files. Organizing moves files on disk, so it needs
+  the library itself, which a confined snap reaches only under /mnt, /media,
+  or /run/media:
+
+      sudo snap connect abs-butler:removable-media
+
+  Even then abs-butler will not move anything until "Allow file changes" is
+  turned on in Settings, which it is not by default.
+
+  Configuration:
+
+      sudo snap set abs-butler port=13380
+      sudo snap set abs-butler host=0.0.0.0
+      sudo snap set abs-butler setup-code=SOMECODE
+
+license: MIT
+icon: snap/gui/abs-butler.svg
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  # arm64 needs the matching Node tarball below; see the node part.
+
+apps:
+  # The web UI and job scheduler — the main way to run abs-butler. snapd
+  # generates the systemd unit, so SIGTERM is forwarded and a run is never
+  # truncated mid-write.
+  butler:
+    command: bin/serve
+    daemon: simple
+    install-mode: enable
+    restart-condition: on-failure
+    restart-delay: 5s
+    plugs:
+      - network
+      - network-bind
+      - removable-media
+
+  # The same CLI against the same database. Named to match the snap, so it is
+  # invoked as `abs-butler audit` rather than `abs-butler.cli audit`.
+  #
+  # It reads the database in /var/snap/abs-butler/common, which is root-owned,
+  # so it needs sudo.
+  abs-butler:
+    command: bin/cli
+    plugs:
+      - network
+      - removable-media
+
+parts:
+  # Ubuntu 24.04 ships Node 18, and node:sqlite needs 22.5 or newer, so the
+  # runtime is bundled. Only bin/node is primed; npm is staged for the build
+  # and then left behind.
+  node:
+    plugin: dump
+    source: https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-x64.tar.xz
+    source-checksum: sha256/41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df
+    stage:
+      - bin/node
+      - bin/npm
+      - bin/npx
+      - lib/node_modules
+    prime:
+      - bin/node
+
+  butler:
+    after: [node]
+    plugin: nil
+    source: .
+    override-build: |
+      # snapcraft copies the working tree verbatim, so a host node_modules and
+      # a local .env come along with it. Neither belongs in a build.
+      rm -rf node_modules .env
+      export PATH="${CRAFT_STAGE}/bin:${PATH}"
+
+      npm ci
+      npm run build
+      # Re-install without dev dependencies: the runtime needs only commander,
+      # dotenv, and zod. SQLite is built into Node, so nothing here compiles.
+      rm -rf node_modules
+      npm ci --omit=dev
+
+      install -d "${CRAFT_PART_INSTALL}/app"
+      cp -r dist node_modules package.json "${CRAFT_PART_INSTALL}/app/"
+
+      # Single source of truth for the version, so it cannot drift.
+      craftctl set version="$(node -p "require('./package.json').version")"
+
+  wrappers:
+    plugin: dump
+    source: snap/local
+    organize:
+      serve: bin/serve
+      cli: bin/cli

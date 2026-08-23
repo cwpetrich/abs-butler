@@ -1,0 +1,26 @@
+#!/bin/sh
+# Validates `snap set` values and restarts the daemon so they take effect.
+#
+# Rejecting a bad port here matters: the wrapper would otherwise pass it
+# straight to abs-butler, which exits, which the restart policy retries
+# forever with no obvious cause.
+set -eu
+
+port="$(snapctl get port || true)"
+if [ -n "${port}" ]; then
+  case "${port}" in
+    '' | *[!0-9]*)
+      echo "port must be a number (got '${port}')" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
+    echo "port must be between 1 and 65535 (got ${port})" >&2
+    exit 1
+  fi
+fi
+
+# This hook also runs during installation, before the service exists.
+if snapctl services abs-butler.butler >/dev/null 2>&1; then
+  snapctl restart abs-butler.butler || true
+fi
