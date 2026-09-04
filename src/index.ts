@@ -5,6 +5,7 @@ import { Command, Option } from 'commander';
 import { AbsApiError } from './abs/client.js';
 import { runAudit } from './commands/audit.js';
 import { runMetadata, METADATA_FIELDS } from './commands/metadata.js';
+import { runNormalize, NORMALIZE_FIELDS } from './commands/normalize.js';
 import { runOrganize } from './commands/organize.js';
 import { runRate } from './commands/rate.js';
 import {
@@ -57,12 +58,13 @@ program
 
 program
   .command('configure')
-  .description('Change the connection, or whether organize may move files')
+  .description('Change the connection, or what abs-butler is allowed to change')
   .option('--url <url>')
   .option('--api-key <key>')
   .option('--library-root <path>')
   .option('--path-prefix <path>')
   .option('--file-changes <on|off>', 'allow or refuse organize --apply on this install')
+  .option('--metadata-rewrite <on|off>', 'allow or refuse normalize --apply on this install')
   .action(async (opts) => runConfigure(opts));
 
 program
@@ -127,6 +129,19 @@ program
   .option('--providers <names...>', 'restrict to these providers')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) => runMetadata({ ...globals(), ...opts }));
+
+program
+  .command('normalize')
+  .description('Make titles, authors, narrators and series names consistent across the library')
+  .option('--apply', 'write changes to AudiobookShelf (default is a dry run)')
+  .option('--json', 'emit JSON instead of a table')
+  .addOption(new Option('--fields <names...>', 'fields to normalize').choices(NORMALIZE_FIELDS))
+  .option('--providers <names...>', 'restrict to these providers')
+  .option('--no-consensus', 'ignore what the rest of the library spells, and use providers only')
+  .option('--limit <n>', 'stop after N items', Number)
+  .action(async (opts) =>
+    runNormalize({ ...globals(), ...opts, noConsensus: opts.consensus === false }),
+  );
 
 program
   .command('organize')

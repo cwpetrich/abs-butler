@@ -1,10 +1,12 @@
 import { log } from '../logger.js';
+import { AudnexusProvider } from './audnexus.js';
 import { GoogleBooksProvider } from './googlebooks.js';
 import { OpenLibraryProvider } from './openlibrary.js';
 import type { MetadataProvider } from './types.js';
 
 export interface ProviderConfig {
   googleBooksApiKey?: string | undefined;
+  audibleRegion?: string | undefined;
   providerConcurrency?: number;
 }
 
@@ -12,6 +14,11 @@ let warnedAboutKey = false;
 
 /**
  * Build the active provider set, ordered by how much their answers are trusted.
+ *
+ * Audnexus leads because it is the only audiobook source: keyed on ASIN, it
+ * answers for one exact edition and is the only one that knows a narrator
+ * exists. It simply returns nothing when an item has no ASIN, so the two
+ * general-purpose providers behind it still carry an unmatched library.
  *
  * Goodreads is deliberately absent: its public API was retired in 2020 and its
  * terms forbid scraping. See docs/content-ratings.md for the sources that could
@@ -27,6 +34,7 @@ export function buildProviders(config: ProviderConfig, only?: string[]): Metadat
   }
 
   const all: MetadataProvider[] = [
+    new AudnexusProvider(config.audibleRegion),
     new OpenLibraryProvider(),
     new GoogleBooksProvider(config.googleBooksApiKey),
   ];
@@ -44,7 +52,7 @@ export function buildProviders(config: ProviderConfig, only?: string[]): Metadat
   return selected;
 }
 
-export const PROVIDER_NAMES = ['openlibrary', 'googlebooks'] as const;
+export const PROVIDER_NAMES = ['audnexus', 'openlibrary', 'googlebooks'] as const;
 
-export { OpenLibraryProvider, GoogleBooksProvider };
+export { AudnexusProvider, OpenLibraryProvider, GoogleBooksProvider };
 export type { MetadataProvider };

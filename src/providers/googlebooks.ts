@@ -7,12 +7,14 @@ interface GbVolume {
   id?: string;
   volumeInfo?: {
     title?: string;
+    subtitle?: string;
     authors?: string[];
     publisher?: string;
     publishedDate?: string;
     description?: string;
     industryIdentifiers?: Array<{ type?: string; identifier?: string }>;
     pageCount?: number;
+    language?: string;
     categories?: string[];
     maturityRating?: 'NOT_MATURE' | 'MATURE';
     averageRating?: number;
@@ -22,7 +24,7 @@ interface GbVolume {
 }
 
 /**
- * Google Books. Works keyless (heavily rate limited) or with GOOGLE_BOOKS_API_KEY.
+ * Google Books. Works keyless (heavily rate limited) or with an API key from Settings.
  * Two things make it worth querying alongside Open Library: BISAC categories
  * ("Juvenile Fiction / Social Themes / Bullying") and an explicit maturityRating.
  */
@@ -35,7 +37,7 @@ export class GoogleBooksProvider implements MetadataProvider {
     return true;
   }
 
-  async lookup(query: BookQuery): Promise<ProviderResult | null> {
+  async search(query: BookQuery): Promise<ProviderResult[]> {
     const terms: string[] = [];
     if (query.isbn) {
       terms.push(`isbn:${query.isbn.replace(/[^0-9Xx]/g, '')}`);
@@ -51,42 +53,52 @@ export class GoogleBooksProvider implements MetadataProvider {
     if (this.apiKey) url.searchParams.set('key', this.apiKey);
 
     const data = await getJson<{ items?: GbVolume[] }>(url);
-    const volume = data?.items?.[0];
-    const info = volume?.volumeInfo;
-    if (!info) return null;
-
-    const categories = info.categories ?? [];
-    const signals = categories.map((value) => ({
-      source: 'googlebooks:category',
-      value,
-      weight: 0.85, // BISAC categories are publisher-assigned, so more reliable than crowd shelves.
-    }));
-    if (info.maturityRating) {
-      signals.push({
-        source: 'googlebooks:maturity',
-        value: info.maturityRating,
-        weight: 0.9,
-      });
-    }
-
-    return {
-      provider: this.name,
-      providerId: volume?.id,
-      title: info.title,
-      authors: info.authors,
-      description: info.description,
-      publishedYear: info.publishedDate?.slice(0, 4),
-      publisher: info.publisher,
-      isbn: info.industryIdentifiers?.find((i) => i.type === 'ISBN_13')?.identifier,
-      pageCount: info.pageCount,
-      subjects: categories,
-      maturityRating: info.maturityRating ?? null,
-      averageRating: info.averageRating,
-      ratingsCount: info.ratingsCount,
-      url: info.infoLink,
-      signals,
-    };
+    return (data?.items ?? [])
+      .filter((volume): volume is GbVolume & { volumeInfo: NonNullable<GbVolume['volumeInfo']> } =>
+        Boolean(volume.volumeInfo),
+      )
+      .map((volume) => toResult(this.name, volume));
   }
+}
+
+function toResult(
+  provider: string,
+  volume: GbVolume & { volumeInfo: NonNullable<GbVolume['volumeInfo']> },
+): ProviderResult {
+  const info = volume.volumeInfo;
+  const categories = info.categories ?? [];
+  const signals = categories.map((value) => ({
+    source: 'googlebooks:category',
+    value,
+    weight: 0.85, // BISAC categories are publisher-assigned, so more reliable than crowd shelves.
+  }));
+  if (info.maturityRating) {
+    signals.push({
+      source: 'googlebooks:maturity',
+      value: info.maturityRating,
+      weight: 0.9,
+    });
+  }
+
+  return {
+    provider,
+    providerId: volume.id,
+    title: info.title,
+    subtitle: info.subtitle,
+    authors: info.authors,
+    description: info.description,
+    publishedYear: info.publishedDate?.slice(0, 4),
+    publisher: info.publisher,
+    isbn: info.industryIdentifiers?.find((i) => i.type === 'ISBN_13')?.identifier,
+    pageCount: info.pageCount,
+    language: info.language,
+    subjects: categories,
+    maturityRating: info.maturityRating ?? null,
+    averageRating: info.averageRating,
+    ratingsCount: info.ratingsCount,
+    url: info.infoLink,
+    signals,
+  };
 }
 
 function quote(value: string): string {

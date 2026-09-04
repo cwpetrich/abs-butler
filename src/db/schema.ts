@@ -114,4 +114,27 @@ export const MIGRATIONS: string[] = [
   `
   DELETE FROM settings WHERE key = 'requireDryRunFirst';
   `,
+
+  // 5 — remember what the providers already answered
+  //
+  // Without this every scheduled run re-asks every provider about every book,
+  // including the thousands they have already said they know nothing about. A
+  // nightly `metadata` schedule over a 3,000-book library was several thousand
+  // outbound requests a night to re-learn the same nothing, which is both the
+  // slowest part of a run and the fastest way to get rate limited.
+  //
+  // Keyed on the identifier the query actually used, so re-running after ABS
+  // matches a book to an ASIN is correctly a different question with a
+  // different answer.
+  `
+  CREATE TABLE lookups (
+    provider    TEXT    NOT NULL,
+    query_key   TEXT    NOT NULL,
+    results     TEXT    NOT NULL DEFAULT '[]',
+    hit         INTEGER NOT NULL DEFAULT 0,
+    fetched_at  INTEGER NOT NULL,
+    PRIMARY KEY (provider, query_key)
+  );
+  CREATE INDEX idx_lookups_fetched ON lookups(fetched_at);
+  `,
 ];
