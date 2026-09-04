@@ -137,6 +137,7 @@ function NewRunForm({
   const [template, setTemplate] = useState(meta.defaultTemplate);
   const [force, setForce] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
+  const [noConsensus, setNoConsensus] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
@@ -147,7 +148,14 @@ function NewRunForm({
   // Reachable files and permission to change them are separate questions, and
   // organize needs both. This one is abs-butler's own switch, on the Settings
   // page — not a mount, not a permission bit.
-  const writesBlocked = isFileCommand(command) && settings.data?.settings.allowFileChanges === false;
+  //
+  // normalize has its own switch for the same reason and with the same shape:
+  // the plan is always allowed, only writing it is gated.
+  const fileWritesBlocked =
+    isFileCommand(command) && settings.data?.settings.allowFileChanges === false;
+  const rewriteBlocked =
+    command === 'normalize' && settings.data?.settings.allowMetadataRewrite === false;
+  const writesBlocked = fileWritesBlocked || rewriteBlocked;
 
   // A mount can disappear while this form is open; a now-impossible command
   // must not stay selected in a form that still looks ready to submit.
@@ -173,6 +181,7 @@ function NewRunForm({
       if (command === 'organize') options.template = template;
       if (command === 'rate' && force) options.force = true;
       if (command === 'metadata' && overwrite) options.overwrite = true;
+      if (command === 'normalize' && noConsensus) options.noConsensus = true;
 
       const run = await api.startRun({ command, options });
       onStarted(run.id);
@@ -226,17 +235,18 @@ function NewRunForm({
         </Banner>
       )}
 
-      {writesBlocked && (
+      {fileWritesBlocked && (
         <Banner tone="warn">
           File changes are turned off, so organize can plan moves but not carry them out. Turn on
           "Allow file changes" in Settings to apply a plan — the files themselves are reachable.
         </Banner>
       )}
 
-      {writesBlocked && (
+      {rewriteBlocked && (
         <Banner tone="warn">
-          File changes are turned off, so organize can plan moves but not carry them out. Turn on
-          "Allow file changes" in Settings to apply a plan — the files themselves are reachable.
+          Metadata rewriting is turned off, so normalize can propose changes but not write them.
+          Turn on "Allow metadata rewrite" in Settings to apply a plan. Unlike metadata, which only
+          fills blank fields, this replaces titles and names that already have a value.
         </Banner>
       )}
 
@@ -268,12 +278,25 @@ function NewRunForm({
             Overwrite existing values
           </label>
         )}
+
+        {command === 'normalize' && (
+          <label className="checkbox" style={{ marginBottom: 0 }}>
+            <input
+              type="checkbox"
+              checked={noConsensus}
+              onChange={(e) => setNoConsensus(e.target.checked)}
+            />
+            Ignore what the rest of the library spells
+          </label>
+        )}
       </div>
 
       {apply && (
         <Banner tone="warn">
           This will write to AudiobookShelf
-          {command === 'organize' ? ' and move files on disk' : ''}. Run it as a dry run first.
+          {command === 'organize' ? ' and move files on disk' : ''}
+          {command === 'normalize' ? ', replacing titles and names that already have a value' : ''}.
+          Run it as a dry run first.
         </Banner>
       )}
 

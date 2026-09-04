@@ -102,7 +102,7 @@ networks:
 
 ## Paths, for `organize`
 
-Only `organize` touches the filesystem. `audit`, `rate`, and `metadata` work purely over the API and
+Only `organize` touches the filesystem. `audit`, `rate`, `metadata` and `normalize` work purely over the API and
 need no mount at all.
 
 Point `HOST_LIBRARY_PATH` at the same directory AudiobookShelf uses:

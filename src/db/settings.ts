@@ -8,11 +8,29 @@ import { z } from 'zod';
  */
 export const SettingsSchema = z.object({
   /** Providers consulted for ratings and metadata, in order of trust. */
-  providers: z.array(z.string()).default(['openlibrary', 'googlebooks']),
+  providers: z.array(z.string()).default(['audnexus', 'openlibrary', 'googlebooks']),
   googleBooksApiKey: z.string().default(''),
+  /** Audible marketplace Audnexus is asked about; a book absent from it 404s. */
+  audibleRegion: z.enum(['us', 'ca', 'uk', 'au', 'fr', 'de', 'jp', 'it', 'in', 'es']).default('us'),
   providerConcurrency: z.number().int().min(1).max(16).default(4),
+  /**
+   * How long a cached provider answer stays good. Answers about published
+   * books do not change, so this is generous; "nothing found" expires at a
+   * quarter of it, since that usually reflects the library rather than the book.
+   */
+  lookupCacheDays: z.number().int().min(1).max(365).default(30),
   /** Confidence an age band needs before `rate` will write its tag. */
   minConfidence: z.number().min(0).max(1).default(0.35),
+  /**
+   * Master switch for `normalize --apply`, the one command that rewrites
+   * metadata a person can already see.
+   *
+   * The same reasoning as allowFileChanges: filling a blank description is
+   * unremarkable, but rewriting a title, author, narrator or series is a
+   * change someone will notice in their library, and it should be something
+   * they chose rather than something a default allowed. Off on a fresh install.
+   */
+  allowMetadataRewrite: z.boolean().default(false),
   /** Runs kept in history; older ones are pruned. */
   historyLimit: z.number().int().min(10).max(10_000).default(500),
   /** Days of log retention. */

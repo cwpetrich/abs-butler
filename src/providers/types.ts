@@ -17,16 +17,30 @@ export interface ContentSignal {
   weight: number;
 }
 
+export interface SeriesRef {
+  name: string;
+  /** Position within the series, verbatim — "1", "2.5", "Book Two". */
+  sequence?: string | undefined;
+}
+
 export interface ProviderResult {
   provider: string;
   /** Stable id at the provider, useful for caching and audit trails. */
   providerId?: string;
   title?: string;
+  subtitle?: string;
   authors?: string[];
+  /** Audiobook-only, and the reason an audiobook source is worth querying at all. */
+  narrators?: string[];
+  /** The series this edition belongs to, with its position in it. */
+  series?: SeriesRef | undefined;
   description?: string;
   publishedYear?: string;
   publisher?: string;
   isbn?: string;
+  /** BCP-47-ish code where the provider gives one, e.g. "en". */
+  language?: string;
+  genres?: string[];
   pageCount?: number;
   /** Subjects, shelves, BISAC categories — the raw material for age banding. */
   subjects?: string[];
@@ -44,5 +58,13 @@ export interface MetadataProvider {
   readonly name: string;
   /** False when the provider needs a key that isn't configured. */
   isAvailable(): boolean;
-  lookup(query: BookQuery): Promise<ProviderResult | null>;
+  /**
+   * Candidates for this query, in the provider's own relevance order.
+   *
+   * Providers return every plausible answer rather than picking one: choosing
+   * between them needs the query alongside the result, which is scoring's job
+   * (see core/matching.ts), not the provider's. Returning only the top hit is
+   * what let an unrelated book through whenever it happened to rank first.
+   */
+  search(query: BookQuery): Promise<ProviderResult[]>;
 }

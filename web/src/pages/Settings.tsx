@@ -59,8 +59,9 @@ export function SettingsPage() {
         <div className="card">
           <h2>File changes</h2>
           <p className="hint">
-            Only <span className="mono">organize</span> touches the filesystem. Audit, rate, and
-            metadata work purely over the AudiobookShelf API and are unaffected by this.
+            Only <span className="mono">organize</span> touches the filesystem. Audit, rate,
+            metadata and normalize work purely over the AudiobookShelf API and are unaffected by
+            this.
           </p>
 
           <label className="checkbox">
@@ -81,6 +82,38 @@ export function SettingsPage() {
             <p className="hint">
               organize can still plan a reorganization and show you exactly what it would do —
               applying one is what gets refused, whether it comes from here, the CLI, or a schedule.
+            </p>
+          )}
+        </div>
+
+        <div className="card">
+          <h2>Metadata rewriting</h2>
+          <p className="hint">
+            <span className="mono">normalize</span> is the only command that replaces metadata a
+            person can already see — titles, authors, narrators and series names.{' '}
+            <span className="mono">metadata</span> only fills fields that are blank, so it is not
+            affected by this.
+          </p>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={form.allowMetadataRewrite}
+              onChange={(e) => set('allowMetadataRewrite', e.target.checked)}
+            />
+            Allow metadata rewrite
+          </label>
+
+          {form.allowMetadataRewrite ? (
+            <Banner tone="warn">
+              normalize can now overwrite titles, authors, narrators and series names when applied.
+              A provider answer is only used when an ASIN or ISBN matched exactly, but the library's
+              own majority spelling is enough on its own — so review a dry run before applying.
+            </Banner>
+          ) : (
+            <p className="hint">
+              normalize can still show every change it would make — applying one is what gets
+              refused, whether it comes from here, the CLI, or a schedule.
             </p>
           )}
         </div>
@@ -115,6 +148,24 @@ export function SettingsPage() {
                 value={form.providerConcurrency}
                 onChange={(e) => set('providerConcurrency', Number(e.target.value))}
               />
+            </label>
+
+            <label>
+              Audible region
+              <span className="hint">
+                Which marketplace Audnexus is asked about. A book absent from it simply returns
+                nothing, and the other providers answer instead.
+              </span>
+              <select
+                value={form.audibleRegion}
+                onChange={(e) => set('audibleRegion', e.target.value)}
+              >
+                {['us', 'ca', 'uk', 'au', 'fr', 'de', 'jp', 'it', 'in', 'es'].map((region) => (
+                  <option key={region} value={region}>
+                    {region.toUpperCase()}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <label>
@@ -156,6 +207,22 @@ export function SettingsPage() {
                 max={365}
                 value={form.logRetentionDays}
                 onChange={(e) => set('logRetentionDays', Number(e.target.value))}
+              />
+            </label>
+
+            <label>
+              Provider cache (days)
+              <span className="hint">
+                How long an answer from a provider is reused instead of asked again. "Nothing found"
+                expires at a quarter of this, since that usually reflects the library rather than
+                the book.
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={form.lookupCacheDays}
+                onChange={(e) => set('lookupCacheDays', Number(e.target.value))}
               />
             </label>
           </div>

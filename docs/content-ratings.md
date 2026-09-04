@@ -21,10 +21,11 @@ So this tool uses sources with real APIs and permissive terms.
 
 | Provider | Key needed | What it contributes |
 | --- | --- | --- |
+| **Audnexus** | No | Audible's own publisher-assigned categories, plus an `isAdult` flag. Only answers for books that carry an ASIN, but when it does the answer is about the exact audio edition rather than the work, so its categories are weighted above the other two. |
 | **Open Library** | No | Crowd-sourced `subject` lists. The richest audience signal available without scraping: carries library shelving like "Juvenile fiction" and "Young adult fiction" alongside content subjects like "Massacres" or "Drug abuse". |
 | **Google Books** | Optional | Publisher-assigned BISAC categories ("Juvenile Fiction / Social Themes / Bullying") and an explicit `maturityRating` of `MATURE`/`NOT_MATURE`. |
 
-**Set `GOOGLE_BOOKS_API_KEY`.** Without a key, Google Books uses an anonymous per-IP quota that is
+**Set a Google Books API key** in Settings → Providers. Without a key, Google Books uses an anonymous per-IP quota that is
 shared with everyone else on your address and is very often already exhausted — in testing from a
 residential connection it returned HTTP 429 for every request. The tool warns when the key is
 missing and carries on with Open Library alone, so a run can silently be working from one source.
@@ -37,7 +38,7 @@ BISAC categories are the more reliable signal of the two, so losing them measura
 | **Common Sense Media** | The best age-rating data that exists, with per-category ratings for violence, sex, language, and consumerism. No public API and its terms forbid scraping. Would need a licensing conversation. |
 | **Hardcover** | Has a public GraphQL API and modern shelving data. Requires an account token. The strongest candidate to add next. |
 | **StoryGraph** | Has the content warnings this tool most wants, contributed per-book by readers. No public API today. |
-| **Audible / Audnexus** | Good audiobook metadata, but no audience or content rating beyond an explicit flag. Useful for `metadata`, not for `rate`. |
+| **Audible / Audnexus** | **Now implemented** — see the table above. Its audience signal is thin next to Open Library's shelving, but its categories are edition-accurate, and it is the source of narrator and series data for `normalize`. |
 
 Adding one means implementing `MetadataProvider` in `src/providers/` and registering it in
 `src/providers/index.ts`. Anything that emits `ContentSignal`s feeds the existing scoring with no
