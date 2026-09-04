@@ -138,13 +138,25 @@ async function mkdirInheriting(dir: string): Promise<void> {
  * Best-effort, because only root may hand a file to a different user. Running
  * unprivileged the new path already belongs to us, so a refusal here means the
  * ownership is already as close to right as it can get.
+ *
+ * chown comes first and chmod second, and the order is load-bearing: chown
+ * clears the setgid bit, so doing it afterwards would strip the very bit this
+ * function exists to carry over. A shared media directory is usually mode 2775,
+ * and losing the setgid on the folders below it is exactly the silent breakage
+ * mkdirInheriting was written to prevent. Each call is guarded on its own so a
+ * refused chown — the ordinary case when running unprivileged — still leaves
+ * the mode applied.
  */
 async function copyOwnership(path: string, uid: number, gid: number, mode: number): Promise<void> {
   try {
-    await chmod(path, mode & 0o7777);
     await chown(path, uid, gid);
   } catch (err) {
     log.debug(`could not apply ownership to ${path}: ${(err as Error).message}`);
+  }
+  try {
+    await chmod(path, mode & 0o7777);
+  } catch (err) {
+    log.debug(`could not apply permissions to ${path}: ${(err as Error).message}`);
   }
 }
 
