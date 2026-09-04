@@ -53,10 +53,18 @@ const SOURCE_RANK: Record<ProposalSource, number> = { provider: 3, consensus: 2,
 export interface FieldProposal {
   field: Normalizable;
   from: string | null;
+  /** Display form. For list fields this is the joined text, shown to a human. */
   to: string;
   source: ProposalSource;
   /** Where it came from in detail: a provider name, or the rule that fired. */
   detail: string;
+  /**
+   * For the list-valued fields — author, narrator, series — the exact values to
+   * write, positionally. `to` is never split back apart to recover these: a
+   * name like "Martin Luther King, Jr." would come apart into two people, and
+   * AudiobookShelf replaces the whole list with whatever it is sent.
+   */
+  values?: string[];
 }
 
 export interface NormalizePlan {
@@ -157,6 +165,20 @@ export function buildConsensus(items: AbsLibraryItem[]): Consensus {
   };
 }
 
+/**
+ * Every author on the book, as a list.
+ *
+ * `itemAuthor` returns one name for display; this is what normalize needs,
+ * because AudiobookShelf replaces the whole author list with whatever it is
+ * sent — so anything it does not send is deleted.
+ */
+export function itemAuthors(item: AbsLibraryItem): string[] {
+  const metadata = item.media?.metadata;
+  const listed = (metadata?.authors ?? []).map((a) => a.name).filter((n) => !isBlank(n));
+  if (listed.length > 0) return listed.map((n) => n.trim());
+  return isBlank(metadata?.authorName) ? [] : splitPeople(metadata!.authorName!);
+}
+
 /** ABS stores narrators both ways depending on how the book was matched. */
 export function itemNarrators(item: AbsLibraryItem): string[] {
   const metadata = item.media?.metadata;
@@ -188,11 +210,19 @@ function propose(
   to: string | null | undefined,
   source: ProposalSource,
   detail: string,
+  values?: string[],
 ): void {
   if (isBlank(to) || to === from) return;
 
   const existing = list.findIndex((p) => p.field === field);
-  const candidate: FieldProposal = { field, from, to: to!.trim(), source, detail };
+  const candidate: FieldProposal = {
+    field,
+    from,
+    to: to!.trim(),
+    source,
+    detail,
+    ...(values ? { values } : {}),
+  };
   if (existing === -1) {
     list.push(candidate);
     return;
@@ -234,14 +264,24 @@ export function planNormalize(
   }
 
   if (wanted.has('author')) {
-    const current = itemAuthor(item);
-    const tidied = normalizePersonName(current);
-    propose(proposals, 'author', current, tidied, 'local', 'name order');
-    if (!options.noConsensus && current) {
-      propose(proposals, 'author', current, consensus.authors.get(normalizeAuthor(current)), 'consensus', 'library spelling');
+    const current = itemAuthors(item);
+    const currentText = current.join(', ') || null;
+
+    const tidied = current.map((name) => normalizePersonName(name) ?? name);
+    propose(proposals, 'author', currentText, joinIfChanged(tidied, current), 'local', 'name order', tidied);
+
+    if (!options.noConsensus && current.length > 0) {
+      const agreed = current.map((name) => consensus.authors.get(normalizeAuthor(name)) ?? name);
+      propose(proposals, 'author', currentText, joinIfChanged(agreed, current), 'consensus', 'library spelling', agreed);
     }
-    if (trusted) {
-      propose(proposals, 'author', current, trusted.result.authors?.[0], 'provider', trusted.result.provider);
+
+    // AudiobookShelf replaces the author list with whatever it is sent, so a
+    // provider that lists fewer authors than the library would silently delete
+    // the rest. Audible routinely credits only the lead author of a
+    // collaboration, which makes this the common case rather than the odd one.
+    const fromProvider = trusted?.result.authors ?? [];
+    if (fromProvider.length >= current.length && fromProvider.length > 0) {
+      propose(proposals, 'author', currentText, fromProvider.join(', '), 'provider', trusted!.result.provider, fromProvider);
     }
   }
 
@@ -249,24 +289,37 @@ export function planNormalize(
     const current = itemNarrators(item);
     const currentText = current.join(', ');
     const tidied = current.map((name) => normalizePersonName(name) ?? name);
-    propose(proposals, 'narrator', currentText || null, joinIfChanged(tidied, current), 'local', 'name order');
+    propose(proposals, 'narrator', currentText || null, joinIfChanged(tidied, current), 'local', 'name order', tidied);
 
     if (!options.noConsensus && current.length > 0) {
       const agreed = current.map((name) => consensus.narrators.get(normalizeAuthor(name)) ?? name);
-      propose(proposals, 'narrator', currentText || null, joinIfChanged(agreed, current), 'consensus', 'library spelling');
+      propose(proposals, 'narrator', currentText || null, joinIfChanged(agreed, current), 'consensus', 'library spelling', agreed);
     }
-    if (trusted?.result.narrators?.length) {
-      propose(proposals, 'narrator', currentText || null, trusted.result.narrators.join(', '), 'provider', trusted.result.provider);
+
+    const narrated = trusted?.result.narrators ?? [];
+    if (narrated.length >= current.length && narrated.length > 0) {
+      propose(proposals, 'narrator', currentText || null, narrated.join(', '), 'provider', trusted!.result.provider, narrated);
     }
   }
 
   if (wanted.has('series')) {
-    const current = metadata?.series?.[0]?.name ?? null;
-    if (!options.noConsensus && current) {
-      propose(proposals, 'series', current, consensus.series.get(normalizeTitle(current)), 'consensus', 'library spelling');
+    // Every entry, because AudiobookShelf replaces the series list too — a book
+    // in two series would lose the second if only the first were sent back.
+    const current = (metadata?.series ?? []).map((s) => s.name).filter((n): n is string => !!n);
+    const currentText = current.join(', ') || null;
+
+    if (!options.noConsensus && current.length > 0) {
+      const agreed = current.map((name) => consensus.series.get(normalizeTitle(name)) ?? name);
+      propose(proposals, 'series', currentText, joinIfChanged(agreed, current), 'consensus', 'library spelling', agreed);
     }
-    if (trusted?.result.series?.name) {
-      propose(proposals, 'series', current, trusted.result.series.name, 'provider', trusted.result.provider);
+
+    // A provider knows about one series, so it can rename the book's own but
+    // never enumerate the set. Applied to the first entry, or added when there
+    // is none at all.
+    const found = trusted?.result.series?.name;
+    if (found) {
+      const merged = current.length > 0 ? [found, ...current.slice(1)] : [found];
+      propose(proposals, 'series', currentText, joinIfChanged(merged, current), 'provider', trusted!.result.provider, merged);
     }
   }
 
@@ -281,15 +334,22 @@ function joinIfChanged(next: string[], previous: string[]): string | null {
 /**
  * Turns a plan into the patch AudiobookShelf expects.
  *
- * Series keeps its existing sequence: this command normalizes *names*, and the
- * position of a book within its series is something the library already knows
- * and a provider's regional edition may well disagree about.
+ * The list fields are written from `proposal.values`, never by splitting the
+ * display text: ABS replaces the author, narrator and series lists wholesale
+ * with whatever arrives, so a name that came apart on the wrong comma would
+ * not be a cosmetic error but a deleted co-author.
+ *
+ * Series keeps its existing sequence, matched positionally. This command
+ * normalizes *names*; where a book sits in its series is something the library
+ * already knows and a provider's regional edition may well disagree about.
  */
 export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMediaPatch {
   const patch: AbsMediaPatch = { metadata: {} };
   const metadata = patch.metadata!;
+  const existingSeries = item.media?.metadata?.series ?? [];
 
   for (const proposal of plan.proposals) {
+    const values = proposal.values ?? [proposal.to];
     switch (proposal.field) {
       case 'title':
         metadata.title = proposal.to;
@@ -298,22 +358,19 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
         metadata.subtitle = proposal.to;
         break;
       case 'author':
-        metadata.authors = splitPeople(proposal.to).map((name) => ({ name }));
+        metadata.authors = values.map((name) => ({ name }));
         break;
       case 'narrator':
-        metadata.narrators = proposal.to.split(',').map((n) => n.trim()).filter(Boolean);
+        metadata.narrators = values;
         break;
-      case 'series': {
-        const existing = item.media?.metadata?.series?.[0];
-        metadata.series = [
-          {
-            ...(existing?.id ? { id: existing.id } : {}),
-            name: proposal.to,
-            sequence: existing?.sequence ?? null,
-          },
-        ];
+      case 'series':
+        // No id: ABS resolves a series by name and creates it when new, so an
+        // id would suggest a stability the endpoint does not actually offer.
+        metadata.series = values.map((name, index) => ({
+          name,
+          sequence: existingSeries[index]?.sequence ?? null,
+        }));
         break;
-      }
     }
   }
   return patch;

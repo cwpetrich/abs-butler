@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AbsLibraryItem } from '../abs/types.js';
 import {
   buildConsensus,
+  itemAuthors,
   itemNarrators,
   normalizePersonName,
   normalizeTitleText,
@@ -251,18 +252,20 @@ describe('planNormalize', () => {
 });
 
 describe('planToPatch', () => {
-  it('keeps the existing series id and sequence when renaming it', () => {
+  // No id is sent: ABS resolves a series by name and creates it when new, so
+  // the sequence is the only thing worth carrying across.
+  it('keeps the existing sequence when renaming a series', () => {
     const item = book({ series: [{ id: 'series-1', name: 'Stormlight Archive', sequence: '2' }] });
     const patch = planToPatch(item, {
       itemId: item.id,
       title: 'x',
       author: null,
       proposals: [
-        { field: 'series', from: 'Stormlight Archive', to: 'The Stormlight Archive', source: 'consensus', detail: 'library spelling' },
+        { field: 'series', from: 'Stormlight Archive', to: 'The Stormlight Archive', source: 'consensus', detail: 'library spelling', values: ['The Stormlight Archive'] },
       ],
     });
     expect(patch.metadata?.series).toEqual([
-      { id: 'series-1', name: 'The Stormlight Archive', sequence: '2' },
+      { name: 'The Stormlight Archive', sequence: '2' },
     ]);
   });
 
@@ -273,11 +276,109 @@ describe('planToPatch', () => {
       title: 'x',
       author: null,
       proposals: [
-        { field: 'author', from: 'King, Stephen', to: 'Stephen King', source: 'local', detail: 'name order' },
-        { field: 'narrator', from: null, to: 'Jim Dale, Stephen Fry', source: 'provider', detail: 'audnexus' },
+        { field: 'author', from: 'King, Stephen', to: 'Stephen King', source: 'local', detail: 'name order', values: ['Stephen King'] },
+        { field: 'narrator', from: null, to: 'Jim Dale, Stephen Fry', source: 'provider', detail: 'audnexus', values: ['Jim Dale', 'Stephen Fry'] },
       ],
     });
     expect(patch.metadata?.authors).toEqual([{ name: 'Stephen King' }]);
     expect(patch.metadata?.narrators).toEqual(['Jim Dale', 'Stephen Fry']);
+  });
+
+  // ABS replaces these lists with whatever arrives, so recovering them by
+  // splitting the display text on commas would delete a person outright.
+  it('never splits a name apart to recover the list', () => {
+    const item = book({});
+    const patch = planToPatch(item, {
+      itemId: item.id,
+      title: 'x',
+      author: null,
+      proposals: [
+        {
+          field: 'author',
+          from: 'King, Martin Luther, Jr.',
+          to: 'Martin Luther King, Jr.',
+          source: 'local',
+          detail: 'name order',
+          values: ['Martin Luther King, Jr.'],
+        },
+      ],
+    });
+    expect(patch.metadata?.authors).toEqual([{ name: 'Martin Luther King, Jr.' }]);
+  });
+});
+
+describe('itemAuthors', () => {
+  it('returns every author, not just the display name', () => {
+    const item = book({
+      authors: [
+        { id: 'a1', name: 'Terry Pratchett' },
+        { id: 'a2', name: 'Neil Gaiman' },
+      ],
+      authorName: 'Terry Pratchett & Neil Gaiman',
+    });
+    expect(itemAuthors(item)).toEqual(['Terry Pratchett', 'Neil Gaiman']);
+  });
+
+  it('falls back to splitting the joined name', () => {
+    expect(itemAuthors(book({ authorName: 'Terry Pratchett & Neil Gaiman' }))).toEqual([
+      'Terry Pratchett',
+      'Neil Gaiman',
+    ]);
+  });
+});
+
+// The whole class of bug this shape exists to prevent: ABS deletes anything
+// the patch does not mention, so a proposal must always carry the full list.
+describe('planNormalize preserves collaborators', () => {
+  it('keeps a co-author when fixing the spelling of the other', () => {
+    const consensus: Consensus = {
+      ...noConsensus,
+      authors: new Map([['terry pratchett', 'Terry Pratchett']]),
+    };
+    const item = book({
+      authors: [
+        { id: 'a1', name: 'Pratchett, Terry' },
+        { id: 'a2', name: 'Neil Gaiman' },
+      ],
+    });
+    const plan = planNormalize(item, null, consensus, { fields: ['author'] });
+    const patch = planToPatch(item, plan);
+    expect(patch.metadata?.authors).toEqual([
+      { name: 'Terry Pratchett' },
+      { name: 'Neil Gaiman' },
+    ]);
+  });
+
+  // Audible commonly credits only the lead author of a collaboration.
+  it('refuses a provider author list shorter than the library has', () => {
+    const item = book({
+      authors: [
+        { id: 'a1', name: 'Terry Pratchett' },
+        { id: 'a2', name: 'Neil Gaiman' },
+      ],
+    });
+    const plan = planNormalize(item, trusted({ authors: ['Terry Pratchett'] }), noConsensus, {
+      fields: ['author'],
+    });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('keeps a second series when renaming the first', () => {
+    const consensus: Consensus = {
+      ...noConsensus,
+      series: new Map([['stormlight archive', 'The Stormlight Archive']]),
+    };
+    const item = book({
+      series: [
+        { id: 's1', name: 'Stormlight Archive', sequence: '1' },
+        { id: 's2', name: 'The Cosmere', sequence: '4' },
+      ],
+    });
+    const plan = planNormalize(item, null, consensus, { fields: ['series'] });
+    const patch = planToPatch(item, plan);
+    expect(patch.metadata?.series).toEqual([
+      { name: 'The Stormlight Archive', sequence: '1' },
+      { name: 'The Cosmere', sequence: '4' },
+    ]);
   });
 });
