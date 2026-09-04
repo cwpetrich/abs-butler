@@ -1,7 +1,10 @@
 import { log } from '../logger.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const USER_AGENT = 'abs-butler/0.1 (+https://github.com/conradpetrich/abs-butler)';
+// Sent to Open Library and Google Books, both of which ask that clients
+// identify themselves. The URL has to be the real one — it is how they reach
+// a maintainer when a client misbehaves.
+const USER_AGENT = 'abs-butler/0.3 (+https://github.com/cwpetrich/abs-butler)';
 
 /**
  * GET JSON with a timeout and one retry on transient failure.

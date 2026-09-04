@@ -5,10 +5,24 @@ same database.
 
 ## Quick start
 
+The compose file pulls a published image built for amd64 and arm64, so there is nothing to clone
+and nothing to compile:
+
 ```bash
+curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml
 docker compose up -d butler
 docker compose logs -f butler
 ```
+
+To run your own working tree instead of the published image, add the build override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build butler
+```
+
+It is a separate file on purpose. With `build:` in the main compose file, a plain `up` quietly
+compiles from source whenever the image is missing locally — a long and surprising first run for
+someone who only wanted to start the thing.
 
 Open <http://localhost:13380>, set a password, and add your server's URL and API token. Nothing needs
 to be configured before that first launch — no password file, no secret to generate. `.env` is
