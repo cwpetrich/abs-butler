@@ -1,0 +1,20 @@
+# Build from this working tree instead of pulling the published image.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build butler
+#
+# Kept as an override rather than folded into docker-compose.yml because the
+# two are different jobs: that file is for running abs-butler, this one is for
+# developing it. With `build:` present in the main file, a plain `up` silently
+# compiles from source whenever the image happens to be missing locally —
+# which is a long, surprising first run for someone who only wanted to start it.
+
+services:
+  butler:
+    build:
+      context: .
+    image: abs-butler:dev
+
+  cli:
+    build:
+      context: .
+    image: abs-butler:dev

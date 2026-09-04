@@ -29,9 +29,10 @@ sudo snap install abs-butler
 sudo snap connect abs-butler:removable-media    # only if you want to organize files
 ```
 
-**Docker**:
+**Docker** — nothing to clone; the compose file pulls a published multi-arch image:
 
 ```bash
+curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml
 docker compose up -d butler
 ```
 
@@ -323,6 +324,7 @@ Two things change in `.env`, which is now almost empty:
 - [docs/snap.md](docs/snap.md) — running as a snap, confinement, and reaching your library
 - [docs/docker.md](docs/docker.md) — running in Docker, networking, and paths
 - [docs/content-ratings.md](docs/content-ratings.md) — where rating data comes from, and its limits
+- [docs/releasing.md](docs/releasing.md) — cutting a release, and the one-time publishing setup
 
 ## License
 
