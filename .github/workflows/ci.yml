@@ -18,8 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # node:sqlite is a builtin from 22.5, and the whole database layer depends
-      # on it — so the minimum supported version is tested, not just the latest.
+      # node:sqlite carries the whole database layer, so the version that first
+      # exposes it without a flag is the real floor — see the job below.
       - uses: actions/setup-node@v4
         with:
           node-version: 24.x
@@ -31,7 +31,11 @@ jobs:
       - run: npm run build
 
   # The floor declared in package.json engines. A build that only ever runs on
-  # the newest Node quietly stops supporting the version it advertises.
+  # the newest Node quietly stops supporting the version it advertises — which
+  # is exactly what had happened: engines said 22.5, the version that *added*
+  # node:sqlite, but it sat behind --experimental-sqlite until 22.13. Anything
+  # in between installed cleanly and then failed on its first query with
+  # "No such built-in module: node:sqlite". This job is what caught it.
   minimum-node:
     name: Test on the minimum supported Node
     runs-on: ubuntu-latest
@@ -39,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.5
+          node-version: 22.13
           cache: npm
       - run: npm ci
       - run: npm test

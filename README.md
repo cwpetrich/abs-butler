@@ -325,7 +325,7 @@ Two modules in `src/core/` are worth reading before changing anything that talks
 is the single door every provider call goes through, so caching and scoring cannot be bypassed by
 accident.
 
-CI runs typecheck, tests (on Node 24 and on 22.5, the floor `engines` declares), and a build on
+CI runs typecheck, tests (on Node 24 and on 22.13, the floor `engines` declares), and a build on
 every push, plus the Docker image for amd64 and arm64 and the snap for amd64. Releases are cut by
 pushing a `v*` tag, which publishes the multi-arch image and both snap architectures.
 
