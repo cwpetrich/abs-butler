@@ -178,5 +178,5 @@ sudo snap install --dangerous ./abs-butler_*.snap
 `--dangerous` is required for a locally built snap, which carries no store signature.
 
 The build bundles Node from nodejs.org, pinned by checksum in `snap/snapcraft.yaml`, because Ubuntu
-24.04 ships Node 18 and `node:sqlite` needs 22.5 or newer. Nothing in abs-butler compiles: the only
+24.04 ships Node 18 and `node:sqlite` needs 22.13 or newer. Nothing in abs-butler compiles: the only
 runtime dependencies are `commander`, `dotenv`, and `zod`, and SQLite is built into Node.
