@@ -1,0 +1,31 @@
+# A disposable AudiobookShelf to develop abs-butler against.
+#
+#   cd test/abs
+#   docker compose up -d
+#   node seed.mjs            # builds the library, then triggers a scan
+#
+# Deliberately its own stack rather than a second library on an existing
+# server: these tests apply destructive changes — normalize rewrites titles and
+# authors, organize moves files — and nothing here should be pointed at a
+# server whose data anyone minds losing.
+#
+# Port 13377 keeps out of the way of the usual 13378 (AudiobookShelf), 13379,
+# and 13380 (abs-butler). Bound to localhost only; this has no password and is
+# not meant to be reachable from anywhere else.
+
+services:
+  abs-test:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: abs-butler-test
+    ports:
+      - "127.0.0.1:13377:80"
+    environment:
+      TZ: America/Denver
+    volumes:
+      - ./config:/config
+      - ./metadata:/metadata
+      # The same path inside the container and out, so abs-butler needs no
+      # path-prefix translation when it organizes files. Set the library root
+      # to this directory's absolute path on the host.
+      - ./library:/audiobooks
+    restart: unless-stopped

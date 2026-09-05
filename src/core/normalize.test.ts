@@ -155,13 +155,36 @@ describe('pickConsensus', () => {
 });
 
 describe('buildConsensus', () => {
-  it('groups author spellings across name order', () => {
+  // Name order is a local repair, so both spellings canonicalize to the same
+  // form and there is no disagreement left for consensus to settle.
+  it('leaves a pure name-order difference to the local tier', () => {
     const consensus = buildConsensus([
-      book({ id: '1', authorName: 'Stephen King' }),
-      book({ id: '2', authorName: 'Stephen King' }),
-      book({ id: '3', authorName: 'King, Stephen' }),
+      book({ id: '1', authors: [{ id: 'a', name: 'Stephen King' }] }),
+      book({ id: '2', authors: [{ id: 'a', name: 'Stephen King' }] }),
+      book({ id: '3', authors: [{ id: 'a', name: 'King, Stephen' }] }),
     ]);
-    expect(consensus.authors.get('stephen king')).toBe('Stephen King');
+    expect(consensus.authors.get('stephen king')).toBeUndefined();
+  });
+
+  // What consensus is actually for: spellings no rule can choose between,
+  // settled by what the rest of the library already does.
+  it('elects the majority spelling where no local rule can decide', () => {
+    const consensus = buildConsensus([
+      book({ id: '1', authors: [{ id: 'a', name: 'H.G. Wells' }] }),
+      book({ id: '2', authors: [{ id: 'a', name: 'H.G. Wells' }] }),
+      book({ id: '3', authors: [{ id: 'a', name: 'H. G. Wells' }] }),
+    ]);
+    expect(consensus.authors.get('h g wells')).toBe('H.G. Wells');
+  });
+
+  // The inverted form is longer, so a tie-break on length alone would elect it
+  // and then rewrite the correct books to match.
+  it('never elects a sort-order name over a reading-order one', () => {
+    const consensus = buildConsensus([
+      book({ id: '1', authors: [{ id: 'a', name: 'L. Frank Baum' }] }),
+      book({ id: '2', authors: [{ id: 'a', name: 'Baum, L. Frank' }] }),
+    ]);
+    expect(consensus.authors.get('l frank baum')).not.toBe('Baum, L. Frank');
   });
 });
 
@@ -176,6 +199,10 @@ describe('itemNarrators', () => {
       'Stephen Fry',
     ]);
   });
+
+  it('yields nothing from a flattened narrator list containing a comma', () => {
+    expect(itemNarrators(book({ narratorName: 'Dale, Jim' }))).toEqual([]);
+  });
 });
 
 describe('planNormalize', () => {
@@ -186,6 +213,32 @@ describe('planNormalize', () => {
     expect(plan.proposals).toEqual([
       expect.objectContaining({ field: 'title', to: 'The Hobbit', source: 'local' }),
     ]);
+  });
+
+  // ABS resolves a series by name, case-insensitively, so this write would be
+  // accepted and change nothing — and be proposed again on every later run.
+  it('does not propose a series rename that differs only by case', () => {
+    const consensus: Consensus = {
+      ...noConsensus,
+      series: new Map([['barsoom', 'Barsoom']]),
+    };
+    const plan = planNormalize(
+      book({ series: [{ id: 's1', name: 'barsoom', sequence: '3' }] }),
+      null,
+      consensus,
+      { fields: ['series'] },
+    );
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('does not propose an author rename that differs only by case', () => {
+    const consensus: Consensus = {
+      ...noConsensus,
+      authors: new Map([['jrr tolkien', 'J.R.R. TOLKIEN']]),
+    };
+    const item = book({ authors: [{ id: 'a1', name: 'J.R.R. Tolkien' }] });
+    const plan = planNormalize(item, null, consensus, { fields: ['author'] });
+    expect(plan.proposals).toEqual([]);
   });
 
   it('adopts the library consensus spelling of a series', () => {
@@ -244,10 +297,12 @@ describe('planNormalize', () => {
   });
 
   it('honours the requested field list', () => {
-    const plan = planNormalize(book({ title: 'Hobbit, The', authorName: 'King, Stephen' }), null, noConsensus, {
-      fields: ['author'],
-    });
+    // Structured authors, not the flattened name: a comma in the flat form is
+    // ambiguous and deliberately yields nothing, which would mask the point.
+    const item = book({ title: 'Hobbit, The', authors: [{ id: 'a1', name: 'King, Stephen' }] });
+    const plan = planNormalize(item, null, noConsensus, { fields: ['author'] });
     expect(plan.proposals.map((p) => p.field)).toEqual(['author']);
+    expect(plan.proposals[0]).toMatchObject({ to: 'Stephen King', values: ['Stephen King'] });
   });
 });
 
@@ -319,11 +374,19 @@ describe('itemAuthors', () => {
     expect(itemAuthors(item)).toEqual(['Terry Pratchett', 'Neil Gaiman']);
   });
 
-  it('falls back to splitting the joined name', () => {
+  it('falls back to splitting the joined name on an unambiguous separator', () => {
     expect(itemAuthors(book({ authorName: 'Terry Pratchett & Neil Gaiman' }))).toEqual([
       'Terry Pratchett',
       'Neil Gaiman',
     ]);
+  });
+
+  // ABS joins co-authors with ", " and people write single names as
+  // "Last, First". Nothing distinguishes them, and either misreading edits the
+  // wrong number of people into a list ABS replaces wholesale.
+  it('yields nothing from a flattened name containing a comma', () => {
+    expect(itemAuthors(book({ authorName: 'Mark Twain, Charles Dudley Warner' }))).toEqual([]);
+    expect(itemAuthors(book({ authorName: 'Twain, Mark' }))).toEqual([]);
   });
 });
 

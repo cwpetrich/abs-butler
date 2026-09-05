@@ -119,10 +119,24 @@ export function pickConsensus(values: string[]): Map<string, string> {
   return winners;
 }
 
-/** Same idea for people, where the grouping key ignores "Last, First" order. */
+/**
+ * Same idea for people, but each spelling is put into reading order before it
+ * votes.
+ *
+ * Without that step the vote is decided by the tie-break, and the tie-break
+ * prefers the longer string — which for a person is always the sort-order form,
+ * because of the comma and space it adds. A library holding "L. Frank Baum" and
+ * "Baum, L. Frank" once each would elect the inverted one and then rewrite the
+ * correct book to match it, driving the whole library the wrong way.
+ *
+ * Canonicalizing first means the two forms are the same vote rather than
+ * opposing ones, so consensus is left deciding only what a local repair cannot:
+ * genuinely different spellings like "J.R.R. Tolkien" against "JRR Tolkien".
+ */
 function pickPersonConsensus(values: string[]): Map<string, string> {
   const groups = new Map<string, Map<string, number>>();
-  for (const value of values) {
+  for (const raw of values) {
+    const value = normalizePersonName(raw) ?? raw;
     const key = normalizeAuthor(value);
     if (!key) continue;
     const forms = groups.get(key) ?? new Map<string, number>();
@@ -151,10 +165,10 @@ export function buildConsensus(items: AbsLibraryItem[]): Consensus {
     for (const series of metadata?.series ?? []) {
       if (series.name) seriesNames.push(series.name);
     }
-    for (const author of metadata?.authors ?? []) {
-      if (author.name) authorNames.push(author.name);
-    }
-    if (metadata?.authorName) authorNames.push(...splitPeople(metadata.authorName));
+    // The same extractors the planner uses, so the vote is taken over exactly
+    // the values that could be proposed — and an ambiguous flattened name is
+    // excluded from both rather than voting under a misreading.
+    for (const author of itemAuthors(item)) authorNames.push(author);
     for (const narrator of itemNarrators(item)) narratorNames.push(narrator);
   }
 
@@ -176,7 +190,25 @@ export function itemAuthors(item: AbsLibraryItem): string[] {
   const metadata = item.media?.metadata;
   const listed = (metadata?.authors ?? []).map((a) => a.name).filter((n) => !isBlank(n));
   if (listed.length > 0) return listed.map((n) => n.trim());
-  return isBlank(metadata?.authorName) ? [] : splitPeople(metadata!.authorName!);
+  return peopleFromFlatName(metadata?.authorName);
+}
+
+/**
+ * Last resort when only the flattened name is available, which happens when an
+ * item could not be expanded.
+ *
+ * A comma in that string is unresolvably ambiguous: AudiobookShelf joins
+ * co-authors with ", " and people write single names as "Last, First", and the
+ * two are indistinguishable without knowing the names. Guessing wrong is not
+ * cosmetic — ABS replaces the list with whatever it is sent, so reading two
+ * people as one deletes somebody, and reading one as two invents somebody.
+ *
+ * So a comma here yields nothing at all, and the field is simply left alone.
+ */
+export function peopleFromFlatName(value: string | null | undefined): string[] {
+  if (isBlank(value)) return [];
+  if (value!.includes(',')) return [];
+  return splitPeople(value!);
 }
 
 /** ABS stores narrators both ways depending on how the book was matched. */
@@ -184,7 +216,7 @@ export function itemNarrators(item: AbsLibraryItem): string[] {
   const metadata = item.media?.metadata;
   const listed = metadata?.narrators ?? [];
   if (listed.length > 0) return listed.filter((n) => !isBlank(n)).map((n) => n.trim());
-  return isBlank(metadata?.narratorName) ? [] : splitPeople(metadata!.narratorName!);
+  return peopleFromFlatName(metadata?.narratorName);
 }
 
 /**
@@ -203,6 +235,23 @@ export function splitPeople(value: string): string[] {
 // Planning
 // ---------------------------------------------------------------------------
 
+/**
+ * Authors and series are records in AudiobookShelf, not strings on the book,
+ * and it resolves them by name case-insensitively. So a rename that changes
+ * only capitalization has nothing to resolve to but the record already
+ * attached, and the write is accepted and silently does nothing.
+ *
+ * Proposing it anyway would mean a scheduled run that reports the same change
+ * every night and never converges — the one failure a set-and-forget tool
+ * cannot have. Narrators are plain strings on the book and are not affected.
+ */
+const RESOLVED_BY_NAME: ReadonlySet<Normalizable> = new Set<Normalizable>(['author', 'series']);
+
+function unachievableRename(field: Normalizable, from: string | null, to: string): boolean {
+  if (!RESOLVED_BY_NAME.has(field) || !from) return false;
+  return from.toLowerCase() === to.toLowerCase();
+}
+
 function propose(
   list: FieldProposal[],
   field: Normalizable,
@@ -213,6 +262,7 @@ function propose(
   values?: string[],
 ): void {
   if (isBlank(to) || to === from) return;
+  if (unachievableRename(field, from, to!.trim())) return;
 
   const existing = list.findIndex((p) => p.field === field);
   const candidate: FieldProposal = {
@@ -435,7 +485,9 @@ export async function runNormalizeTask(
   const deps: LookupDeps = { providers, db: ctx.db, cacheDays: ctx.settings.lookupCacheDays };
 
   const libraries = await resolveLibraries(ctx, options.library);
-  const items = await collectItems(ctx, libraries, { limit: options.limit });
+  // Expanded: this command reads and rewrites the structured author, narrator
+  // and series lists, and the minified listing carries none of them.
+  const items = await collectItems(ctx, libraries, { limit: options.limit, expand: true });
 
   // Consensus is built from everything that was read, before any single item is
   // planned: the whole point is that one book's spelling is judged against the

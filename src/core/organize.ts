@@ -256,7 +256,11 @@ export async function runOrganizeTask(
   const libraries = await resolveLibraries(ctx, options.library);
   const plans: MovePlan[] = [];
   for (const library of libraries) {
-    const items = await collectItems(ctx, [library], { limit: options.limit });
+    // Expanded, because the path template renders {series} and {sequence} from
+    // the structured series field. A minified item has neither, so every book
+    // in a series would plan a move to Author/Title — physically lifting it out
+    // of its series folder on apply.
+    const items = await collectItems(ctx, [library], { limit: options.limit, expand: true });
     for (const item of items) {
       if (item.isFile) {
         log.debug(`skipping single-file item (not a book folder): ${itemTitle(item)}`);
