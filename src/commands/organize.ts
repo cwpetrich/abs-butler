@@ -1,6 +1,7 @@
 import { DEFAULT_TEMPLATE, runOrganizeTask, unavailableMessage } from '../core/organize.js';
 import { checkLocalRoot } from '../core/capability.js';
 import { openContext, openStore, type GlobalOptions } from '../context.js';
+import { withRun } from '../core/execute.js';
 import { color, log } from '../logger.js';
 import { printJson, printTable } from '../util/table.js';
 import { truncate } from '../util/text.js';
@@ -15,14 +16,18 @@ export interface OrganizeOptions extends GlobalOptions {
 
 export async function runOrganize(options: OrganizeOptions): Promise<void> {
   const db = openStore();
-  const ctx = openContext(db);
 
-  // Checked before any network call so an unavailable server answers instantly
-  // with the reason, rather than after reading the whole library.
-  const local = checkLocalRoot(ctx.connection);
+  // Checked before any network call, and before a run is recorded, so an
+  // unavailable server answers instantly with the reason rather than leaving a
+  // failed run behind for something that never started.
+  const local = checkLocalRoot(openContext(db).connection);
   if (!local.canManageFiles) throw new Error(unavailableMessage(local.reason));
 
-  const result = await runOrganizeTask(ctx, options);
+  // Recorded as a run like any other. Note that `organize` records no
+  // revisions: it moves files, which `revert` cannot undo through the API.
+  const { ctx, result } = await withRun(db, 'organize', options as Record<string, unknown>, (c) =>
+    runOrganizeTask(c, options),
+  );
 
   if (options.json) {
     printJson({ server: ctx.connection.url, ...result });

@@ -6,6 +6,7 @@ import { buildProviders } from '../providers/index.js';
 import type { ProviderResult } from '../providers/types.js';
 import { isBlank } from '../util/text.js';
 import { lookupItem, type LookupDeps } from './lookup.js';
+import { applyPatch } from './revisions.js';
 import { itemQuery } from './query.js';
 
 /**
@@ -137,6 +138,8 @@ export async function runMetadataTask(
   const actionable = plans.filter((p) => p.changes.length > 0);
   const fieldsToFill = actionable.reduce((sum, p) => sum + p.changes.length, 0);
 
+  const byId = new Map(items.map((item) => [item.id, item]));
+
   let updated = 0;
   if (options.apply) {
     for (const plan of actionable) {
@@ -144,7 +147,7 @@ export async function runMetadataTask(
       for (const change of plan.changes) {
         (patch.metadata as Record<string, string>)[change.field] = change.to;
       }
-      await ctx.client.patchItemMedia(plan.itemId, patch);
+      await applyPatch(ctx, byId.get(plan.itemId)!, patch);
       updated += 1;
     }
     log.success(`Updated ${updated} item(s).`);
