@@ -25,3 +25,10 @@ reports/
 parts/
 prime/
 stage/
+
+# Local AudiobookShelf test server: harness is tracked, its data is not.
+test/abs/config/
+test/abs/metadata/
+test/abs/library/
+test/abs/.token
+test/abs/butler-data/

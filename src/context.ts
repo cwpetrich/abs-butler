@@ -11,6 +11,7 @@ import {
 import { getSettings, type Settings } from './db/settings.js';
 import { assessCapability, type Capability } from './core/capability.js';
 import { log } from './logger.js';
+import { mapLimit } from './providers/http.js';
 
 export interface GlobalOptions {
   library?: string;
@@ -76,21 +77,55 @@ export async function checkCapability(ctx: TaskContext): Promise<Capability> {
   return assessCapability(ctx.connection, libraries);
 }
 
-/** Collects items across libraries, with an optional cap for quick trial runs. */
+/**
+ * Number of expanded item fetches in flight. This talks to AudiobookShelf,
+ * which is normally the same machine, so it is bounded to be polite rather
+ * than because the network is slow.
+ */
+const EXPAND_CONCURRENCY = 8;
+
+/**
+ * Collects items across libraries, with an optional cap for quick trial runs.
+ *
+ * `expand` decides which of two genuinely different shapes comes back.
+ * AudiobookShelf's library listing returns *minified* items, and minified
+ * metadata has no `authors`, `narrators` or `series` — only the flattened
+ * `authorName`, `narratorName` and `seriesName` strings. Those flattened forms
+ * are lossy in ways that matter: `authorName` joins co-authors with a comma,
+ * which is indistinguishable from a single name written "Last, First", and
+ * `seriesName` folds the sequence into the name as "Barsoom #1".
+ *
+ * So anything that reads the structured fields has to ask for each item in
+ * full, one request apiece. Anything that only needs the flat fields — audit,
+ * rate, metadata — stays on the single cheap listing.
+ */
 export async function collectItems(
   ctx: TaskContext,
   libraries: AbsLibrary[],
-  options: { limit?: number } = {},
+  options: { limit?: number; expand?: boolean } = {},
 ): Promise<AbsLibraryItem[]> {
   const items: AbsLibraryItem[] = [];
-  for (const library of libraries) {
+  outer: for (const library of libraries) {
     log.info(`reading library ${library.name}…`);
     for await (const item of ctx.client.iterateLibraryItems(library.id)) {
       items.push(item);
-      if (options.limit && items.length >= options.limit) return items;
+      if (options.limit && items.length >= options.limit) break outer;
     }
   }
-  return items;
+
+  if (!options.expand) return items;
+
+  log.info(`fetching full metadata for ${items.length} item(s)…`);
+  return mapLimit(items, EXPAND_CONCURRENCY, async (item) => {
+    try {
+      return await ctx.client.getItem(item.id);
+    } catch (err) {
+      // One unreadable item should not abort a whole run. The minified copy is
+      // still usable for everything but the structured fields.
+      log.debug(`could not expand ${item.id}: ${(err as Error).message}`);
+      return item;
+    }
+  });
 }
 
 export function itemTitle(item: AbsLibraryItem): string {
