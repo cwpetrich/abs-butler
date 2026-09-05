@@ -41,6 +41,20 @@ export const MATCH_MIN_FILL = 0.5;
  */
 export const MATCH_MIN_REWRITE = 0.9;
 
+/**
+ * Required before claiming two books on different servers are the same work.
+ *
+ * Sits between filling and rewriting, and for a different reason than either.
+ * A wrong description is noise on one server; a wrong *identity* is shared —
+ * it tells every client that two unrelated books are one, and no amount of
+ * later correction on one machine unsays it elsewhere.
+ *
+ * Given the fuzzy ceiling below, clearing this requires the author to have
+ * actually agreed: a candidate whose author could not be compared tops out at
+ * 0.73 no matter how exactly the titles match.
+ */
+export const MATCH_MIN_IDENTITY = 0.8;
+
 /** A fuzzy match cannot reach MATCH_MIN_REWRITE no matter how well it scores. */
 const FUZZY_CEILING = 0.85;
 

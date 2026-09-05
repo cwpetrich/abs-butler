@@ -32,3 +32,6 @@ test/abs/metadata/
 test/abs/library/
 test/abs/.token
 test/abs/butler-data/
+
+# Worktrees for in-progress work.
+.claude/

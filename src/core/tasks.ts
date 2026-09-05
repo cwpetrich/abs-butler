@@ -98,6 +98,7 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         scanned: r.scanned,
         itemsToChange: r.itemsToChange,
         fieldsToChange: r.fieldsToChange,
+        heldBack: r.heldBack,
         updated: r.updated,
         applied: r.applied,
         fields: r.fields,

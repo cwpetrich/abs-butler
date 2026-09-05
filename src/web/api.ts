@@ -6,7 +6,7 @@ import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
 import { AUDIT_CODES } from '../core/audit.js';
 import { FILLABLE } from '../core/metadata.js';
-import { NORMALIZABLE, REWRITE_DISABLED } from '../core/normalize.js';
+import { NORMALIZABLE } from '../core/normalize.js';
 import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
@@ -109,9 +109,10 @@ function assertCommandAllowed(
     if (!local.canManageFiles) throw badRequest(unavailableMessage(local.reason));
   }
 
-  if (command === 'normalize' && options.apply && !getSettings(db).allowMetadataRewrite) {
-    throw badRequest(REWRITE_DISABLED);
-  }
+  // Not refused outright any more: with the switch off a normalize still
+  // applies the additive half of its plan — a work identity on a book that had
+  // none — and holds back only the replacements. The run reports what it held.
+
 }
 
 export interface ApiDeps {
