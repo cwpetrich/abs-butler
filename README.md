@@ -154,6 +154,7 @@ abs-butler disconnect                   # forget the connection, keep history
 abs-butler audit --details              # metadata and file problems
 abs-butler metadata                     # fill blank description/year/publisher/ISBN
 abs-butler normalize                    # make titles, authors, narrators, series consistent
+abs-butler normalize --fields work      # stamp Open Library work identities only
 abs-butler rate                         # age bands and content flags
 abs-butler organize                     # plan a folder reorganization
 
@@ -216,10 +217,49 @@ A fuzzy title match can **never** rename a book — the scoring caps it below th
 requires, by construction. So a library AudiobookShelf has never matched still gets its consensus
 and local repairs, with no provider consulted and no network call made at all.
 
-Higher tiers win when two disagree. `--fields` narrows what is touched, `--no-consensus` turns off
-the library-agreement tier, and `--apply` is refused until **Allow metadata rewrite** is on.
+Higher tiers win when two disagree. `--fields` narrows what is touched and `--no-consensus` turns
+off the library-agreement tier.
+
+**Allow metadata rewrite** gates *replacing* a value, not supplying a missing one. With it off,
+`--apply` still fills what was blank — a subtitle, a series a book never had, a work identity — and
+holds back every change that would overwrite something, saying how many it held. Wanting work tags
+for a multi-server client should not require consenting to have your titles rewritten.
 
 Take a dry run first and read the `WHY` column. It is the whole point of the output.
+
+### Work identity, for clients reading several servers
+
+`normalize --fields work` stamps each book with the Open Library **work** key it
+resolves to, as a tag:
+
+```
+abs-butler:work:OL27482W
+```
+
+A work is the book, not the recording. Two servers holding different narrations of
+*The Return of the King* hold the same work — which is why this is not an ASIN, and
+not an ISBN: those identify one audio edition and one printing respectively, and
+would deny a match that a reader would call obvious.
+
+It exists for tools that read across servers and have to decide whether two entries
+are the same book. AudiobookShelf itself has no use for it, nothing here depends on
+it, and a library that never runs it is no worse off.
+
+**What it is worth, measured.** Sampled across 2,230 items on two live servers,
+against pairs of the same book held by both: when both sides resolve, they agree on
+the work **13 times out of 13**. But only about a third resolve at all — Open Library
+is thin on self-published and LitRPG titles, which is much of what those libraries
+hold. So it is a high-precision, low-recall signal.
+
+That shapes how a client should use it: **a work tag should only ever merge, never
+split.** Two copies that disagree, or where only one carries a tag, are no worse off
+than before and should fall back to matching on title and author. Used that way it
+can only add correct merges.
+
+The bar to write one is deliberately higher than for filling a blank field: a wrong
+description is noise on one server, while a wrong identity is repeated to every
+client that reads it. In practice the author has to have actually agreed, not merely
+been absent.
 
 ### Organizing files on disk
 

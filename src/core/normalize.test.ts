@@ -10,6 +10,10 @@ import {
   planNormalize,
   planToPatch,
   splitPeople,
+  isAdditive,
+  itemWorkKey,
+  workKeyFrom,
+  WORK_TAG_PREFIX,
   type Consensus,
 } from './normalize.js';
 import type { Candidate } from './matching.js';
@@ -207,7 +211,7 @@ describe('itemNarrators', () => {
 
 describe('planNormalize', () => {
   it('proposes a local title repair with no provider at all', () => {
-    const plan = planNormalize(book({ title: 'Hobbit, The' }), null, noConsensus, {
+    const plan = planNormalize(book({ title: 'Hobbit, The' }), [], noConsensus, {
       fields: ['title'],
     });
     expect(plan.proposals).toEqual([
@@ -224,7 +228,7 @@ describe('planNormalize', () => {
     };
     const plan = planNormalize(
       book({ series: [{ id: 's1', name: 'barsoom', sequence: '3' }] }),
-      null,
+      [],
       consensus,
       { fields: ['series'] },
     );
@@ -237,7 +241,7 @@ describe('planNormalize', () => {
       authors: new Map([['jrr tolkien', 'J.R.R. TOLKIEN']]),
     };
     const item = book({ authors: [{ id: 'a1', name: 'J.R.R. Tolkien' }] });
-    const plan = planNormalize(item, null, consensus, { fields: ['author'] });
+    const plan = planNormalize(item, [], consensus, { fields: ['author'] });
     expect(plan.proposals).toEqual([]);
   });
 
@@ -248,7 +252,7 @@ describe('planNormalize', () => {
     };
     const plan = planNormalize(
       book({ series: [{ id: 's1', name: 'Stormlight Archive', sequence: '1' }] }),
-      null,
+      [],
       consensus,
       { fields: ['series'] },
     );
@@ -260,7 +264,7 @@ describe('planNormalize', () => {
   it('lets a provider answer outrank a local rearrangement of the old value', () => {
     const plan = planNormalize(
       book({ title: 'Hobbit, The' }),
-      trusted({ title: 'The Hobbit: A Tale' }),
+      [trusted({ title: 'The Hobbit: A Tale' })],
       noConsensus,
       { fields: ['title'] },
     );
@@ -275,14 +279,14 @@ describe('planNormalize', () => {
       result: { provider: 'openlibrary', signals: [], title: 'The Hobbit, or There and Back Again' },
       match: { score: 0.85, basis: 'fuzzy', reasons: [] },
     };
-    const plan = planNormalize(book({ title: 'The Hobbit' }), weak, noConsensus, { fields: ['title'] });
+    const plan = planNormalize(book({ title: 'The Hobbit' }), [weak], noConsensus, { fields: ['title'] });
     expect(plan.proposals).toEqual([]);
   });
 
   it('takes the narrator list from an identified provider match', () => {
     const plan = planNormalize(
       book({ narratorName: 'Dale, Jim' }),
-      trusted({ narrators: ['Jim Dale'] }),
+      [trusted({ narrators: ['Jim Dale'] })],
       noConsensus,
       { fields: ['narrator'] },
     );
@@ -290,7 +294,7 @@ describe('planNormalize', () => {
   });
 
   it('proposes nothing for a book that is already consistent', () => {
-    const plan = planNormalize(book({ title: 'The Hobbit', authorName: 'J.R.R. Tolkien' }), null, noConsensus, {
+    const plan = planNormalize(book({ title: 'The Hobbit', authorName: 'J.R.R. Tolkien' }), [], noConsensus, {
       fields: [...(['title', 'author', 'narrator', 'series'] as const)],
     });
     expect(plan.proposals).toEqual([]);
@@ -300,7 +304,7 @@ describe('planNormalize', () => {
     // Structured authors, not the flattened name: a comma in the flat form is
     // ambiguous and deliberately yields nothing, which would mask the point.
     const item = book({ title: 'Hobbit, The', authors: [{ id: 'a1', name: 'King, Stephen' }] });
-    const plan = planNormalize(item, null, noConsensus, { fields: ['author'] });
+    const plan = planNormalize(item, [], noConsensus, { fields: ['author'] });
     expect(plan.proposals.map((p) => p.field)).toEqual(['author']);
     expect(plan.proposals[0]).toMatchObject({ to: 'Stephen King', values: ['Stephen King'] });
   });
@@ -404,7 +408,7 @@ describe('planNormalize preserves collaborators', () => {
         { id: 'a2', name: 'Neil Gaiman' },
       ],
     });
-    const plan = planNormalize(item, null, consensus, { fields: ['author'] });
+    const plan = planNormalize(item, [], consensus, { fields: ['author'] });
     const patch = planToPatch(item, plan);
     expect(patch.metadata?.authors).toEqual([
       { name: 'Terry Pratchett' },
@@ -420,7 +424,7 @@ describe('planNormalize preserves collaborators', () => {
         { id: 'a2', name: 'Neil Gaiman' },
       ],
     });
-    const plan = planNormalize(item, trusted({ authors: ['Terry Pratchett'] }), noConsensus, {
+    const plan = planNormalize(item, [trusted({ authors: ['Terry Pratchett'] })], noConsensus, {
       fields: ['author'],
     });
     expect(plan.proposals).toEqual([]);
@@ -437,7 +441,7 @@ describe('planNormalize preserves collaborators', () => {
         { id: 's2', name: 'The Cosmere', sequence: '4' },
       ],
     });
-    const plan = planNormalize(item, null, consensus, { fields: ['series'] });
+    const plan = planNormalize(item, [], consensus, { fields: ['series'] });
     const patch = planToPatch(item, plan);
     expect(patch.metadata?.series).toEqual([
       { name: 'The Stormlight Archive', sequence: '1' },
@@ -445,3 +449,76 @@ describe('planNormalize preserves collaborators', () => {
     ]);
   });
 });
+
+describe('work identity', () => {
+  const olCandidate = (score: number, key = '/works/OL27482W'): Candidate => ({
+    result: { provider: 'openlibrary', signals: [], providerId: key, title: 'The Hobbit' },
+    match: { score, basis: 'fuzzy', reasons: [] },
+  })
+
+  it('reads a work key back off an item', () => {
+    const item = book({})
+    item.media.tags = ['fiction', `${WORK_TAG_PREFIX}OL27482W`]
+    expect(itemWorkKey(item)).toBe('OL27482W')
+    expect(itemWorkKey(book({}))).toBeNull()
+  })
+
+  it('takes the bare key out of Open Library\'s path form', () => {
+    expect(workKeyFrom(olCandidate(1))).toBe('OL27482W')
+  })
+
+  // Audnexus answers for one audio edition and Google Books for one printing,
+  // so neither can say what the book is independently of the copy in hand.
+  it('ignores a provider that does not model works', () => {
+    const audnexus: Candidate = {
+      result: { provider: 'audnexus', signals: [], providerId: 'B017V4IM1G' },
+      match: { score: 1, basis: 'asin', reasons: [] },
+    }
+    expect(workKeyFrom(audnexus)).toBeNull()
+  })
+
+  it('proposes a work tag from a confident Open Library match', () => {
+    const plan = planNormalize(book({}), [olCandidate(0.85)], noConsensus, { fields: ['work'] })
+    expect(plan.proposals[0]).toMatchObject({ field: 'work', to: 'OL27482W', source: 'provider' })
+  })
+
+  // A wrong identity is shared across every server that reads it, so this bar
+  // sits above the one for filling a blank description.
+  it('refuses a match too weak to assert an identity on', () => {
+    const plan = planNormalize(book({}), [olCandidate(0.73)], noConsensus, { fields: ['work'] })
+    expect(plan.proposals).toEqual([])
+  })
+
+  it('writes the tag without disturbing the ones rate owns', () => {
+    const item = book({})
+    item.media.tags = ['fiction', 'age:middle-grade', 'abs-butler:rated']
+    const patch = planToPatch(item, {
+      itemId: item.id, title: 'x', author: null,
+      proposals: [{ field: 'work', from: null, to: 'OL27482W', source: 'provider', detail: 'openlibrary' }],
+    })
+    expect(patch.tags).toEqual(['fiction', 'age:middle-grade', 'abs-butler:rated', `${WORK_TAG_PREFIX}OL27482W`])
+  })
+
+  it('replaces an existing work tag rather than adding a second', () => {
+    const item = book({})
+    item.media.tags = [`${WORK_TAG_PREFIX}OL999W`]
+    const patch = planToPatch(item, {
+      itemId: item.id, title: 'x', author: null,
+      proposals: [{ field: 'work', from: 'OL999W', to: 'OL27482W', source: 'provider', detail: 'openlibrary' }],
+    })
+    expect(patch.tags).toEqual([`${WORK_TAG_PREFIX}OL27482W`])
+  })
+})
+
+describe('isAdditive', () => {
+  // The switch guards changing a value someone can read, not supplying a
+  // missing one — so work tags do not require consenting to title rewrites.
+  it('treats supplying a missing value as additive', () => {
+    expect(isAdditive({ field: 'work', from: null, to: 'OL1W', source: 'provider', detail: 'x' })).toBe(true)
+    expect(isAdditive({ field: 'series', from: '', to: 'Barsoom', source: 'provider', detail: 'x' })).toBe(true)
+  })
+
+  it('treats changing an existing value as a replacement', () => {
+    expect(isAdditive({ field: 'title', from: 'Hobbit, The', to: 'The Hobbit', source: 'local', detail: 'x' })).toBe(false)
+  })
+})

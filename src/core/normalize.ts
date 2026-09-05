@@ -11,7 +11,7 @@ import {
   normalizeTitleText,
 } from '../util/text.js';
 import { lookupItem, type LookupDeps } from './lookup.js';
-import { MATCH_MIN_REWRITE, type Candidate } from './matching.js';
+import { MATCH_MIN_IDENTITY, MATCH_MIN_REWRITE, type Candidate } from './matching.js';
 import { itemQuery } from './query.js';
 
 /**
@@ -43,7 +43,51 @@ import { itemQuery } from './query.js';
 // in util/text.js — where the provider query can reach them without a cycle.
 export { normalizePersonName, normalizeTitleText };
 
-export const NORMALIZABLE = ['title', 'subtitle', 'author', 'narrator', 'series'] as const;
+export const NORMALIZABLE = [
+  'title',
+  'subtitle',
+  'author',
+  'narrator',
+  'series',
+  'work',
+] as const;
+
+/**
+ * Namespace for the work identity, written as a tag because AudiobookShelf has
+ * no field for one.
+ *
+ * The value is an Open Library work key — the identity of the *book*, not of
+ * one edition of it. That distinction is the whole point: two servers holding
+ * different narrations of the same novel should agree they hold the same book,
+ * which an ASIN would deny and an ISBN would answer only for one printing.
+ *
+ * It exists for clients reading across several servers. AudiobookShelf itself
+ * has no use for it, and nothing here depends on it either — a library that
+ * never runs this is not worse off, it just leaves its readers' other tools
+ * guessing from titles.
+ */
+export const WORK_TAG_PREFIX = 'abs-butler:work:';
+
+export function workTag(key: string): string {
+  return `${WORK_TAG_PREFIX}${key}`;
+}
+
+/** The work key already recorded on an item, if any. */
+export function itemWorkKey(item: AbsLibraryItem): string | null {
+  const found = (item.media?.tags ?? []).find((t) => t.startsWith(WORK_TAG_PREFIX));
+  return found ? found.slice(WORK_TAG_PREFIX.length) : null;
+}
+
+/**
+ * Open Library returns a work key as a path, "/works/OL27482W". Stored bare, so
+ * the tag reads as an identifier rather than a URL fragment.
+ */
+export function workKeyFrom(candidate: Candidate | undefined): string | null {
+  if (!candidate || candidate.result.provider !== 'openlibrary') return null;
+  const id = candidate.result.providerId ?? '';
+  const match = /\/works\/(OL\d+W)$/.exec(id);
+  return match ? match[1]! : null;
+}
 export type Normalizable = (typeof NORMALIZABLE)[number];
 
 export type ProposalSource = 'provider' | 'consensus' | 'local';
@@ -290,7 +334,7 @@ export interface NormalizeOptions {
 
 export function planNormalize(
   item: AbsLibraryItem,
-  best: Candidate | null,
+  candidates: Candidate[],
   consensus: Consensus,
   options: NormalizeOptions,
 ): NormalizePlan {
@@ -299,6 +343,7 @@ export function planNormalize(
   const proposals: FieldProposal[] = [];
 
   // Only an identifier-grade match may rewrite what someone can already read.
+  const best = candidates[0] ?? null;
   const trusted = best && best.match.score >= MATCH_MIN_REWRITE ? best : null;
 
   if (wanted.has('title')) {
@@ -373,6 +418,18 @@ export function planNormalize(
     }
   }
 
+  if (wanted.has('work')) {
+    // Open Library specifically: it is the only provider here that models a
+    // work at all. Audnexus answers for one audio edition and Google Books for
+    // one printing, so neither can say what this book *is* independently of the
+    // copy in hand — which is exactly what a second server needs to agree on.
+    const source = candidates.find(
+      (c) => c.result.provider === 'openlibrary' && c.match.score >= MATCH_MIN_IDENTITY,
+    );
+    const key = workKeyFrom(source);
+    if (key) propose(proposals, 'work', itemWorkKey(item), key, 'provider', 'openlibrary');
+  }
+
   return { itemId: item.id, title: itemTitle(item), author: itemAuthor(item), proposals };
 }
 
@@ -413,6 +470,16 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
       case 'narrator':
         metadata.narrators = values;
         break;
+      case 'work': {
+        // Every other tag survives, including the age bands `rate` writes: this
+        // owns the work namespace and nothing else in it.
+        const existing = item.media?.tags ?? [];
+        patch.tags = [
+          ...existing.filter((t) => !t.startsWith(WORK_TAG_PREFIX)),
+          workTag(proposal.to),
+        ];
+        break;
+      }
       case 'series':
         // No id: ABS resolves a series by name and creates it when new, so an
         // id would suggest a stability the endpoint does not actually offer.
@@ -435,6 +502,20 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
  * organize's WRITES_DISABLED, and deliberately worded to distinguish itself
  * from it — the two switches guard different things and are set independently.
  */
+/**
+ * Whether a proposal replaces something or supplies something absent.
+ *
+ * The switch exists to stop a value someone can already read being changed
+ * underneath them. Filling an empty subtitle, or stamping a work identity on a
+ * book that had none, is not that — nothing is lost and nothing a person chose
+ * is contradicted. Treating the two alike meant anyone who wanted work tags for
+ * a multi-server client had to consent to having their titles rewritten as
+ * well, which is a bad trade and not one the guard was ever meant to force.
+ */
+export function isAdditive(proposal: FieldProposal): boolean {
+  return isBlank(proposal.from);
+}
+
 export const REWRITE_DISABLED =
   'Metadata rewriting is turned off, so normalize can propose changes but not write them. ' +
   'Turn on "Allow metadata rewrite" in Settings to apply this plan.\n' +
@@ -455,6 +536,8 @@ export interface NormalizeTaskResult {
   scanned: number;
   itemsToChange: number;
   fieldsToChange: number;
+  /** Replacements refused because "Allow metadata rewrite" is off. */
+  heldBack: number;
   updated: number;
   applied: boolean;
   fields: Normalizable[];
@@ -466,7 +549,6 @@ export async function runNormalizeTask(
   ctx: TaskContext,
   options: NormalizeTaskOptions = {},
 ): Promise<NormalizeTaskResult> {
-  if (options.apply && !ctx.settings.allowMetadataRewrite) throw new Error(REWRITE_DISABLED);
 
   const requested = (options.fields ?? [...NORMALIZABLE]) as Normalizable[];
   const invalid = requested.filter((f) => !NORMALIZABLE.includes(f));
@@ -511,9 +593,14 @@ export async function runNormalizeTask(
     // matched, that makes this command entirely local and effectively free.
     const query = itemQuery(item);
     const identified = Boolean(query.asin || query.isbn);
-    const best = identified ? (await lookupItem(deps, query)).best : null;
+    const wanted = new Set(requested);
+    // The work tier needs Open Library whether or not the item carries an
+    // identifier, since a work key is what an unidentified book most needs;
+    // the rewrite tiers still ignore anything below identifier grade.
+    const needsLookup = identified || wanted.has('work');
+    const candidates = needsLookup ? (await lookupItem(deps, query)).candidates : [];
 
-    return planNormalize(item, best, consensus, {
+    return planNormalize(item, candidates, consensus, {
       fields: requested,
       ...(options.noConsensus === undefined ? {} : { noConsensus: options.noConsensus }),
     });
@@ -529,12 +616,27 @@ export async function runNormalizeTask(
 
   const byId = new Map(items.map((item) => [item.id, item]));
 
+  // With the switch off, the additive half of a plan is still applied and the
+  // replacements are held back — reported, not silently dropped, so the run
+  // says plainly what it declined to do and why.
+  const mayReplace = ctx.settings.allowMetadataRewrite;
+  const applicable = mayReplace
+    ? actionable
+    : actionable
+        .map((plan) => ({ ...plan, proposals: plan.proposals.filter(isAdditive) }))
+        .filter((plan) => plan.proposals.length > 0);
+  const heldBack = fieldsToChange - applicable.reduce((sum, p) => sum + p.proposals.length, 0);
+
+  if (options.apply && heldBack > 0) {
+    log.warn(`${heldBack} change(s) replace an existing value and were held back. ${REWRITE_DISABLED}`);
+  }
+
   let updated = 0;
   if (options.apply) {
-    for (const plan of actionable) {
+    for (const plan of applicable) {
       await ctx.client.patchItemMedia(plan.itemId, planToPatch(byId.get(plan.itemId)!, plan));
       updated += 1;
-      if (updated % 25 === 0) log.info(`  wrote ${updated}/${actionable.length}`);
+      if (updated % 25 === 0) log.info(`  wrote ${updated}/${applicable.length}`);
     }
     log.success(`Normalized ${updated} item(s).`);
   } else if (actionable.length === 0) {
@@ -547,6 +649,7 @@ export async function runNormalizeTask(
     scanned: items.length,
     itemsToChange: actionable.length,
     fieldsToChange,
+    heldBack,
     updated,
     applied: Boolean(options.apply),
     fields: requested,
