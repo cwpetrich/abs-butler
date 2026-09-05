@@ -97,6 +97,20 @@ export function normalizeTitleText(value: string | null | undefined): string | n
   return next && next !== value ? next : null;
 }
 
+/**
+ * A series reference appended to an author name, which some taggers write as
+ * "L'amour, Louis - Sackett's 10". The name is the author; the rest belongs in
+ * the series field, and while it sits here it keeps one writer from grouping
+ * with themselves — five books on one real server, each its own Louis L'Amour.
+ */
+const AUTHOR_SERIES_SUFFIX = /\s+-\s+\S.*?\s*\d+\s*$/;
+
+export function stripSeriesReference(value: string): string {
+  const stripped = value.replace(AUTHOR_SERIES_SUFFIX, '').trim();
+  // Never let it consume the name outright.
+  return stripped === '' ? value : stripped;
+}
+
 /** Name suffixes that follow a comma and must not be read as an inversion. */
 const NAME_SUFFIX = /^(jr|sr|ii|iii|iv|phd|md|esq)\.?$/i;
 
@@ -110,13 +124,23 @@ const NAME_SUFFIX = /^(jr|sr|ii|iii|iv|phd|md|esq)\.?$/i;
  */
 export function normalizePersonName(value: string | null | undefined): string | null {
   if (isBlank(value)) return null;
-  const trimmed = value!.replace(/\s+/g, ' ').trim();
+  const trimmed = stripSeriesReference(value!.replace(/\s+/g, ' ').trim());
 
   const parts = trimmed.split(',');
   if (parts.length !== 2) return trimmed !== value ? trimmed : null;
 
   const [last, first] = parts.map((p) => p.trim()) as [string, string];
   if (!last || !first || NAME_SUFFIX.test(first)) return trimmed !== value ? trimmed : null;
+
+  // Only a shape that actually looks inverted: one word on the left, at most
+  // two on the right. "L'amour, Louis" is a surname and a given name;
+  // "William Strauss, Neil Howe" is two people who happen to share a record,
+  // and swapping its halves would fuse them into one person that never existed.
+  // AudiobookShelf replaces the author list with whatever it is sent, so that
+  // is not a cosmetic error — it is a co-author deleted.
+  const leftWords = last.split(/\s+/).filter(Boolean).length;
+  const rightWords = first.split(/\s+/).filter(Boolean).length;
+  if (leftWords !== 1 || rightWords > 2) return trimmed !== value ? trimmed : null;
 
   const next = `${first} ${last}`;
   return next !== value ? next : null;

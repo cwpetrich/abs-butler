@@ -130,7 +130,31 @@ export interface Consensus {
   series: Map<string, string>;
   authors: Map<string, string>;
   narrators: Map<string, string>;
+  /**
+   * People this library shows to be narrators by trade, rather than authors who
+   * happened to read their own book.
+   *
+   * Needed because "is also a narrator on this item" is on its own a terrible
+   * reason to drop someone from the author list. Measured on two real servers,
+   * that alone would have removed Michael Greger from How Not to Die, Gabor
+   * Maté from Hold On to Your Kids and Ken Albala from his own lecture course.
+   * An author reading their own work is ordinary, especially in non-fiction.
+   */
+  narratorsByTrade: Set<string>;
 }
+
+/** Narrations before someone counts as a narrator by trade, and by what margin. */
+const TRADE_MIN_NARRATIONS = 5;
+const TRADE_RATIO = 4;
+
+/**
+ * The most an author list can hold and still be believable.
+ *
+ * A book credited to a dozen people has had its cast list written into the
+ * author field, and removing the two this rule recognises leaves it just as
+ * wrong. Changing it would be churn, so it is left alone entirely.
+ */
+const PLAUSIBLE_AUTHORS = 3;
 
 /**
  * Picks the form the library already prefers.
@@ -220,7 +244,35 @@ export function buildConsensus(items: AbsLibraryItem[]): Consensus {
     series: pickConsensus(seriesNames),
     authors: pickPersonConsensus(authorNames),
     narrators: pickPersonConsensus(narratorNames),
+    narratorsByTrade: findNarratorsByTrade(items),
   };
+}
+
+/**
+ * People who read many books here and wrote almost none of them.
+ *
+ * Counted over the library rather than judged per item, because the question
+ * is what someone does for a living, and one book cannot answer it.
+ */
+export function findNarratorsByTrade(items: AbsLibraryItem[]): Set<string> {
+  const authored = new Map<string, number>();
+  const narrated = new Map<string, number>();
+  const tally = (map: Map<string, number>, name: string) => {
+    const key = normalizeAuthor(name);
+    if (key) map.set(key, (map.get(key) ?? 0) + 1);
+  };
+
+  for (const item of items) {
+    for (const person of itemAuthors(item)) tally(authored, person);
+    for (const person of itemNarrators(item)) tally(narrated, person);
+  }
+
+  const byTrade = new Set<string>();
+  for (const [key, narrations] of narrated) {
+    if (narrations < TRADE_MIN_NARRATIONS) continue;
+    if (narrations > (authored.get(key) ?? 0) * TRADE_RATIO) byTrade.add(key);
+  }
+  return byTrade;
 }
 
 /**
@@ -332,6 +384,35 @@ export interface NormalizeOptions {
   noConsensus?: boolean;
 }
 
+/**
+ * Removes people from an author list who are really its narrators.
+ *
+ * Two independent things have to be true, because either alone is wrong. They
+ * must be credited as a narrator on this very item — a library-wide reputation
+ * is no reason to touch a book they genuinely wrote — and the library must show
+ * them to be a narrator by trade, so an author reading their own work keeps
+ * their credit.
+ *
+ * Nothing is removed if it would empty the list, and nothing is removed from a
+ * list still implausibly long afterwards: a book credited to a dozen people has
+ * had its cast written into the author field, and dropping the two names this
+ * recognises leaves it just as wrong for extra churn.
+ */
+export function dropNarratorsFromAuthors(
+  authors: string[],
+  narrators: string[],
+  consensus: Consensus,
+): string[] {
+  const credited = new Set(narrators.map((n) => normalizeAuthor(n)));
+  const written = authors.filter((name) => {
+    const key = normalizeAuthor(name);
+    return !(credited.has(key) && consensus.narratorsByTrade.has(key));
+  });
+
+  if (written.length === 0 || written.length === authors.length) return authors;
+  return written.length <= PLAUSIBLE_AUTHORS ? written : authors;
+}
+
 export function planNormalize(
   item: AbsLibraryItem,
   candidates: Candidate[],
@@ -362,8 +443,14 @@ export function planNormalize(
     const current = itemAuthors(item);
     const currentText = current.join(', ') || null;
 
-    const tidied = current.map((name) => normalizePersonName(name) ?? name);
-    propose(proposals, 'author', currentText, joinIfChanged(tidied, current), 'local', 'name order', tidied);
+    // Both local repairs compose into one proposal rather than competing as two
+    // of equal rank, where the first would simply win: a book can need a
+    // narrator removed from its author list *and* the remaining name put back
+    // into reading order.
+    const dropped = dropNarratorsFromAuthors(current, itemNarrators(item), consensus);
+    const tidied = dropped.map((name) => normalizePersonName(name) ?? name);
+    const detail = dropped.length === current.length ? 'name order' : 'narrator in the author field';
+    propose(proposals, 'author', currentText, joinIfChanged(tidied, current), 'local', detail, tidied);
 
     if (!options.noConsensus && current.length > 0) {
       const agreed = current.map((name) => consensus.authors.get(normalizeAuthor(name)) ?? name);
@@ -575,7 +662,7 @@ export async function runNormalizeTask(
   // planned: the whole point is that one book's spelling is judged against the
   // rest of the library rather than against itself.
   const consensus = options.noConsensus
-    ? { series: new Map(), authors: new Map(), narrators: new Map() }
+    ? { series: new Map(), authors: new Map(), narrators: new Map(), narratorsByTrade: new Set<string>() }
     : buildConsensus(items);
   if (!options.noConsensus) {
     log.info(
