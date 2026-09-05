@@ -11,6 +11,8 @@ import {
   planToPatch,
   splitPeople,
   isAdditive,
+  dropNarratorsFromAuthors,
+  findNarratorsByTrade,
   itemWorkKey,
   workKeyFrom,
   WORK_TAG_PREFIX,
@@ -62,7 +64,12 @@ function book(partial: {
   } as AbsLibraryItem;
 }
 
-const noConsensus: Consensus = { series: new Map(), authors: new Map(), narrators: new Map() };
+const noConsensus: Consensus = {
+  series: new Map(),
+  authors: new Map(),
+  narrators: new Map(),
+  narratorsByTrade: new Set(),
+};
 
 function trusted(partial: Record<string, unknown>): Candidate {
   return {
@@ -117,6 +124,18 @@ describe('normalizePersonName', () => {
   // Which comma inverts is genuinely ambiguous with two people, so neither does.
   it('refuses to guess with more than one comma', () => {
     expect(normalizePersonName('Pratchett, Terry, Gaiman, Neil')).toBeNull();
+  });
+
+  // Two co-authors sharing one record. Swapping the halves would fuse them
+  // into a person who never existed, and ABS would then drop the other.
+  it('refuses to invert what is really two people', () => {
+    expect(normalizePersonName('William Strauss, Neil Howe')).toBeNull();
+    expect(normalizePersonName('Sally Clarkson, Sarah Clarkson')).toBeNull();
+  });
+
+  it('still inverts an ordinary surname-first name', () => {
+    expect(normalizePersonName("L'amour, Louis")).toBe("Louis L'amour");
+    expect(normalizePersonName('Tolkien, J.R.R.')).toBe('J.R.R. Tolkien');
   });
 
   it('leaves a name already in reading order alone', () => {
@@ -520,5 +539,73 @@ describe('isAdditive', () => {
 
   it('treats changing an existing value as a replacement', () => {
     expect(isAdditive({ field: 'title', from: 'Hobbit, The', to: 'The Hobbit', source: 'local', detail: 'x' })).toBe(false)
+  })
+})
+
+describe('narrators in the author field', () => {
+  const byTrade = (...names: string[]): Consensus => ({
+    ...noConsensus,
+    narratorsByTrade: new Set(names.map((n) => n.toLowerCase())),
+  })
+
+  it('drops a narrator credited as an author', () => {
+    const kept = dropNarratorsFromAuthors(
+      ['Nick Podehl', 'Andrew Rowe'],
+      ['Nick Podehl'],
+      byTrade('nick podehl'),
+    )
+    expect(kept).toEqual(['Andrew Rowe'])
+  })
+
+  // Measured against two live servers: without the second signal this rule
+  // removed Michael Greger from How Not to Die, Gabor Maté from Hold On to Your
+  // Kids, and Ken Albala from his own lecture course.
+  it('keeps an author who narrated their own book', () => {
+    const kept = dropNarratorsFromAuthors(
+      ['Michael Greger', 'Gene Stone'],
+      ['Michael Greger'],
+      byTrade(), // narrates one book: his own
+    )
+    expect(kept).toEqual(['Michael Greger', 'Gene Stone'])
+  })
+
+  it('never empties the author list', () => {
+    const kept = dropNarratorsFromAuthors(['Jason Culp'], ['Jason Culp'], byTrade('jason culp'))
+    expect(kept).toEqual(['Jason Culp'])
+  })
+
+  // A whole cast written into the author field is wrong in a way this cannot
+  // fix, and shuffling it would be churn.
+  it('leaves an implausibly long author list alone', () => {
+    const cast = ['A One', 'B Two', 'C Three', 'D Four', 'E Five', 'Dakota Krout']
+    const kept = dropNarratorsFromAuthors(cast, ['A One'], byTrade('a one'))
+    expect(kept).toEqual(cast)
+  })
+
+  it('does not touch a book the person genuinely wrote', () => {
+    // Credited as a narrator elsewhere, but not on this item.
+    const kept = dropNarratorsFromAuthors(['Chugong'], [], byTrade('chugong'))
+    expect(kept).toEqual(['Chugong'])
+  })
+})
+
+describe('findNarratorsByTrade', () => {
+  it('counts who reads many books and writes almost none', () => {
+    const items = [
+      ...Array.from({ length: 6 }, (_, i) =>
+        book({ id: `n${i}`, narrators: ['Nick Podehl'], authors: [{ id: 'a', name: 'Andrew Rowe' }] }),
+      ),
+      book({ id: 'x', authors: [{ id: 'p', name: 'Nick Podehl' }] }),
+    ]
+    const byTrade = findNarratorsByTrade(items)
+    expect(byTrade.has('nick podehl')).toBe(true)
+    expect(byTrade.has('andrew rowe')).toBe(false)
+  })
+
+  it('does not count someone who mostly narrates their own work', () => {
+    const items = Array.from({ length: 6 }, (_, i) =>
+      book({ id: `g${i}`, narrators: ['Michael Greger'], authors: [{ id: 'g', name: 'Michael Greger' }] }),
+    )
+    expect(findNarratorsByTrade(items).has('michael greger')).toBe(false)
   })
 })

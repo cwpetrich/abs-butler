@@ -101,18 +101,21 @@ async function scanAndWait(token, libraryId, expected) {
 /**
  * Writes the seed's intended values over what the scan produced.
  *
- * Matched on the title the scan derived from the audio tag, which is stable
- * because seed.mjs writes it deliberately — the folder path is not, since
- * `organize --apply` is one of the things being tested and moves it.
+ * Matched on the folder path, not the title. The title is the very thing under
+ * test — one `normalize --apply` renames half of them — so keying on it meant
+ * this could set the library up once and never reset it again, which is the
+ * opposite of what it is for. A folder only moves under `organize --apply`, and
+ * the title serves as the fallback for that case.
  */
 async function applyMess(token, items, books) {
+  const byPath = new Map(items.map((i) => [i.relPath, i]));
   const byTitle = new Map(items.map((i) => [i.media?.metadata?.title, i]));
   let changed = 0;
 
   for (const book of books) {
-    const item = byTitle.get(book.title);
+    const item = byPath.get(book.folder) ?? byTitle.get(book.title);
     if (!item) {
-      console.warn(`  ! no scanned item for "${book.title}"`);
+      console.warn(`  ! no scanned item for "${book.title}" (${book.folder})`);
       continue;
     }
 
