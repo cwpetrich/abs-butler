@@ -1,5 +1,6 @@
 import { FILLABLE, runMetadataTask } from '../core/metadata.js';
-import { openContext, openStore, type GlobalOptions } from '../context.js';
+import { openStore, type GlobalOptions } from '../context.js';
+import { withRun } from '../core/execute.js';
 import { color, log } from '../logger.js';
 import { printJson, printTable } from '../util/table.js';
 import { truncate } from '../util/text.js';
@@ -15,8 +16,11 @@ export interface MetadataOptions extends GlobalOptions {
 
 export async function runMetadata(options: MetadataOptions): Promise<void> {
   const db = openStore();
-  const ctx = openContext(db);
-  const result = await runMetadataTask(ctx, options);
+  // Recorded as a run like any other, so it shows in history and — for the
+  // commands that write — can be undone with `abs-butler revert`.
+  const { ctx, result, run } = await withRun(db, 'metadata', options as Record<string, unknown>, (c) =>
+    runMetadataTask(c, options),
+  );
 
   if (options.json) {
     printJson({ server: ctx.connection.url, ...result });
@@ -36,6 +40,8 @@ export async function runMetadata(options: MetadataOptions): Promise<void> {
   );
 
   if (!result.applied) log.info('re-run with --apply to write these changes');
+  // Named here because an undo nobody can find is not an undo.
+  else log.info(`run ${run.id} — put it back with: abs-butler revert ${run.id}`);
 }
 
 export const METADATA_FIELDS = [...FILLABLE];

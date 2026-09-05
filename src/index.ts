@@ -7,6 +7,7 @@ import { runAudit } from './commands/audit.js';
 import { runMetadata, METADATA_FIELDS } from './commands/metadata.js';
 import { runNormalize, NORMALIZE_FIELDS } from './commands/normalize.js';
 import { runOrganize } from './commands/organize.js';
+import { runRevert, runRunsList } from './commands/revert.js';
 import { runRate } from './commands/rate.js';
 import {
   runConfigure,
@@ -152,6 +153,21 @@ program
   .option('--no-scan', 'skip the library rescan after moving')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) => runOrganize({ ...globals(), ...opts, noScan: opts.scan === false }));
+
+program
+  .command('runs')
+  .description('Recent runs, with what can still be undone')
+  .option('--json', 'emit JSON instead of a table')
+  .option('--limit <n>', 'how many to show (default 20)', Number)
+  .action(async (opts) => runRunsList(opts));
+
+program
+  .command('revert <runId>')
+  .description('Put back what a run changed')
+  .option('--apply', 'actually restore (default is a dry run)')
+  .option('--force', 'restore even where the item has been edited since')
+  .option('--json', 'emit JSON instead of a table')
+  .action(async (runId, opts) => runRevert(runId, opts));
 
 // ---------------------------------------------------------------------------
 // Web UI

@@ -13,6 +13,7 @@ import {
 import { lookupItem, type LookupDeps } from './lookup.js';
 import { MATCH_MIN_IDENTITY, MATCH_MIN_REWRITE, type Candidate } from './matching.js';
 import { itemQuery } from './query.js';
+import { applyPatch } from './revisions.js';
 
 /**
  * Bringing a library's metadata into one consistent shape.
@@ -721,7 +722,8 @@ export async function runNormalizeTask(
   let updated = 0;
   if (options.apply) {
     for (const plan of applicable) {
-      await ctx.client.patchItemMedia(plan.itemId, planToPatch(byId.get(plan.itemId)!, plan));
+      const item = byId.get(plan.itemId)!;
+      await applyPatch(ctx, item, planToPatch(item, plan));
       updated += 1;
       if (updated % 25 === 0) log.info(`  wrote ${updated}/${applicable.length}`);
     }

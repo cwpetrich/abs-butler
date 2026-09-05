@@ -23,6 +23,14 @@ export interface TaskContext {
   connection: ConnectionRecord;
   client: AbsClient;
   settings: Settings;
+  /**
+   * The run these writes belong to, so each one can record how to undo it.
+   *
+   * Absent only where no run owns the work — every path that applies changes
+   * sets it, and `applyPatch` silently records nothing without it, which is why
+   * commands must go through that rather than calling the client directly.
+   */
+  runId?: number;
 }
 
 export const NOT_CONNECTED =

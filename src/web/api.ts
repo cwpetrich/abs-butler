@@ -13,6 +13,9 @@ import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
 import { listLogs } from '../db/logs.js';
 import { getRun, listRuns, type RunCommand, type RunStatus } from '../db/runs.js';
+import { countRevisions } from '../db/revisions.js';
+import { openContext } from '../context.js';
+import { runRevertTask } from '../core/revert.js';
 import {
   createSchedule,
   deleteSchedule,
@@ -114,6 +117,11 @@ function assertCommandAllowed(
   // none — and holds back only the replacements. The run reports what it held.
 
 }
+
+const RevertInputSchema = z.object({
+  apply: z.boolean().optional(),
+  force: z.boolean().optional(),
+});
 
 export interface ApiDeps {
   db: Db;
@@ -246,7 +254,20 @@ export function buildApiRouter(deps: ApiDeps): Router {
   router.get('/api/runs/:id', (ctx) => {
     const run = getRun(db, numericParam(ctx, 'id'));
     if (!run) throw notFound('No such run');
-    return run;
+    // The undo count travels with the run, so the page can offer a revert
+    // without a second request and without guessing whether one is possible.
+    return { ...run, revisions: countRevisions(db, run.id) };
+  });
+
+  /**
+   * Puts a run back. A dry run by default, like everything else that writes —
+   * the response lists what it would restore and what it would skip.
+   */
+  router.post('/api/runs/:id/revert', async (ctx) => {
+    const input = parse(RevertInputSchema, ctx.body ?? {});
+    const runId = numericParam(ctx, 'id');
+    if (!getRun(db, runId)) throw notFound('No such run');
+    return runRevertTask({ ...openContext(db), runId }, { runId, ...input });
   });
 
   router.post('/api/runs', (ctx) => {
