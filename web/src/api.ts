@@ -44,7 +44,18 @@ export interface SecurityStatus {
 export type RunCommand = 'audit' | 'rate' | 'metadata' | 'normalize' | 'organize';
 export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
 
+export interface RevertResult {
+  runId: number
+  restored: number
+  applied: boolean
+  plans: Array<{ itemId: string; title: string; fields: string[] }>
+  skipped: Array<{ itemId: string; title: string; reason: string }>
+  alreadyReverted: number
+}
+
 export interface Run {
+  /** Present on the single-run route; absent from the list. */
+  revisions?: { total: number; reverted: number }
   id: number;
   command: RunCommand;
   options: Record<string, unknown>;
@@ -188,6 +199,8 @@ export const api = {
   run: (id: number) => request<Run>(`/api/runs/${id}`),
   startRun: (input: { command: RunCommand; options: Record<string, unknown> }) =>
     request<Run>('/api/runs', { method: 'POST', body: body(input) }),
+  revertRun: (id: number, input: { apply?: boolean; force?: boolean }) =>
+    request<RevertResult>(`/api/runs/${id}/revert`, { method: 'POST', body: body(input) }),
   cancelRun: (id: number) => request<{ ok: true }>(`/api/runs/${id}/cancel`, { method: 'POST' }),
 
   logs: (params: { runId?: number; afterId?: number; level?: string; search?: string; limit?: number }) => {

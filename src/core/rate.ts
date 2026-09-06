@@ -13,6 +13,7 @@ import { mapLimit } from '../providers/http.js';
 import { buildProviders } from '../providers/index.js';
 import { lookupItem, type LookupDeps } from './lookup.js';
 import { itemQuery } from './query.js';
+import { applyPatch } from './revisions.js';
 
 export interface RatingResult {
   itemId: string;
@@ -142,8 +143,9 @@ export async function runRateTask(
   const changes = results.filter((r) => r.changed);
   let tagged = 0;
   if (options.apply) {
+    const byId = new Map(all.map((item) => [item.id, item]));
     for (const change of changes) {
-      await ctx.client.patchItemMedia(change.itemId, { tags: change.proposedTags });
+      await applyPatch(ctx, byId.get(change.itemId)!, { tags: change.proposedTags });
       tagged += 1;
       if (tagged % 25 === 0) log.info(`  wrote ${tagged}/${changes.length}`);
     }

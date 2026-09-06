@@ -158,6 +158,9 @@ abs-butler normalize --fields work      # stamp Open Library work identities onl
 abs-butler rate                         # age bands and content flags
 abs-butler organize                     # plan a folder reorganization
 
+abs-butler runs                         # recent runs, and what can still be undone
+abs-butler revert <runId>               # put back what a run changed
+
 abs-butler serve                        # the web UI and scheduler
 ```
 
@@ -261,6 +264,34 @@ description is noise on one server, while a wrong identity is repeated to every
 client that reads it. In practice the author has to have actually agreed, not merely
 been absent.
 
+### Undoing a run
+
+Every applied change records how to put it back, so an apply is something you
+can reconsider:
+
+```bash
+abs-butler runs                  # recent runs, and what can still be undone
+abs-butler revert 42             # what it would restore
+abs-butler revert 42 --apply
+```
+
+The record is the patch that would restore the item, in the same shape and
+against the same endpoint the original write used — so an undo cannot drift
+away from the thing it undoes. Only the fields a run actually touched are
+captured, which means an unrelated edit made in between is left alone.
+
+**An item edited since the run is skipped, not overwritten.** Correcting a title
+by hand and then having a revert quietly throw that away would be worse than the
+value being fixed, so those are named and left, and `--force` is how you say you
+meant it anyway. A book deleted since the run is skipped for the same reason.
+
+`organize` is the exception: it moves files, and this cannot undo that by
+writing to the API. Its plan is a dry run by default and its own switch guards
+the apply — take a backup and read the plan, which is the advice it has always
+carried.
+
+The web UI offers the same thing on a run's page, preview first.
+
 ### Organizing files on disk
 
 Default layout is `Author/Series/01 - Title`. Placeholders: `{author}`, `{title}`, `{series}`,
@@ -309,7 +340,7 @@ Take a backup and run without applying first. Always.
 
 ```bash
 npm run typecheck    # server and web
-npm test             # 179 tests
+npm test             # 224 tests
 npm run build
 
 npm run dev:web      # Vite dev server on :5473, proxying /api to :13380
