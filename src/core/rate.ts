@@ -11,7 +11,8 @@ import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
 import { buildProviders } from '../providers/index.js';
-import type { MetadataProvider, ProviderResult } from '../providers/types.js';
+import { lookupItem, type LookupDeps } from './lookup.js';
+import { itemQuery } from './query.js';
 
 export interface RatingResult {
   itemId: string;
@@ -26,30 +27,18 @@ export interface RatingResult {
 /** Looks a single item up across all providers and merges the signals. */
 export async function rateItem(
   item: AbsLibraryItem,
-  providers: MetadataProvider[],
+  deps: LookupDeps,
   options: { minConfidence?: number } = {},
 ): Promise<RatingResult> {
-  const metadata = item.media?.metadata;
-  const query = {
-    title: metadata?.title ?? '',
-    author: itemAuthor(item),
-    isbn: metadata?.isbn ?? null,
-    asin: metadata?.asin ?? null,
-  };
-
-  const results: ProviderResult[] = [];
-  for (const provider of providers) {
-    try {
-      const result = await provider.lookup(query);
-      if (result) results.push(result);
-    } catch (err) {
-      log.debug(`${provider.name} failed for "${query.title}": ${(err as Error).message}`);
-    }
-  }
-
+  // Only results that actually matched this book feed the assessment. Taking
+  // whatever a provider ranked first meant an unrelated book's shelving could
+  // set the age band, which is the failure mode least likely to be noticed:
+  // the tag looks perfectly plausible.
+  const { results } = await lookupItem(deps, itemQuery(item));
   const assessment = assessContent(results);
 
   // ABS's own explicit flag is authoritative when set — it beats any inference.
+  const metadata = item.media?.metadata;
   if (metadata?.explicit) {
     assessment.band = 'adult';
     assessment.confidence = Math.max(assessment.confidence, 0.9);
@@ -100,11 +89,17 @@ export async function runRateTask(
   const providers = buildProviders(
     {
       googleBooksApiKey: ctx.settings.googleBooksApiKey || undefined,
+      audibleRegion: ctx.settings.audibleRegion,
       providerConcurrency: ctx.settings.providerConcurrency,
     },
     options.providers ?? ctx.settings.providers,
   );
   log.info(`using providers: ${providers.map((p) => p.name).join(', ')}`);
+  const deps: LookupDeps = {
+    providers,
+    db: ctx.db,
+    cacheDays: ctx.settings.lookupCacheDays,
+  };
 
   const libraries = await resolveLibraries(ctx, options.library);
   const all = await collectItems(ctx, libraries, { limit: options.limit });
@@ -130,7 +125,7 @@ export async function runRateTask(
   const minConfidence = options.minConfidence ?? ctx.settings.minConfidence;
   let done = 0;
   const results = await mapLimit(items, ctx.settings.providerConcurrency, async (item) => {
-    const result = await rateItem(item, providers, { minConfidence });
+    const result = await rateItem(item, deps, { minConfidence });
     done += 1;
     if (done % 25 === 0) log.info(`  ${done}/${items.length}`);
     return result;

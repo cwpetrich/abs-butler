@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # node:sqlite carries the whole database layer, so the version that first
+      # exposes it without a flag is the real floor — see the job below.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # The floor declared in package.json engines. A build that only ever runs on
+  # the newest Node quietly stops supporting the version it advertises — which
+  # is exactly what had happened: engines said 22.5, the version that *added*
+  # node:sqlite, but it sat behind --experimental-sqlite until 22.13. Anything
+  # in between installed cleanly and then failed on its first query with
+  # "No such built-in module: node:sqlite". This job is what caught it.
+  minimum-node:
+    name: Test on the minimum supported Node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  docker:
+    name: Docker image (amd64 + arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Emulation is only needed for the arm64 leg; it is slow but this builds
+      # on every change, so a broken ARM image is caught before a release.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Both architectures, purely as a build check. A multi-platform result
+      # has nowhere to go without a registry, so it cannot be loaded or kept.
+      - name: Build both architectures
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # amd64 alone, exported as something you can actually run. Download it
+      # from the run page, then:
+      #   docker load -i abs-butler-image.tar
+      #   docker run --rm -p 13380:13380 abs-butler:ci
+      # Cheap on top of the leg above, since it reuses that build's cache.
+      - name: Export a loadable amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: abs-butler:ci
+          outputs: type=docker,dest=/tmp/abs-butler-image.tar
+          cache-from: type=gha
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-amd64
+          path: /tmp/abs-butler-image.tar
+          retention-days: 14
+
+  snap:
+    name: Snap package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: build
+        uses: snapcore/action-build@v1
+
+      # Without this the snap is built and thrown away, which proves it
+      # compiles and nothing else. Kept so a reviewer can install the actual
+      # package a change produces:
+      #   sudo snap install --dangerous ./abs-butler_*.snap
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap-amd64
+          path: ${{ steps.build.outputs.snap }}
+          retention-days: 14

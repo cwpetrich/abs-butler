@@ -29,7 +29,7 @@ export class OpenLibraryProvider implements MetadataProvider {
     return true;
   }
 
-  async lookup(query: BookQuery): Promise<ProviderResult | null> {
+  async search(query: BookQuery): Promise<ProviderResult[]> {
     const url = new URL(SEARCH_URL);
     url.searchParams.set('limit', '3');
     url.searchParams.set(
@@ -45,29 +45,30 @@ export class OpenLibraryProvider implements MetadataProvider {
     }
 
     const data = await getJson<{ docs?: OlDoc[] }>(url);
-    const doc = data?.docs?.[0];
-    if (!doc) return null;
-
-    const subjects = doc.subject ?? [];
-    return {
-      provider: this.name,
-      providerId: doc.key,
-      title: doc.title,
-      authors: doc.author_name,
-      publishedYear: doc.first_publish_year ? String(doc.first_publish_year) : undefined,
-      publisher: doc.publisher?.[0],
-      isbn: doc.isbn?.[0],
-      pageCount: doc.number_of_pages_median,
-      subjects,
-      averageRating: doc.ratings_average,
-      ratingsCount: doc.ratings_count,
-      url: doc.key ? `https://openlibrary.org${doc.key}` : undefined,
-      // Cap the subject list: popular titles carry hundreds, and the long tail is noise.
-      signals: subjects.slice(0, 80).map((value) => ({
-        source: 'openlibrary:subject',
-        value,
-        weight: 0.7,
-      })),
-    };
+    return (data?.docs ?? []).map((doc) => toResult(this.name, doc));
   }
+}
+
+function toResult(provider: string, doc: OlDoc): ProviderResult {
+  const subjects = doc.subject ?? [];
+  return {
+    provider,
+    providerId: doc.key,
+    title: doc.title,
+    authors: doc.author_name,
+    publishedYear: doc.first_publish_year ? String(doc.first_publish_year) : undefined,
+    publisher: doc.publisher?.[0],
+    isbn: doc.isbn?.[0],
+    pageCount: doc.number_of_pages_median,
+    subjects,
+    averageRating: doc.ratings_average,
+    ratingsCount: doc.ratings_count,
+    url: doc.key ? `https://openlibrary.org${doc.key}` : undefined,
+    // Cap the subject list: popular titles carry hundreds, and the long tail is noise.
+    signals: subjects.slice(0, 80).map((value) => ({
+      source: 'openlibrary:subject',
+      value,
+      weight: 0.7,
+    })),
+  };
 }

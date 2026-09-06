@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeAuthor, normalizeTitle, padSequence, sanitizePathSegment } from './text.js';
+import {
+  normalizeAuthor,
+  normalizeTitle,
+  padSequence,
+  sanitizePathSegment,
+  stripSeriesReference,
+} from './text.js';
 
 describe('normalizeTitle', () => {
   it('strips articles, case, punctuation, and edition noise', () => {
@@ -75,3 +81,20 @@ describe('padSequence', () => {
     expect(padSequence(null)).toBe('');
   });
 });
+
+describe('stripSeriesReference', () => {
+  // Five books on one real server, each its own Louis L'Amour.
+  it('removes a series reference stuck on the end of a name', () => {
+    expect(stripSeriesReference("L'amour, Louis - Sackett's 10")).toBe("L'amour, Louis")
+    expect(stripSeriesReference("L'amour, Louis - Hopalong 04")).toBe("L'amour, Louis")
+  })
+
+  it('leaves an ordinary name alone', () => {
+    expect(stripSeriesReference('Brandon Sanderson')).toBe('Brandon Sanderson')
+    expect(stripSeriesReference('Jean-Paul Sartre')).toBe('Jean-Paul Sartre')
+  })
+
+  it('never consumes the whole name', () => {
+    expect(stripSeriesReference("Sackett's 10")).toBe("Sackett's 10")
+  })
+})

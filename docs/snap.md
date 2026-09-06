@@ -13,6 +13,9 @@ sudo snap connect abs-butler:removable-media    # only needed for organize
 Open <http://localhost:13380>, set a password, and add your server's URL and API token. The service
 starts automatically on install and on boot.
 
+Built for **amd64 and arm64**, so a Raspberry Pi or an ARM NAS running AudiobookShelf can host the
+butler beside it.
+
 That second command is not optional if you want to organize files, and it has no equivalent
 elsewhere — see [Reaching your library](#reaching-your-library).
 
@@ -59,8 +62,9 @@ accepted and left to crash the daemon in a restart loop.
 
 ## Reaching your library
 
-`audit`, `rate`, and `metadata` work purely over the AudiobookShelf API and need no file access at
-all. **Only `organize` touches the filesystem**, and that is where confinement matters.
+`audit`, `rate`, `metadata` and `normalize` work purely over the AudiobookShelf API and need no
+file access at all. **Only `organize` touches the filesystem**, and that is where confinement
+matters.
 
 A strictly-confined snap cannot see arbitrary paths. The interface that grants media access,
 `removable-media`, covers exactly three roots:
@@ -174,5 +178,5 @@ sudo snap install --dangerous ./abs-butler_*.snap
 `--dangerous` is required for a locally built snap, which carries no store signature.
 
 The build bundles Node from nodejs.org, pinned by checksum in `snap/snapcraft.yaml`, because Ubuntu
-24.04 ships Node 18 and `node:sqlite` needs 22.5 or newer. Nothing in abs-butler compiles: the only
+24.04 ships Node 18 and `node:sqlite` needs 22.13 or newer. Nothing in abs-butler compiles: the only
 runtime dependencies are `commander`, `dotenv`, and `zod`, and SQLite is built into Node.

@@ -1,7 +1,7 @@
 import type { Db } from './index.js';
 
 export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
-export type RunCommand = 'audit' | 'rate' | 'metadata' | 'organize';
+export type RunCommand = 'audit' | 'rate' | 'metadata' | 'normalize' | 'organize';
 export type RunTrigger = 'manual' | 'schedule' | 'cli';
 
 export interface RunRecord {

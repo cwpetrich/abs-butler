@@ -138,13 +138,25 @@ async function mkdirInheriting(dir: string): Promise<void> {
  * Best-effort, because only root may hand a file to a different user. Running
  * unprivileged the new path already belongs to us, so a refusal here means the
  * ownership is already as close to right as it can get.
+ *
+ * chown comes first and chmod second, and the order is load-bearing: chown
+ * clears the setgid bit, so doing it afterwards would strip the very bit this
+ * function exists to carry over. A shared media directory is usually mode 2775,
+ * and losing the setgid on the folders below it is exactly the silent breakage
+ * mkdirInheriting was written to prevent. Each call is guarded on its own so a
+ * refused chown — the ordinary case when running unprivileged — still leaves
+ * the mode applied.
  */
 async function copyOwnership(path: string, uid: number, gid: number, mode: number): Promise<void> {
   try {
-    await chmod(path, mode & 0o7777);
     await chown(path, uid, gid);
   } catch (err) {
     log.debug(`could not apply ownership to ${path}: ${(err as Error).message}`);
+  }
+  try {
+    await chmod(path, mode & 0o7777);
+  } catch (err) {
+    log.debug(`could not apply permissions to ${path}: ${(err as Error).message}`);
   }
 }
 
@@ -244,7 +256,11 @@ export async function runOrganizeTask(
   const libraries = await resolveLibraries(ctx, options.library);
   const plans: MovePlan[] = [];
   for (const library of libraries) {
-    const items = await collectItems(ctx, [library], { limit: options.limit });
+    // Expanded, because the path template renders {series} and {sequence} from
+    // the structured series field. A minified item has neither, so every book
+    // in a series would plan a move to Author/Title — physically lifting it out
+    // of its series folder on apply.
+    const items = await collectItems(ctx, [library], { limit: options.limit, expand: true });
     for (const item of items) {
       if (item.isFile) {
         log.debug(`skipping single-file item (not a book folder): ${itemTitle(item)}`);

@@ -1,17 +1,21 @@
 # abs-butler
 
-A butler for your [AudiobookShelf](https://www.audiobookshelf.org/) library. It audits the library
-for problems, fills in missing metadata, enforces a folder naming scheme, and — the reason it exists
-— tags books with **age bands and content flags** so a library can be filtered by what's appropriate
-for whom.
+A butler for your [AudiobookShelf](https://www.audiobookshelf.org/) library. Set it up once and it
+keeps the library's **metadata** correct and consistent: it discovers what's missing and fills it
+in, and it normalizes what's already there — titles, authors, narrators, series names — so the same
+book is described the same way wherever it appears.
+
+Around that it audits the library for problems, enforces a folder naming scheme on disk, and tags
+books with age bands and content flags so a library can be filtered by what's appropriate for whom.
 
 One butler, one server, running side by side. abs-butler is meant to live on the same machine as
 AudiobookShelf and share its library mount, which is what lets it organize files as well as manage
-them over the API. If you run several AudiobookShelf servers, run a butler beside each.
+them over the API. Everything except `organize` works purely over the API, so a butler on another
+machine still does the whole metadata job — it just needs the library reachable to move files.
 
-Every operation is a **dry run by default**. Nothing is written until you explicitly apply it, and
-moving files takes a second deliberate step: `organize --apply` is refused until **Allow file
-changes** is switched on in Settings, which it is not on a fresh install.
+Every operation is a **dry run by default**, and the two that change something you can see are
+gated separately. `organize --apply` needs **Allow file changes**; `normalize --apply` needs **Allow
+metadata rewrite**. Neither is on after a fresh install.
 
 ## Quick start
 
@@ -25,9 +29,10 @@ sudo snap install abs-butler
 sudo snap connect abs-butler:removable-media    # only if you want to organize files
 ```
 
-**Docker**:
+**Docker** — nothing to clone; the compose file pulls a published multi-arch image:
 
 ```bash
+curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml
 docker compose up -d butler
 ```
 
@@ -79,12 +84,29 @@ On a home network that is the right trade. If you expose this port beyond your o
 | **Schedules** | Recurring jobs, at an interval you choose. |
 | **Logs** | Every line from every run, filterable by level and searchable. |
 | **Connection** | The server URL, API token, and library paths. Test shows exactly which paths were probed. |
-| **Settings** | Whether file changes are allowed at all, provider keys, concurrency, rating confidence, retention, your password, and the encryption key. |
+| **Settings** | Whether file changes and metadata rewrites are allowed at all, provider keys and region, concurrency, rating confidence, cache and history retention, your password, and the encryption key. |
 
 Jobs run **one at a time**. They hammer both AudiobookShelf and third-party metadata providers, and
 two concurrent rating runs against the same library would double the request rate for no gain. The
 queue lives in the database, so a restart doesn't lose it — and any run interrupted by a restart is
 marked failed rather than left claiming to be running forever.
+
+### Where the data comes from
+
+| Provider | Key needed | What it is for |
+| --- | --- | --- |
+| **Audnexus** | No | The audiobook source, and the only one that knows a **narrator** exists. Keyed on ASIN — the identifier AudiobookShelf itself matches on — so it answers for one exact audio edition, or not at all. Series name and position come from here too. |
+| **Open Library** | No | Crowd-sourced subjects, the richest audience signal for `rate`. |
+| **Google Books** | Optional | Publisher-assigned BISAC categories and an explicit maturity rating. |
+
+Audnexus only answers for books that have an ASIN, so the other two carry an unmatched library.
+Letting AudiobookShelf match your books first is what makes `normalize` able to do its best work.
+
+**Answers are cached.** A provider is asked about a book once and the answer is reused — for the
+rest of that run, for the other commands, and for the next scheduled run. Without this a nightly
+job re-asks every provider about every book forever, mostly to re-learn the same nothing. Hits are
+kept for **Provider cache (days)** (30 by default); "nothing found" expires at a quarter of that,
+since a miss usually reflects the library rather than the book.
 
 ## Configuration
 
@@ -126,11 +148,14 @@ abs-butler connect --url http://localhost:13378 --api-key <key>
 abs-butler status                       # connectivity + file capability
 abs-butler configure --library-root /audiobooks
 abs-butler configure --file-changes on      # let organize --apply move files
+abs-butler configure --metadata-rewrite on  # let normalize --apply replace titles and names
 abs-butler disconnect                   # forget the connection, keep history
 
 abs-butler audit --details              # metadata and file problems
-abs-butler rate                         # age bands and content flags
 abs-butler metadata                     # fill blank description/year/publisher/ISBN
+abs-butler normalize                    # make titles, authors, narrators, series consistent
+abs-butler normalize --fields work      # stamp Open Library work identities only
+abs-butler rate                         # age bands and content flags
 abs-butler organize                     # plan a folder reorganization
 
 abs-butler serve                        # the web UI and scheduler
@@ -167,11 +192,74 @@ Low confidence is how the tool asks a human to look.
 
 ### Filling in metadata
 
-Only fields safe to infer are eligible: `description`, `publishedYear`, `publisher`, `isbn`,
-`language`. Blank fields are filled; existing values are left alone unless you ask to overwrite.
-Title and author are deliberately never written — a bad provider match would rename the book, and
-matching is AudiobookShelf's own job. As a further guard, a fuzzy (non-ISBN) match is only used when
-the provider's title agrees with yours.
+`metadata` fills fields that are **blank**: `description`, `publishedYear`, `publisher`, `isbn`,
+`language`. Existing values are left alone unless you pass `--overwrite`. Nobody is surprised by a
+description appearing where there was none, so the bar for writing one is low — a candidate has to
+match the book, but it does not have to be provably the same edition.
+
+Rewriting a value someone can already read is a different question, and lives in `normalize` below.
+
+### Normalizing what's already there
+
+`normalize` is the command for mismatches: the same series spelled two ways, an author stored as
+"King, Stephen" on one book and "Stephen King" on the next, a title carrying "(Unabridged)" that
+none of its siblings do. It covers `title`, `subtitle`, `author`, `narrator` and `series`.
+
+Every proposed change carries the evidence it rests on, and there are three tiers:
+
+| Tier | What it means | Example |
+| --- | --- | --- |
+| **provider** | An **exact ASIN or ISBN match**, and nothing weaker | Audnexus knows this exact audio edition's narrator |
+| **consensus** | The library disagreeing with itself, resolved toward the majority | four books say "The Stormlight Archive", one says "Stormlight Archive" |
+| **local** | A deterministic repair of how the text is written | "Hobbit, The" → "The Hobbit"; "King, Stephen" → "Stephen King" |
+
+A fuzzy title match can **never** rename a book — the scoring caps it below the threshold a rewrite
+requires, by construction. So a library AudiobookShelf has never matched still gets its consensus
+and local repairs, with no provider consulted and no network call made at all.
+
+Higher tiers win when two disagree. `--fields` narrows what is touched and `--no-consensus` turns
+off the library-agreement tier.
+
+**Allow metadata rewrite** gates *replacing* a value, not supplying a missing one. With it off,
+`--apply` still fills what was blank — a subtitle, a series a book never had, a work identity — and
+holds back every change that would overwrite something, saying how many it held. Wanting work tags
+for a multi-server client should not require consenting to have your titles rewritten.
+
+Take a dry run first and read the `WHY` column. It is the whole point of the output.
+
+### Work identity, for clients reading several servers
+
+`normalize --fields work` stamps each book with the Open Library **work** key it
+resolves to, as a tag:
+
+```
+abs-butler:work:OL27482W
+```
+
+A work is the book, not the recording. Two servers holding different narrations of
+*The Return of the King* hold the same work — which is why this is not an ASIN, and
+not an ISBN: those identify one audio edition and one printing respectively, and
+would deny a match that a reader would call obvious.
+
+It exists for tools that read across servers and have to decide whether two entries
+are the same book. AudiobookShelf itself has no use for it, nothing here depends on
+it, and a library that never runs it is no worse off.
+
+**What it is worth, measured.** Sampled across 2,230 items on two live servers,
+against pairs of the same book held by both: when both sides resolve, they agree on
+the work **13 times out of 13**. But only about a third resolve at all — Open Library
+is thin on self-published and LitRPG titles, which is much of what those libraries
+hold. So it is a high-precision, low-recall signal.
+
+That shapes how a client should use it: **a work tag should only ever merge, never
+split.** Two copies that disagree, or where only one carries a tag, are no worse off
+than before and should fall back to matching on title and author. Used that way it
+can only add correct merges.
+
+The bar to write one is deliberately higher than for filling a blank field: a wrong
+description is noise on one server, while a wrong identity is repeated to every
+client that reads it. In practice the author has to have actually agreed, not merely
+been absent.
 
 ### Organizing files on disk
 
@@ -221,7 +309,7 @@ Take a backup and run without applying first. Always.
 
 ```bash
 npm run typecheck    # server and web
-npm test             # 114 tests
+npm test             # 179 tests
 npm run build
 
 npm run dev:web      # Vite dev server on :5473, proxying /api to :13380
@@ -231,6 +319,30 @@ Layout: `src/core/` holds the logic and task runners, `src/commands/` is thin CL
 `src/db/` is the SQLite layer, `src/web/` is the HTTP API, and `web/` is the React UI. The CLI and
 the job runner call the same task functions, so a scheduled run and a typed one take exactly the same
 code path.
+
+Two modules in `src/core/` are worth reading before changing anything that talks to a provider:
+`matching.ts` decides whether a result describes the book in hand and how strongly, and `lookup.ts`
+is the single door every provider call goes through, so caching and scoring cannot be bypassed by
+accident.
+
+CI runs typecheck, tests (on Node 24 and on 22.13, the floor `engines` declares), and a build on
+every push, plus the Docker image for amd64 and arm64 and the snap for amd64. Releases are cut by
+pushing a `v*` tag, which publishes the multi-arch image and both snap architectures.
+
+## Upgrading from 0.3
+
+Nothing to do — the database migrates on first start, adding the provider answer cache.
+
+Two things are new and both are **off or empty until you act**:
+
+- `normalize` appears as a command, and `normalize --apply` is refused until **Allow metadata
+  rewrite** is switched on in Settings. Existing schedules are untouched.
+- **Audnexus** joins the provider list for new installs. An existing install keeps the provider list
+  it already had, so add `audnexus` in Settings → Metadata providers to get narrator and series
+  data. Nothing else changes if you do not.
+
+The first `metadata` or `rate` run after upgrading is the usual speed; the ones after it are much
+faster, since answers are now cached.
 
 ## Upgrading from 0.2
 
@@ -252,6 +364,7 @@ Two things change in `.env`, which is now almost empty:
 - [docs/snap.md](docs/snap.md) — running as a snap, confinement, and reaching your library
 - [docs/docker.md](docs/docker.md) — running in Docker, networking, and paths
 - [docs/content-ratings.md](docs/content-ratings.md) — where rating data comes from, and its limits
+- [docs/releasing.md](docs/releasing.md) — cutting a release, and the one-time publishing setup
 
 ## License
 

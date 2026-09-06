@@ -63,6 +63,16 @@ export interface ConfigureOptions {
   pathPrefix?: string;
   /** 'on' or 'off'; undefined leaves the setting alone. */
   fileChanges?: string;
+  /** 'on' or 'off'; undefined leaves the setting alone. */
+  metadataRewrite?: string;
+}
+
+/** Shared parsing so both switches reject the same values the same way. */
+function parseSwitch(flag: string, value: string): boolean {
+  if (value !== 'on' && value !== 'off') {
+    throw new Error(`${flag} expects "on" or "off" (got "${value}")`);
+  }
+  return value === 'on';
 }
 
 export async function runConfigure(options: ConfigureOptions): Promise<void> {
@@ -71,13 +81,20 @@ export async function runConfigure(options: ConfigureOptions): Promise<void> {
   // Settable without a connection: it is a property of this install, not of the
   // server, and a headless setup may well want it set before connecting.
   if (options.fileChanges !== undefined) {
-    if (options.fileChanges !== 'on' && options.fileChanges !== 'off') {
-      throw new Error(`--file-changes expects "on" or "off" (got "${options.fileChanges}")`);
-    }
-    const allowFileChanges = options.fileChanges === 'on';
+    const allowFileChanges = parseSwitch('--file-changes', options.fileChanges);
     updateSettings(db, { allowFileChanges });
     if (allowFileChanges) log.warn('File changes are ON: organize --apply can now move files.');
     else log.success('File changes are OFF: organize --apply will be refused.');
+  }
+
+  if (options.metadataRewrite !== undefined) {
+    const allowMetadataRewrite = parseSwitch('--metadata-rewrite', options.metadataRewrite);
+    updateSettings(db, { allowMetadataRewrite });
+    if (allowMetadataRewrite) {
+      log.warn('Metadata rewrite is ON: normalize --apply can now replace titles and names.');
+    } else {
+      log.success('Metadata rewrite is OFF: normalize --apply will be refused.');
+    }
   }
 
   const connectionPatch = {
@@ -119,7 +136,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
     const libraries = await client.listLibraries();
     const capability = assessCapability(connection, libraries);
 
-    const { allowFileChanges } = getSettings(db);
+    const { allowFileChanges, allowMetadataRewrite } = getSettings(db);
 
     if (options.json) {
       printJson({
@@ -127,6 +144,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
         reachable: true,
         libraries: libraries.length,
         allowFileChanges,
+        allowMetadataRewrite,
         capability,
       });
       return;
@@ -140,6 +158,9 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
     // organize needs both — so reporting only one of them would mislead.
     if (allowFileChanges) log.warn('file changes: allowed — organize --apply will move files');
     else log.info('file changes: off — organize can plan but not apply (configure --file-changes on)');
+
+    if (allowMetadataRewrite) log.warn('metadata rewrite: allowed — normalize --apply will replace names');
+    else log.info('metadata rewrite: off — normalize can plan but not apply (configure --metadata-rewrite on)');
 
     if (capability.libraries.length > 0) {
       printTable(capability.libraries, [

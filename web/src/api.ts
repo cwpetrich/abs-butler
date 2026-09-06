@@ -41,7 +41,7 @@ export interface SecurityStatus {
   apiKeyEncrypted: boolean;
 }
 
-export type RunCommand = 'audit' | 'rate' | 'metadata' | 'organize';
+export type RunCommand = 'audit' | 'rate' | 'metadata' | 'normalize' | 'organize';
 export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
 
 export interface Run {
@@ -99,10 +99,13 @@ export interface CapabilityReport {
 export interface Settings {
   providers: string[];
   providerConcurrency: number;
+  audibleRegion: string;
+  lookupCacheDays: number;
   minConfidence: number;
   historyLimit: number;
   logRetentionDays: number;
   allowFileChanges: boolean;
+  allowMetadataRewrite: boolean;
   googleBooksApiKeySet: boolean;
 }
 
@@ -111,6 +114,7 @@ export interface Meta {
   fileCommands: RunCommand[];
   auditCodes: string[];
   metadataFields: string[];
+  normalizeFields: string[];
   providers: string[];
   ageBands: string[];
   contentFlags: string[];

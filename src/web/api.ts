@@ -6,6 +6,7 @@ import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
 import { AUDIT_CODES } from '../core/audit.js';
 import { FILLABLE } from '../core/metadata.js';
+import { NORMALIZABLE } from '../core/normalize.js';
 import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
@@ -87,14 +88,31 @@ function requireConnection(db: Db) {
 }
 
 /**
- * Refuses a file-touching command when the media is not reachable here.
+ * Refuses a run the settings or the filesystem would refuse anyway.
+ *
  * Checked at this point so the caller gets an immediate, explained rejection
- * instead of a queued run that only fails once it reaches the front.
+ * instead of a queued run that only fails once it reaches the front — and so a
+ * schedule cannot be created for work that could never execute.
+ *
+ * The two guards differ in shape on purpose: a file command is unavailable
+ * outright when the media is out of reach, since even planning a move needs
+ * paths this machine can see. A normalize can always be planned, and only
+ * *applying* it is gated.
  */
-function assertFileCommandAllowed(db: Db, command: RunCommand): void {
-  if (!FILE_COMMANDS.has(command)) return;
-  const local = checkLocalRoot(requireConnection(db));
-  if (!local.canManageFiles) throw badRequest(unavailableMessage(local.reason));
+function assertCommandAllowed(
+  db: Db,
+  command: RunCommand,
+  options: Record<string, unknown> = {},
+): void {
+  if (FILE_COMMANDS.has(command)) {
+    const local = checkLocalRoot(requireConnection(db));
+    if (!local.canManageFiles) throw badRequest(unavailableMessage(local.reason));
+  }
+
+  // Not refused outright any more: with the switch off a normalize still
+  // applies the additive half of its plan — a work identity on a book that had
+  // none — and holds back only the replacements. The run reports what it held.
+
 }
 
 export interface ApiDeps {
@@ -234,7 +252,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
   router.post('/api/runs', (ctx) => {
     const input = parse(RunInputSchema, ctx.body);
     requireConnection(db);
-    assertFileCommandAllowed(db, input.command as RunCommand);
+    assertCommandAllowed(db, input.command as RunCommand, input.options);
     return runner.enqueue({
       command: input.command as RunCommand,
       options: input.options,
@@ -275,7 +293,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
   router.post('/api/schedules', (ctx) => {
     const input = parse(ScheduleInputSchema, ctx.body);
     requireConnection(db);
-    assertFileCommandAllowed(db, input.command as RunCommand);
+    assertCommandAllowed(db, input.command as RunCommand, input.options);
     return createSchedule(db, { ...input, command: input.command as RunCommand });
   });
 
@@ -314,6 +332,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
     fileCommands: [...FILE_COMMANDS],
     auditCodes: AUDIT_CODES,
     metadataFields: [...FILLABLE],
+    normalizeFields: [...NORMALIZABLE],
     providers: [...PROVIDER_NAMES],
     ageBands: [...AGE_BANDS],
     contentFlags: [...CONTENT_FLAGS],

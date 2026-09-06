@@ -2,12 +2,18 @@ import type { TaskContext } from '../context.js';
 import type { RunCommand } from '../db/runs.js';
 import { runAuditTask, type AuditTaskResult } from './audit.js';
 import { runMetadataTask, type MetadataTaskResult } from './metadata.js';
+import { runNormalizeTask, type NormalizeTaskResult } from './normalize.js';
 import { runOrganizeTask, type OrganizeTaskResult } from './organize.js';
 import { runRateTask, type RateTaskResult } from './rate.js';
 
-export type TaskResult = AuditTaskResult | RateTaskResult | MetadataTaskResult | OrganizeTaskResult;
+export type TaskResult =
+  | AuditTaskResult
+  | RateTaskResult
+  | MetadataTaskResult
+  | NormalizeTaskResult
+  | OrganizeTaskResult;
 
-export const COMMANDS: RunCommand[] = ['audit', 'rate', 'metadata', 'organize'];
+export const COMMANDS: RunCommand[] = ['audit', 'rate', 'metadata', 'normalize', 'organize'];
 
 /** Commands that need the media mounted on this machine. */
 export const FILE_COMMANDS: ReadonlySet<RunCommand> = new Set<RunCommand>(['organize']);
@@ -16,6 +22,7 @@ export const FILE_COMMANDS: ReadonlySet<RunCommand> = new Set<RunCommand>(['orga
 export const MUTATING_COMMANDS: ReadonlySet<RunCommand> = new Set<RunCommand>([
   'rate',
   'metadata',
+  'normalize',
   'organize',
 ]);
 
@@ -39,6 +46,8 @@ export async function runTask(
       return runRateTask(ctx, options);
     case 'metadata':
       return runMetadataTask(ctx, options);
+    case 'normalize':
+      return runNormalizeTask(ctx, options);
     case 'organize':
       return runOrganizeTask(ctx, options);
   }
@@ -81,6 +90,19 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         updated: r.updated,
         applied: r.applied,
         fields: r.fields,
+      };
+    }
+    case 'normalize': {
+      const r = result as NormalizeTaskResult;
+      return {
+        scanned: r.scanned,
+        itemsToChange: r.itemsToChange,
+        fieldsToChange: r.fieldsToChange,
+        heldBack: r.heldBack,
+        updated: r.updated,
+        applied: r.applied,
+        fields: r.fields,
+        bySource: r.bySource,
       };
     }
     case 'organize': {

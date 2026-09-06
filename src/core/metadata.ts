@@ -3,8 +3,10 @@ import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
 import { buildProviders } from '../providers/index.js';
-import type { MetadataProvider, ProviderResult } from '../providers/types.js';
-import { isBlank, normalizeTitle } from '../util/text.js';
+import type { ProviderResult } from '../providers/types.js';
+import { isBlank } from '../util/text.js';
+import { lookupItem, type LookupDeps } from './lookup.js';
+import { itemQuery } from './query.js';
 
 /**
  * Only fields where a provider answer is safe to trust. Notably absent: title
@@ -55,44 +57,16 @@ function providerValue(result: ProviderResult, field: Fillable): string | null {
     case 'isbn':
       return result.isbn ?? null;
     case 'language':
-      return null; // No provider here reports language reliably enough to write it.
+      return result.language ?? null;
   }
-}
-
-/**
- * Guards against a bad match writing another book's description onto this item:
- * the provider's title must normalize to something recognizably similar.
- */
-export function titlesAgree(item: AbsLibraryItem, result: ProviderResult): boolean {
-  const local = normalizeTitle(item.media?.metadata?.title);
-  const remote = normalizeTitle(result.title);
-  if (!local || !remote) return false;
-  return local === remote || local.startsWith(remote) || remote.startsWith(local);
 }
 
 export async function planMetadata(
   item: AbsLibraryItem,
-  providers: MetadataProvider[],
+  deps: LookupDeps,
   options: { fields: Fillable[]; overwrite?: boolean },
 ): Promise<MetadataPlan> {
-  const metadata = item.media?.metadata;
-  const query = {
-    title: metadata?.title ?? '',
-    author: itemAuthor(item),
-    isbn: metadata?.isbn ?? null,
-    asin: metadata?.asin ?? null,
-  };
-
-  const results: ProviderResult[] = [];
-  for (const provider of providers) {
-    try {
-      const result = await provider.lookup(query);
-      // An ISBN lookup is already an exact match; only fuzzy title lookups need the guard.
-      if (result && (query.isbn || titlesAgree(item, result))) results.push(result);
-    } catch (err) {
-      log.debug(`${provider.name} failed for "${query.title}": ${(err as Error).message}`);
-    }
-  }
+  const { results } = await lookupItem(deps, itemQuery(item));
 
   const changes: FieldChange[] = [];
   for (const field of options.fields) {
@@ -103,7 +77,7 @@ export async function planMetadata(
       const candidate = providerValue(result, field);
       if (isBlank(candidate) || candidate === existing) continue;
       changes.push({ field, from: existing, to: candidate!, source: result.provider });
-      break; // Providers are ordered by trust; first answer wins.
+      break; // Results arrive best-match first, so the strongest answer wins.
     }
   }
 
@@ -142,17 +116,23 @@ export async function runMetadataTask(
   const providers = buildProviders(
     {
       googleBooksApiKey: ctx.settings.googleBooksApiKey || undefined,
+      audibleRegion: ctx.settings.audibleRegion,
       providerConcurrency: ctx.settings.providerConcurrency,
     },
     options.providers ?? ctx.settings.providers,
   );
+  const deps: LookupDeps = {
+    providers,
+    db: ctx.db,
+    cacheDays: ctx.settings.lookupCacheDays,
+  };
 
   const libraries = await resolveLibraries(ctx, options.library);
   const items = await collectItems(ctx, libraries, { limit: options.limit });
   log.info(`checking ${items.length} item(s) for missing ${requested.join(', ')}…`);
 
   const plans = await mapLimit(items, ctx.settings.providerConcurrency, (item) =>
-    planMetadata(item, providers, { fields: requested, overwrite: options.overwrite }),
+    planMetadata(item, deps, { fields: requested, overwrite: options.overwrite }),
   );
   const actionable = plans.filter((p) => p.changes.length > 0);
   const fieldsToFill = actionable.reduce((sum, p) => sum + p.changes.length, 0);
