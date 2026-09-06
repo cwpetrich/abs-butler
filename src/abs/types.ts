@@ -86,7 +86,14 @@ export interface AbsPage<T> {
   page: number;
 }
 
-/** Patch body for PATCH /api/items/:id/media. Every field is optional. */
+/**
+ * Patch body for PATCH /api/items/:id/media. Every field is optional.
+ *
+ * Authors and series are sent as objects because that is how AudiobookShelf
+ * models them — they are records in their own right, not strings on the book —
+ * and an entry with no id is created by name. Narrators really are plain
+ * strings there.
+ */
 export interface AbsMediaPatch {
   metadata?: Partial<
     Pick<
@@ -102,6 +109,10 @@ export interface AbsMediaPatch {
       | 'explicit'
       | 'genres'
     >
-  >;
+  > & {
+    authors?: Array<{ id?: string; name: string }>;
+    narrators?: string[];
+    series?: Array<{ id?: string; name: string; sequence?: string | null }>;
+  };
   tags?: string[];
 }

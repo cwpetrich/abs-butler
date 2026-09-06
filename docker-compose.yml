@@ -9,11 +9,15 @@
 #
 # The one setting worth knowing about is HOST_LIBRARY_PATH: point it at the
 # same directory AudiobookShelf uses, and `organize` becomes available.
+#
+# This pulls a published image, so the only file you need is this one — no
+# clone, no build, and it works the same on amd64 and arm64. To run your own
+# working tree instead, add the build override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build butler
 
 x-butler: &butler
-  build:
-    context: .
-  image: abs-butler:latest
+  image: ${BUTLER_IMAGE:-ghcr.io/cwpetrich/abs-butler:latest}
   env_file:
     - path: .env
       required: false

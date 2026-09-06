@@ -20,8 +20,6 @@ export class AbsApiError extends Error {
 export interface AbsClientOptions {
   baseUrl: string;
   token?: string;
-  username?: string;
-  password?: string;
   /** Retries for transient failures (429 / 5xx / network). */
   maxRetries?: number;
 }
@@ -34,38 +32,19 @@ export interface AbsClientOptions {
  */
 export class AbsClient {
   private readonly baseUrl: string;
-  private token: string | undefined;
-  private readonly username: string | undefined;
-  private readonly password: string | undefined;
+  private readonly token: string | undefined;
   private readonly maxRetries: number;
 
   constructor(options: AbsClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.token = options.token;
-    this.username = options.username;
-    this.password = options.password;
     this.maxRetries = options.maxRetries ?? 3;
-  }
-
-  /** Exchanges username/password for a token when no token was supplied. */
-  async ensureAuth(): Promise<void> {
-    if (this.token) return;
-    if (!this.username || !this.password) {
-      throw new Error('No ABS credentials available; set ABS_TOKEN or ABS_USERNAME/ABS_PASSWORD.');
-    }
-    log.debug('logging in to AudiobookShelf as', this.username);
-    const res = await this.request<{ user: { token: string } }>('POST', '/login', {
-      body: { username: this.username, password: this.password },
-      skipAuth: true,
-    });
-    this.token = res.user?.token;
-    if (!this.token) throw new Error('Login succeeded but returned no token.');
   }
 
   private async request<T>(
     method: string,
     path: string,
-    options: { body?: unknown; query?: Record<string, string | number | undefined>; skipAuth?: boolean } = {},
+    options: { body?: unknown; query?: Record<string, string | number | undefined> } = {},
   ): Promise<T> {
     const url = new URL(this.baseUrl + path);
     for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -73,7 +52,7 @@ export class AbsClient {
     }
 
     const headers: Record<string, string> = { Accept: 'application/json' };
-    if (!options.skipAuth && this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
     let lastError: unknown;
