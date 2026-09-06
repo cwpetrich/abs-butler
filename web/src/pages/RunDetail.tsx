@@ -1,4 +1,5 @@
-import { api } from '../api';
+import { useState } from 'react';
+import { api, type Run, type RevertResult } from '../api';
 import { Banner, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 import { LogStream } from '../components/LogStream';
 
@@ -41,13 +42,22 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
           <Stat label="Status" value={<StatusBadge status={data.status} />} />
           <Stat label="Trigger" value={data.trigger} />
           <Stat label="Mode" value={data.dryRun ? 'dry run' : 'applied'} />
-          <Stat label="Trigger" value={data.trigger} />
+          <Stat
+            label="Undoable"
+            value={
+              data.revisions && data.revisions.total > 0
+                ? `${data.revisions.total - data.revisions.reverted} of ${data.revisions.total}`
+                : '—'
+            }
+          />
           <Stat label="Started" value={formatTime(data.startedAt ?? data.queuedAt)} />
           <Stat label="Duration" value={formatDuration(data.startedAt, data.finishedAt)} />
         </div>
       </div>
 
       {data.error && <Banner tone="err">{data.error}</Banner>}
+
+      <RevertPanel run={data} onReverted={run.reload} />
 
       {data.summary && (
         <div className="card">
@@ -140,3 +150,94 @@ function humanize(key: string): string {
     .trim();
 }
 
+/**
+ * Putting a run back.
+ *
+ * Shown only where there is something to put back, so a dry run and an
+ * `organize` — which moves files and records no revisions — simply do not offer
+ * it rather than offering it and failing.
+ *
+ * The preview is not decoration: it is the same dry run the CLI does, and it
+ * names the items an edit made since the run would otherwise have overwritten.
+ */
+function RevertPanel({ run, onReverted }: { run: Run; onReverted: () => void }) {
+  const [preview, setPreview] = useState<RevertResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const pending = run.revisions ? run.revisions.total - run.revisions.reverted : 0
+  if (!run.revisions || run.revisions.total === 0) return null
+
+  const call = async (apply: boolean, force = false) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.revertRun(run.id, { apply, force })
+      setPreview(result)
+      if (apply) onReverted()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Undo</h2>
+      {error && <Banner tone="err">{error}</Banner>}
+
+      {pending === 0 ? (
+        <p className="hint">Everything this run changed has already been put back.</p>
+      ) : (
+        <p className="hint">
+          This run changed {pending} item(s) and recorded how to restore each one. Preview first —
+          an item edited since the run is skipped rather than overwritten.
+        </p>
+      )}
+
+      {preview && preview.plans.length > 0 && !preview.applied && (
+        <table>
+          <tbody>
+            {preview.plans.map((plan) => (
+              <tr key={plan.itemId}>
+                <td>{plan.title}</td>
+                <td className="dim">{plan.fields.join(', ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {preview?.skipped.map((skip) => (
+        <Banner tone="warn" key={skip.itemId}>
+          Skipping "{skip.title}" — {skip.reason}
+        </Banner>
+      ))}
+
+      {preview?.applied && (
+        <div className="banner" style={{ borderColor: 'var(--ok)', color: 'var(--ok)' }}>
+          Restored {preview.restored} item(s).
+        </div>
+      )}
+
+      {pending > 0 && (
+        <div className="actions">
+          <button type="button" disabled={busy} onClick={() => void call(false)}>
+            {busy ? 'Checking…' : 'Preview undo'}
+          </button>
+          {preview && !preview.applied && preview.plans.length > 0 && (
+            <button className="primary" type="button" disabled={busy} onClick={() => void call(true)}>
+              Restore {preview.plans.length} item(s)
+            </button>
+          )}
+          {preview && !preview.applied && preview.skipped.length > 0 && (
+            <button type="button" disabled={busy} onClick={() => void call(true, true)}>
+              Restore all, including edited
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

@@ -137,4 +137,29 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_lookups_fetched ON lookups(fetched_at);
   `,
+
+  // 6 — what a run overwrote, so it can be put back
+  //
+  // `normalize --apply` rewrites titles, authors, narrators and series across a
+  // whole library, and until now nothing recorded what they had been. A bad run
+  // over three thousand books was unrecoverable, which is a poor property for a
+  // tool meant to be left running on a schedule.
+  //
+  // Both columns hold a patch in the shape the AudiobookShelf API accepts, so
+  // reverting is replaying `before` and needs no interpretation. `after` is
+  // kept to notice that someone has edited the item since, which is the one
+  // case where putting the old value back would destroy newer work.
+  `
+  CREATE TABLE revisions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    item_id     TEXT    NOT NULL,
+    title       TEXT    NOT NULL DEFAULT '',
+    before      TEXT    NOT NULL,
+    after       TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    reverted_at INTEGER
+  );
+  CREATE INDEX idx_revisions_run ON revisions(run_id, id);
+  `,
 ];
