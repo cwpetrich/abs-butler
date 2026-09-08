@@ -48,7 +48,14 @@ services:
     <<: *butler
     container_name: abs-butler
     ports:
-      - "${BUTLER_PORT:-13380}:13380"
+      # Both sides are BUTLER_PORT deliberately. The app inside reads the same
+      # variable, so mapping host:13380 would forward to a port nothing listens
+      # on the moment anyone changes it.
+      #
+      # Bound to loopback by default: until a password is set the setup page is
+      # reachable by anyone who can see the port, so publishing it to the
+      # network is opt-in via BUTLER_BIND=0.0.0.0.
+      - "${BUTLER_BIND:-127.0.0.1}:${BUTLER_PORT:-13380}:${BUTLER_PORT:-13380}"
     restart: unless-stopped
 
   # One-shot CLI against the same database. Everything after the service name

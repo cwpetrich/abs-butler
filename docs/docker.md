@@ -5,6 +5,21 @@ same database.
 
 ## Quick start
 
+`install.sh` is the shortest path when abs-butler runs beside AudiobookShelf:
+
+```bash
+curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
+sh install.sh --library /srv/audiobooks
+```
+
+It asks for the library directory if you do not pass one, derives `PUID`/`PGID` from that
+directory so files `organize` creates stay readable by AudiobookShelf, publishes the UI on
+loopback, and writes an override putting the database in `./data` next to the compose file.
+`--nfs HOST:/EXPORT` mounts a NAS export directly for shares that are not already mounted on the
+host, and `--dry-run` prints every file it would write. The rest of this page is what it automates.
+
+### By hand
+
 The compose file pulls a published image built for amd64 and arm64, so there is nothing to clone
 and nothing to compile:
 

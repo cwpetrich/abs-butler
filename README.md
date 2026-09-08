@@ -29,7 +29,20 @@ sudo snap install abs-butler
 sudo snap connect abs-butler:removable-media    # only if you want to organize files
 ```
 
-**Docker** — nothing to clone; the compose file pulls a published multi-arch image:
+**Docker, with the installer** — recommended when abs-butler runs on the same machine as
+AudiobookShelf. It settles the one thing the UI cannot: which host directory gets mounted in, since
+a bind mount is fixed when the container is created.
+
+```bash
+curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
+sh install.sh --library /srv/audiobooks     # omit --library and it asks
+```
+
+It derives file ownership from the library directory, binds the UI to loopback, and prints what to
+do next. `--dry-run` shows every file it would write without touching anything. Read it before you
+run it — it is one file, and it is meant to be read.
+
+**Docker, by hand** — the compose file pulls a published multi-arch image:
 
 ```bash
 curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml
