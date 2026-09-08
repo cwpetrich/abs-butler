@@ -1,4 +1,5 @@
-import { AbsClient } from '../abs/client.js';
+import { AbsClient, resolveApiKey } from '../abs/client.js';
+import { gatherCredentials, terminalPrompts, type CredentialPrompts } from './credentials.js';
 import { assessCapability } from '../core/capability.js';
 import { keyFilePath, keySource } from '../core/crypto.js';
 import { openStore } from '../context.js';
@@ -15,12 +16,17 @@ import { printJson, printTable } from '../util/table.js';
 
 export interface ConnectOptions {
   url: string;
-  apiKey: string;
+  /** Either this, or username + password. */
+  apiKey?: string;
+  username?: string;
+  password?: string;
   libraryRoot?: string;
   pathPrefix?: string;
   json?: boolean;
   /** Skip the connectivity check before saving. */
   noVerify?: boolean;
+  /** Injected in tests; defaults to the real terminal. */
+  prompts?: CredentialPrompts;
 }
 
 /**
@@ -28,22 +34,33 @@ export interface ConnectOptions {
  *
  * The web UI is the usual way to do this; this exists for headless setup and
  * for scripting a fresh install.
+ *
+ * Takes an API token or a username and password, asking for whichever is
+ * missing when there is a terminal to ask. Only ever stores a token — see
+ * `resolveApiKey`. Passing a password as a flag leaves it in the shell
+ * history, so the prompt is the better habit for anything typed by hand.
  */
 export async function runConnect(options: ConnectOptions): Promise<void> {
   const db = openStore();
+
+  const credentials = await gatherCredentials(options, options.prompts ?? terminalPrompts, {
+    required: true,
+  });
+  const apiKey = await resolveApiKey(options.url, credentials);
+  if (!credentials.apiKey) log.info('logged in; storing the API token, not the password');
 
   if (!options.noVerify) {
     log.info(`checking ${options.url}…`);
     const libraries = await new AbsClient({
       baseUrl: options.url,
-      token: options.apiKey,
+      token: apiKey,
     }).listLibraries();
     log.success(`connected — ${libraries.length} librar(ies) visible`);
   }
 
   const connection = saveConnection(db, {
     url: options.url,
-    apiKey: options.apiKey,
+    apiKey,
     libraryRoot: options.libraryRoot ?? null,
     pathPrefix: options.pathPrefix ?? null,
   });
@@ -59,6 +76,10 @@ export async function runConnect(options: ConnectOptions): Promise<void> {
 export interface ConfigureOptions {
   url?: string;
   apiKey?: string;
+  username?: string;
+  password?: string;
+  /** Injected in tests; defaults to the real terminal. */
+  prompts?: CredentialPrompts;
   libraryRoot?: string;
   pathPrefix?: string;
   /** 'on' or 'off'; undefined leaves the setting alone. */
@@ -97,15 +118,27 @@ export async function runConfigure(options: ConfigureOptions): Promise<void> {
     }
   }
 
+  const existing = getConnection(db);
+  // Only asks when a username was given: configure is just as often being used
+  // to change a path, and that must not turn into a password prompt.
+  const credentials = await gatherCredentials(options, options.prompts ?? terminalPrompts, {
+    required: false,
+  });
+  // A password is exchanged for a token against the server the connection will
+  // point at after this call, which may be the one being set in the same run.
+  const apiKey = credentials.username
+    ? await resolveApiKey(options.url ?? existing?.url ?? '', credentials)
+    : (credentials.apiKey ?? undefined);
+
   const connectionPatch = {
     ...(options.url !== undefined ? { url: options.url } : {}),
-    ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
     ...(options.libraryRoot !== undefined ? { libraryRoot: options.libraryRoot } : {}),
     ...(options.pathPrefix !== undefined ? { pathPrefix: options.pathPrefix } : {}),
   };
   if (Object.keys(connectionPatch).length === 0) return;
 
-  if (!getConnection(db)) {
+  if (!existing) {
     throw new Error('Not connected yet. Run: abs-butler connect --url <url> --api-key <key>');
   }
   const updated = updateConnection(db, connectionPatch);

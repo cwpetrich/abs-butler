@@ -28,7 +28,9 @@ export interface AbsClientOptions {
  * Thin client over the AudiobookShelf HTTP API.
  *
  * All writes go through `patchItemMedia` / `scanLibrary`, which are the only
- * mutating calls in this codebase — commands must not hand-roll fetches.
+ * mutating calls in this codebase — commands must not hand-roll fetches. The
+ * one other POST is `login`, which touches no library data: it exchanges
+ * credentials for the API token everything else runs on.
  */
 export class AbsClient {
   private readonly baseUrl: string;
@@ -103,6 +105,36 @@ export class AbsClient {
     return res.libraries ?? [];
   }
 
+  /**
+   * Exchanges a username and password for a long-lived API token.
+   *
+   * AudiobookShelf returns three credentials from `/login`. `user.token` is the
+   * one to keep: it carries no `exp` claim, so it behaves exactly like the API
+   * token copied out of the web UI, and abs-butler stores nothing else. The
+   * `accessToken` beside it expires in an hour and the refresh token arrives as
+   * an httpOnly cookie, so both would drag session handling into a scheduler
+   * that runs unattended.
+   *
+   * Verified against AudiobookShelf 2.36.0.
+   */
+  async login(username: string, password: string): Promise<string> {
+    const res = await this.request<AbsLoginResponse>('POST', '/login', {
+      body: { username, password },
+    });
+    const token = res?.user?.token;
+    if (!token) {
+      // Reached on a version that has dropped the legacy field. Everything
+      // downstream assumes a durable token, so failing here beats storing an
+      // accessToken that dies in an hour.
+      throw new Error(
+        'AudiobookShelf accepted the login but returned no long-lived API token. ' +
+          'Create an API token in AudiobookShelf (Settings → Users → your user → API Token) ' +
+          'and connect with that instead.',
+      );
+    }
+    return token;
+  }
+
   /** Resolves a library by id, exact name, or case-insensitive name. */
   async resolveLibrary(idOrName: string): Promise<AbsLibrary> {
     const libraries = await this.listLibraries();
@@ -160,4 +192,35 @@ export class AbsClient {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Only the field abs-butler keeps; `/login` returns a great deal more. */
+interface AbsLoginResponse {
+  user?: { token?: string };
+}
+
+/** Either way of proving who you are. Exactly one of the two is used. */
+export interface AbsCredentials {
+  apiKey?: string | null;
+  username?: string | null;
+  password?: string | null;
+}
+
+/**
+ * Reduces either credential form to the API token that gets stored.
+ *
+ * The password is used for this one request and then goes out of scope: it is
+ * never written to the database, and the logger never records request bodies.
+ * An API token is preferred when both are somehow present, because it is the
+ * credential that can be revoked in AudiobookShelf without a password change.
+ */
+export async function resolveApiKey(
+  baseUrl: string,
+  credentials: AbsCredentials,
+): Promise<string> {
+  if (credentials.apiKey) return credentials.apiKey;
+  if (credentials.username && credentials.password) {
+    return new AbsClient({ baseUrl }).login(credentials.username, credentials.password);
+  }
+  throw new Error('Provide either an API token, or a username and password.');
 }

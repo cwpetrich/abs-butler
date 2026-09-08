@@ -29,7 +29,20 @@ sudo snap install abs-butler
 sudo snap connect abs-butler:removable-media    # only if you want to organize files
 ```
 
-**Docker** — nothing to clone; the compose file pulls a published multi-arch image:
+**Docker, with the installer** — recommended when abs-butler runs on the same machine as
+AudiobookShelf. It settles the one thing the UI cannot: which host directory gets mounted in, since
+a bind mount is fixed when the container is created.
+
+```bash
+curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
+sh install.sh --library /srv/audiobooks     # omit --library and it asks
+```
+
+It derives file ownership from the library directory, binds the UI to loopback, and prints what to
+do next. `--dry-run` shows every file it would write without touching anything. Read it before you
+run it — it is one file, and it is meant to be read.
+
+**Docker, by hand** — the compose file pulls a published multi-arch image:
 
 ```bash
 curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml
@@ -43,8 +56,11 @@ npm install && npm run build
 node dist/index.js serve
 ```
 
-Then open <http://localhost:13380>, pick a password, and add your server's URL and an API token
-(AudiobookShelf → Settings → Users → your user → API Token).
+Then open <http://localhost:13380>, pick a password, and add your server's URL along with either an
+API token (AudiobookShelf → Settings → Users → your user → API Token) or an admin username and
+password. The token is the better choice — it can be revoked in AudiobookShelf without changing the
+account's password — but signing in saves the trip through the settings, and comes out the same
+either way: abs-butler exchanges the credentials for that same token and stores only the token.
 
 That's the whole setup. There is nothing to configure before first launch: abs-butler generates its
 own encryption key and keeps everything else in its database.
@@ -127,7 +143,12 @@ lets you manage the encryption key yourself instead of letting abs-butler genera
 
 ### Credentials at rest
 
-The AudiobookShelf API token is sealed with AES-256-GCM before it is written to the database. The
+Connecting with a username and password stores neither: they are exchanged for an API token in a
+single request, and only that token is kept. Leave the secret off the command line and `connect`
+asks for it at the terminal without echoing it, which also keeps it out of the shell history. With
+no terminal attached — a container started without a TTY, or a CI job — it does not wait for an
+answer nobody can give: it exits naming the flag to pass instead. The AudiobookShelf API token is sealed with AES-256-GCM
+before it is written to the database. The
 key lives in `secret.key` beside the database — deliberately *not in* it, since a key stored next to
 its own ciphertext is obfuscation rather than encryption. The point is that a copy of the database,
 which is what a backup or a support bundle contains, is not a copy of your credentials.
@@ -145,6 +166,8 @@ Everything in the UI is also a CLI command, against the same database.
 
 ```bash
 abs-butler connect --url http://localhost:13378 --api-key <key>
+abs-butler connect --url http://localhost:13378 --username admin   # prompts for the password
+abs-butler connect --url http://localhost:13378                    # prompts for either
 abs-butler status                       # connectivity + file capability
 abs-butler configure --library-root /audiobooks
 abs-butler configure --file-changes on      # let organize --apply move files

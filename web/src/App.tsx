@@ -112,7 +112,7 @@ function Shell({
           >
             Sign out
           </button>
-          <div style={{ marginTop: 8 }}>v0.3.0</div>
+          <div style={{ marginTop: 8 }}>v0.4.0</div>
         </div>
       </nav>
 

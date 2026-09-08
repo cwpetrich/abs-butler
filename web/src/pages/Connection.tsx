@@ -1,15 +1,34 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { api, type CapabilityReport, type Connection } from '../api';
 import { Banner, Spinner, useAsync } from '../lib';
 
+/**
+ * How to authenticate. An API token is the default and the recommendation: it
+ * is what gets stored either way, and it can be revoked in AudiobookShelf
+ * without disturbing the account's password. Signing in is offered because
+ * finding the token means a trip through the AudiobookShelf settings.
+ */
+type AuthMethod = 'apiKey' | 'password';
+
 interface FormState {
   url: string;
+  method: AuthMethod;
   apiKey: string;
+  username: string;
+  password: string;
   libraryRoot: string;
   pathPrefix: string;
 }
 
-const EMPTY: FormState = { url: '', apiKey: '', libraryRoot: '', pathPrefix: '' };
+const EMPTY: FormState = {
+  url: '',
+  method: 'apiKey',
+  apiKey: '',
+  username: '',
+  password: '',
+  libraryRoot: '',
+  pathPrefix: '',
+};
 
 export function ConnectionPage({ onChanged }: { onChanged: () => void }) {
   const loaded = useAsync(() => api.connection(), []);
@@ -53,7 +72,9 @@ function NotConnected({ onSaved }: { onSaved: () => void }) {
     <div className="card">
       <h2>Connect to AudiobookShelf</h2>
       <p className="hint">
-        The API token is in AudiobookShelf under Settings → Users → your user → API Token.
+        The API token is in AudiobookShelf under Settings → Users → your user → API Token. If it is
+        easier, sign in with an admin username and password instead — abs-butler exchanges them for
+        that same token and stores only the token.
       </p>
       <ConnectionForm initial={EMPTY} requireKey onSaved={onSaved} submitLabel="Connect" />
     </div>
@@ -115,7 +136,10 @@ function Connected({
         <ConnectionForm
           initial={{
             url: connection.url,
+            method: 'apiKey',
             apiKey: '',
+            username: '',
+            password: '',
             libraryRoot: connection.libraryRoot ?? '',
             pathPrefix: connection.pathPrefix ?? '',
           }}
@@ -170,11 +194,14 @@ function ConnectionForm({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const methodName = useId();
 
   useEffect(() => setForm(initial), [initial.url, initial.libraryRoot, initial.pathPrefix]);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  const usingPassword = form.method === 'password';
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -182,17 +209,27 @@ function ConnectionForm({
     setError(null);
     setStatus(null);
     try {
+      // Only the chosen method is sent. On an edit, an untouched API token
+      // field sends nothing at all, which the server reads as "keep the
+      // stored one".
+      const credentials = usingPassword
+        ? { username: form.username, password: form.password }
+        : form.apiKey
+          ? { apiKey: form.apiKey }
+          : {};
+
       const payload = {
         url: form.url,
         libraryRoot: form.libraryRoot,
         pathPrefix: form.pathPrefix,
-        ...(form.apiKey ? { apiKey: form.apiKey } : {}),
+        ...credentials,
       };
-      if (requireKey) await api.saveConnection({ ...payload, apiKey: form.apiKey });
+      if (requireKey) await api.saveConnection(payload);
       else await api.updateConnection(payload);
 
-      setForm((f) => ({ ...f, apiKey: '' }));
-      setStatus('Saved.');
+      // Neither secret is kept in component state after a save.
+      setForm((f) => ({ ...f, apiKey: '', password: '' }));
+      setStatus(usingPassword ? 'Saved. Stored the API token, not the password.' : 'Saved.');
       onSaved();
     } catch (err) {
       setError((err as Error).message);
@@ -220,18 +257,69 @@ function ConnectionForm({
         />
       </label>
 
-      <label>
-        API token
-        {!requireKey && <span className="hint">Leave blank to keep the stored token.</span>}
-        <input
-          type="password"
-          value={form.apiKey}
-          onChange={(e) => set('apiKey', e.target.value)}
-          placeholder={requireKey ? '' : '••••••••'}
-          autoComplete="new-password"
-          required={requireKey}
-        />
-      </label>
+      <div className="actions" style={{ marginBottom: 10 }}>
+        <label className="checkbox">
+          <input
+            type="radio"
+            name={methodName}
+            checked={!usingPassword}
+            onChange={() => set('method', 'apiKey')}
+          />
+          API token <span className="badge ok">recommended</span>
+        </label>
+        <label className="checkbox">
+          <input
+            type="radio"
+            name={methodName}
+            checked={usingPassword}
+            onChange={() => set('method', 'password')}
+          />
+          Sign in
+        </label>
+      </div>
+
+      {usingPassword ? (
+        <>
+          <p className="hint">
+            Used once to fetch an API token. The password is not stored, and abs-butler needs an
+            account that can read the libraries — an admin is the safe choice.
+          </p>
+          <div className="field-grid">
+            <label>
+              Admin username
+              <input
+                value={form.username}
+                onChange={(e) => set('username', e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </label>
+            <label>
+              Admin password
+              <input
+                type="password"
+                value={form.password}
+                onChange={(e) => set('password', e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </label>
+          </div>
+        </>
+      ) : (
+        <label>
+          API token
+          {!requireKey && <span className="hint">Leave blank to keep the stored token.</span>}
+          <input
+            type="password"
+            value={form.apiKey}
+            onChange={(e) => set('apiKey', e.target.value)}
+            placeholder={requireKey ? '' : '••••••••'}
+            autoComplete="new-password"
+            required={requireKey}
+          />
+        </label>
+      )}
 
       <div className="field-grid">
         <label>

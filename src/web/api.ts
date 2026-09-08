@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AbsClient } from '../abs/client.js';
+import { AbsClient, resolveApiKey } from '../abs/client.js';
 import { assessCapability, checkLocalRoot } from '../core/capability.js';
 import { keyFilePath, keySource } from '../core/crypto.js';
 import type { JobRunner } from '../core/jobs.js';
@@ -42,17 +42,43 @@ import {
 } from './auth.js';
 import { badRequest, notFound, Router, type RequestContext } from './router.js';
 
-const ConnectionInputSchema = z.object({
+/**
+ * The two ways to prove who you are.
+ *
+ * An API token is the preferred form and the only one stored. A username and
+ * password are accepted as a convenience — they are exchanged for a token on
+ * the spot and then discarded, so the credential at rest is identical either
+ * way. Blank means "keep the existing token": the UI never receives the real
+ * one to send back, so an empty field must not wipe it.
+ */
+const credentialFields = {
+  apiKey: z.string().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+};
+
+const ConnectionBaseSchema = z.object({
   url: z.string().url('Must be a full URL, e.g. http://localhost:13378'),
-  apiKey: z.string().min(1, 'API key is required'),
   libraryRoot: z.string().nullish(),
   pathPrefix: z.string().nullish(),
+  ...credentialFields,
 });
 
-const ConnectionPatchSchema = ConnectionInputSchema.partial().extend({
-  // Blank means "keep the existing key" — the UI never receives the real one
-  // to send back, so an empty field must not wipe it.
-  apiKey: z.string().optional(),
+/** A username without its password is a half-filled form, not a credential. */
+const bothOrNeither = (v: { username?: string; password?: string }) =>
+  Boolean(v.username) === Boolean(v.password);
+
+const ConnectionInputSchema = ConnectionBaseSchema.refine(
+  (v) => Boolean(v.apiKey) || (Boolean(v.username) && Boolean(v.password)),
+  { message: 'Provide either an API token, or a username and password.', path: ['apiKey'] },
+).refine(bothOrNeither, {
+  message: 'A username and a password are both required.',
+  path: ['password'],
+});
+
+const ConnectionPatchSchema = ConnectionBaseSchema.partial().refine(bothOrNeither, {
+  message: 'A username and a password are both required.',
+  path: ['password'],
 });
 
 const RunInputSchema = z.object({
@@ -185,9 +211,15 @@ export function buildApiRouter(deps: ApiDeps): Router {
 
   router.put('/api/connection', async (ctx) => {
     const input = parse(ConnectionInputSchema, ctx.body);
+    // Credentials become a token before anything else happens, so what gets
+    // verified is exactly what gets stored.
+    const apiKey = await resolveApiKey(input.url, input);
     // Verify before saving, so a typo surfaces here rather than on first run.
-    await new AbsClient({ baseUrl: input.url, token: input.apiKey }).listLibraries();
-    saveConnection(db, input);
+    await new AbsClient({ baseUrl: input.url, token: apiKey }).listLibraries();
+    // Destructured rather than spread so it is visible that the password does
+    // not reach the database.
+    const { username: _username, password: _password, ...rest } = input;
+    saveConnection(db, { ...rest, apiKey });
     return { connection: publicConnection(db) };
   });
 
@@ -196,13 +228,15 @@ export function buildApiRouter(deps: ApiDeps): Router {
     const current = getConnectionWithKey(db);
     if (!current) throw badRequest('AudiobookShelf is not connected yet.');
 
-    if (patch.url || patch.apiKey) {
-      await new AbsClient({
-        baseUrl: patch.url ?? current.url,
-        token: patch.apiKey || current.apiKey,
-      }).listLibraries();
+    const url = patch.url ?? current.url;
+    const reauthenticating = Boolean(patch.apiKey) || Boolean(patch.username && patch.password);
+    const apiKey = reauthenticating ? await resolveApiKey(url, patch) : current.apiKey;
+
+    if (patch.url || reauthenticating) {
+      await new AbsClient({ baseUrl: url, token: apiKey }).listLibraries();
     }
-    updateConnection(db, patch);
+    const { username: _username, password: _password, ...rest } = patch;
+    updateConnection(db, { ...rest, ...(reauthenticating ? { apiKey } : {}) });
     return { connection: publicConnection(db) };
   });
 
@@ -360,7 +394,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
     defaultTemplate: DEFAULT_TEMPLATE,
   }));
 
-  router.get('/api/health', () => ({ ok: true, version: '0.3.0' }), { isPublic: true });
+  router.get('/api/health', () => ({ ok: true, version: '0.4.0' }), { isPublic: true });
 
   return router;
 }
