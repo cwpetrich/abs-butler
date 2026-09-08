@@ -54,6 +54,26 @@ Open <http://localhost:13380>, set a password, and add your server's URL and API
 to be configured before that first launch — no password file, no secret to generate. `.env` is
 optional and mostly exists to tell abs-butler where your audiobooks are.
 
+### Reaching it from another machine
+
+`--remote` publishes the UI on every interface instead of loopback, which is what a headless server
+needs, and generates a `BUTLER_SETUP_CODE` to go with it:
+
+```bash
+sh install.sh --remote
+```
+
+The code is not decoration. Until a password exists the setup page has to be reachable by an
+anonymous visitor, so on a network the first person to load it would otherwise take the account.
+With `BUTLER_SETUP_CODE` set, the code is required whether or not the window is open — the race
+closes, and the 15-minute limit stops applying at the same time.
+
+Publishing on every interface still puts the UI in front of anyone who can route to the port. If
+that is more than you want, leave the default and reach it over SSH
+(`ssh -L 13380:127.0.0.1:13380 you@server`) or Tailscale
+(`tailscale serve --bg --https=13380 http://127.0.0.1:13380`), neither of which needs the port open
+at all.
+
 ### The setup window
 
 Until a password exists, abs-butler has nothing to authenticate against, so the setup screen has to

@@ -44,9 +44,21 @@ at once: the URL, the host directory holding the library, and the path Audiobook
 several servers. Give it an admin username and it connects on the spot, so one command goes from
 nothing to connected; decline and it just fills in the form for you.
 
-It derives file ownership from the library directory, binds the UI to loopback, and prints what to
-do next. `--library` skips the search, `--no-discover` turns it off, and `--dry-run` shows every
-file it would write without touching anything. Read it before you run it — it is one file, and it
+It derives file ownership from the library directory and prints what to do next. `--library` skips
+the search, `--no-discover` turns it off, and `--dry-run` shows every file it would write without
+touching anything.
+
+The UI is published on loopback by default. For a server with no browser on it — which is most of
+them — use `--remote`:
+
+```bash
+sh install.sh --remote
+```
+
+That publishes on every interface and generates a setup code, printed at the end and stored as
+`BUTLER_SETUP_CODE`. Setting the code changes the rule for the first password: it is required
+whether or not the 15-minute window is open, so nobody on the network can claim the account without
+it and there is no clock to race. Read it before you run it — it is one file, and it
 is meant to be read.
 
 **Docker, by hand** — the compose file pulls a published multi-arch image:
