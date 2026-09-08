@@ -53,7 +53,7 @@ jobs:
 
   snap:
     name: Build and publish the snap
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     # Declared at job level so the publish step's `if` can read it: a step's own
     # env block is not in scope when its condition is evaluated.
     env:
@@ -62,16 +62,22 @@ jobs:
       # One architecture failing should not withdraw the other from the store.
       fail-fast: false
       matrix:
-        platform: [amd64, arm64]
+        include:
+          - platform: amd64
+            runner: ubuntu-latest
+          - platform: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
+      # Each architecture builds on its own hardware, so there is no
+      # cross-build to arrange. This replaces `--build-for=arm64` on an amd64
+      # runner, which snapcraft 9 refuses outright: "Cannot generate a project
+      # that builds on amd64 and builds for arm64". Free arm64 runners are a
+      # public-repository benefit, so this only became available when the
+      # repository was opened up.
       - id: build
         uses: snapcore/action-build@v1
-        with:
-          # Cross-building under emulation; slower than a native runner, and it
-          # keeps both architectures on one workflow.
-          snapcraft-args: --build-for=${{ matrix.platform }}
 
       - uses: actions/upload-artifact@v4
         with:
