@@ -74,6 +74,20 @@ that is more than you want, leave the default and reach it over SSH
 (`tailscale serve --bg --https=13380 http://127.0.0.1:13380`), neither of which needs the port open
 at all.
 
+### Re-running it
+
+`install.sh` is safe to run again on an existing install, and it is the way to pick up a newer
+compose file. Anything already in `.env` is kept — the binding, the port, the ownership, the setup
+code — so a second run does not quietly revert what the first one set. Flags still win, so a
+setting is changed by naming it:
+
+```bash
+sh install.sh --bind 127.0.0.1     # stop publishing to the network
+sh install.sh --remote             # and put it back
+```
+
+The database lives in `./data` and is untouched by any of this.
+
 ### The setup window
 
 Until a password exists, abs-butler has nothing to authenticate against, so the setup screen has to

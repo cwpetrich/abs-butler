@@ -22,11 +22,11 @@ COMPOSE_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-
 library=""
 nfs=""
 install_dir=""
-port="13380"
-bind="127.0.0.1"
+port=""
+bind=""
 puid=""
 pgid=""
-image="$IMAGE_DEFAULT"
+image=""
 assume_yes=0
 dry_run=0
 abs_url=""
@@ -215,6 +215,39 @@ discover_bare() {
   done
 }
 
+# ---- where to install, and what is already there ---------------------------
+
+if [ -z "$install_dir" ]; then
+  if [ "$(id -u)" -eq 0 ]; then install_dir="/opt/abs-butler"; else install_dir="$PWD/abs-butler"; fi
+fi
+
+# An existing .env is the answer to every question it already covers. Re-running
+# to pick up a newer compose file, or to change one thing, must not quietly
+# revert the rest to defaults -- reverting BUTLER_BIND alone would take a
+# working remote install off the network.
+env_value() {
+  [ -f "$install_dir/.env" ] || return 0
+  sed -n "s/^$1=//p" "$install_dir/.env" | tail -1
+}
+
+if [ -f "$install_dir/.env" ]; then
+  existing_env=1
+  [ -n "$bind" ]        || bind=$(env_value BUTLER_BIND)
+  [ -n "$port" ]        || port=$(env_value BUTLER_PORT)
+  [ -n "$image" ]       || image=$(env_value BUTLER_IMAGE)
+  [ -n "$puid" ]        || puid=$(env_value PUID)
+  [ -n "$pgid" ]        || pgid=$(env_value PGID)
+  [ -n "$library" ]     || library=$(env_value HOST_LIBRARY_PATH)
+  [ -n "$setup_code" ]  || setup_code=$(env_value BUTLER_SETUP_CODE)
+else
+  existing_env=0
+fi
+
+# Whatever is still unanswered falls back to the defaults.
+[ -n "$port" ] || port="13380"
+[ -n "$bind" ] || bind="127.0.0.1"
+[ -n "$image" ] || image="$IMAGE_DEFAULT"
+
 # ---- preflight -------------------------------------------------------------
 
 TMPDIR_ABS="${TMPDIR:-/tmp}"
@@ -352,12 +385,6 @@ fi
 
 [ -n "$puid" ] || puid=1000
 [ -n "$pgid" ] || pgid=1000
-
-# ---- where to install ------------------------------------------------------
-
-if [ -z "$install_dir" ]; then
-  if [ "$(id -u)" -eq 0 ]; then install_dir="/opt/abs-butler"; else install_dir="$PWD/abs-butler"; fi
-fi
 
 # A server with no browser on it cannot use a loopback default, so this is
 # asked rather than left to be discovered the hard way.
@@ -500,7 +527,9 @@ else
   note "using the docker-compose.yml already in $install_dir"
 fi
 
-if [ -f .env ] && ! confirm "$install_dir/.env exists. Overwrite it?"; then
+# Values already in the file were adopted above, so this rewrite preserves them
+# and only applies what was asked for on this run.
+if [ -f .env ] && [ "$assume_yes" -eq 0 ] && ! confirm "$install_dir/.env exists. Update it?"; then
   die "stopped, leaving the existing .env alone."
 fi
 
