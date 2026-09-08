@@ -394,7 +394,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
     defaultTemplate: DEFAULT_TEMPLATE,
   }));
 
-  router.get('/api/health', () => ({ ok: true, version: '0.4.0' }), { isPublic: true });
+  router.get('/api/health', () => ({ ok: true, version: '0.4.1' }), { isPublic: true });
 
   return router;
 }
