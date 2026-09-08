@@ -29,6 +29,12 @@ pgid=""
 image="$IMAGE_DEFAULT"
 assume_yes=0
 dry_run=0
+abs_url=""
+abs_username=""
+abs_password=""
+abs_network=""
+path_prefix=""
+no_discover=0
 
 say()  { printf '%s\n' "$*"; }
 note() { printf 'abs-butler: %s\n' "$*"; }
@@ -47,6 +53,12 @@ Where the audiobooks are (pick one; asked for if omitted):
                         NAS share is just a path — use this for it.
   --nfs HOST:/EXPORT    An NFS export, mounted by Docker itself. Use this only
                         when the share is not already mounted on the host.
+
+Connecting to AudiobookShelf (all optional — it looks for it by itself):
+  --abs-url URL         Skip discovery and use this URL
+  --abs-username NAME   Admin username, to connect during install
+  --abs-password PW     Admin password; prompted for if a username is given
+  --no-discover         Do not look for a running AudiobookShelf at all
 
 Options:
   --dir PATH            Where to install (default: /opt/abs-butler as root,
@@ -85,6 +97,13 @@ while [ $# -gt 0 ]; do
     --pgid=*) pgid="${1#*=}"; shift ;;
     --image) [ $# -ge 2 ] || usage_error "--image needs a reference"; image="$2"; shift 2 ;;
     --image=*) image="${1#*=}"; shift ;;
+    --abs-url) [ $# -ge 2 ] || usage_error "--abs-url needs a URL"; abs_url="$2"; shift 2 ;;
+    --abs-url=*) abs_url="${1#*=}"; shift ;;
+    --abs-username) [ $# -ge 2 ] || usage_error "--abs-username needs a name"; abs_username="$2"; shift 2 ;;
+    --abs-username=*) abs_username="${1#*=}"; shift ;;
+    --abs-password) [ $# -ge 2 ] || usage_error "--abs-password needs a password"; abs_password="$2"; shift 2 ;;
+    --abs-password=*) abs_password="${1#*=}"; shift ;;
+    --no-discover) no_discover=1; shift ;;
     -y|--yes) assume_yes=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -126,7 +145,70 @@ confirm() {
   case "$reply" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
+# ---- finding AudiobookShelf ------------------------------------------------
+#
+# A container running AudiobookShelf answers three questions at once, which is
+# why this looks at Docker before it looks at ports: the published port gives
+# the URL, and the library bind mount gives both the host path to mount here
+# and the path AudiobookShelf itself reports. That second half is the path
+# prefix, the setting people most often get wrong, and it stops being a guess.
+#
+# /status is unauthenticated and names the application, so a candidate can be
+# confirmed as really being AudiobookShelf rather than whatever else happens to
+# hold the port.
+
+# Everything ABS mounts that is not the library.
+is_library_mount() {
+  case "$1" in
+    /config|/metadata|/config/*|/metadata/*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+abs_version_at() {
+  curl -s --max-time 3 "http://$1/status" 2>/dev/null \
+    | sed -n 's/.*"app":"audiobookshelf".*"serverVersion":"\([^"]*\)".*/\1/p' | head -1
+}
+
+# One tab-separated candidate per line:
+#   name  network  internal_port  host_endpoint  lib_source  lib_dest  version
+discover_candidates() {
+  docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null \
+    | grep -i 'audiobookshelf' | cut -f1 | while read -r c; do
+      [ -n "$c" ] || continue
+      dc_net=$(docker inspect "$c" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}')
+      dc_iport=$(docker inspect "$c" --format '{{range $p,$conf := .NetworkSettings.Ports}}{{$p}} {{end}}' 2>/dev/null | awk '{print $1}' | cut -d/ -f1)
+      dc_hend=$(docker inspect "$c" --format '{{range $p,$conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}' 2>/dev/null | awk '{print $1}')
+      dc_src=""; dc_dst=""
+      # shellcheck disable=SC2016
+      docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' 2>/dev/null > "$TMPDIR_ABS/mounts.$$" || true
+      while IFS='|' read -r m_src m_dst; do
+        [ -n "$m_dst" ] || continue
+        if is_library_mount "$m_dst"; then dc_src="$m_src"; dc_dst="$m_dst"; break; fi
+      done < "$TMPDIR_ABS/mounts.$$"
+      rm -f "$TMPDIR_ABS/mounts.$$"
+      dc_ver=""
+      case "$dc_hend" in
+        *:*) dc_ver=$(abs_version_at "127.0.0.1:${dc_hend##*:}") ;;
+      esac
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$c" "$dc_net" "${dc_iport:-80}" "$dc_hend" "$dc_src" "$dc_dst" "$dc_ver"
+    done
+}
+
+# Only consulted when no container matched: AudiobookShelf installed directly
+# on the host still answers /status, it just has nothing to introspect.
+discover_bare() {
+  for db_p in 13378 13379 8080; do
+    db_v=$(abs_version_at "127.0.0.1:$db_p")
+    [ -n "$db_v" ] && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "(not in a container)" "" "$db_p" "127.0.0.1:$db_p" "" "" "$db_v"
+  done
+}
+
 # ---- preflight -------------------------------------------------------------
+
+TMPDIR_ABS="${TMPDIR:-/tmp}"
 
 command -v docker >/dev/null 2>&1 || die "docker is not installed. See https://docs.docker.com/engine/install/"
 docker compose version >/dev/null 2>&1 || die "'docker compose' (v2) is not available. The old 'docker-compose' script will not do."
@@ -139,6 +221,78 @@ if [ -n "$library" ] && [ -n "$nfs" ]; then
 fi
 
 # ---- where the audiobooks are ----------------------------------------------
+
+CANDIDATES="$TMPDIR_ABS/abs-candidates.$$"
+: > "$CANDIDATES"
+trap 'rm -f "$CANDIDATES"' EXIT INT TERM
+
+if [ "$no_discover" -eq 0 ] && [ -z "$nfs" ]; then
+  discover_candidates > "$CANDIDATES" 2>/dev/null || true
+  [ -s "$CANDIDATES" ] || discover_bare > "$CANDIDATES" 2>/dev/null || true
+fi
+
+found=$(wc -l < "$CANDIDATES" | tr -d ' ')
+chosen=""
+
+if [ "$found" -gt 0 ]; then
+  say "Found AudiobookShelf:"
+  say ""
+  i=0
+  while IFS="$(printf '\t')" read -r c_name c_net c_iport c_hend c_src c_dst c_ver; do
+    i=$((i + 1))
+    printf '  %d) %s%s\n' "$i" "$c_name" "${c_ver:+  (v$c_ver)}"
+    [ -n "$c_hend" ] && printf '       reachable at %s\n' "$c_hend"
+    [ -n "$c_src" ] && printf '       library      %s\n' "$c_src"
+  done < "$CANDIDATES"
+  say ""
+
+  if [ "$found" -eq 1 ]; then
+    # Nothing to disambiguate, so confirming is the only question worth asking.
+    if [ "$assume_yes" -eq 1 ] || confirm "Use this one?"; then
+      chosen=$(head -1 "$CANDIDATES")
+    fi
+  elif interactive; then
+    pick="$(ask "Which one? 1-$found, or blank to skip" '--abs-url' '')"
+    case "$pick" in
+      ''|*[!0-9]*) : ;;
+      *) [ "$pick" -ge 1 ] && [ "$pick" -le "$found" ] && chosen=$(sed -n "${pick}p" "$CANDIDATES") ;;
+    esac
+  else
+    # Guessing between several servers is exactly the decision that must not be
+    # made silently; organize moves files in whichever one is picked.
+    warn "several found and no terminal to ask — pass --abs-url to choose one."
+  fi
+fi
+
+if [ -n "$chosen" ]; then
+  d_name=$(printf '%s' "$chosen" | cut -f1)
+  d_net=$(printf '%s' "$chosen" | cut -f2)
+  d_iport=$(printf '%s' "$chosen" | cut -f3)
+  d_hend=$(printf '%s' "$chosen" | cut -f4)
+  d_src=$(printf '%s' "$chosen" | cut -f5)
+  d_dst=$(printf '%s' "$chosen" | cut -f6)
+
+  [ -z "$library" ] && [ -n "$d_src" ] && library="$d_src"
+
+  # What AudiobookShelf reports for its own folders is the path inside its
+  # container, which is only /audiobooks by coincidence. When it differs, that
+  # difference is the path prefix.
+  [ -n "$d_dst" ] && [ "$d_dst" != "/audiobooks" ] && path_prefix="$d_dst"
+
+  if [ -z "$abs_url" ]; then
+    if [ -n "$d_net" ]; then
+      # Joining its network and using the container name works whatever the
+      # host binding is. host.docker.internal does not: on Linux it resolves to
+      # the bridge gateway, and a server published on 127.0.0.1 -- the common,
+      # sensible default -- is unreachable from there.
+      abs_network="$d_net"
+      abs_url="http://${d_name}:${d_iport}"
+    elif [ -n "$d_hend" ]; then
+      abs_url="http://host.docker.internal:${d_hend##*:}"
+    fi
+  fi
+  note "using $abs_url${library:+, library $library}"
+fi
 
 if [ -z "$library" ] && [ -z "$nfs" ]; then
   say "abs-butler needs to see the same audiobooks AudiobookShelf does."
@@ -248,6 +402,26 @@ else
   nfs_volume=""
 fi
 
+# Joining AudiobookShelf's own network means the butler container resolves it by
+# name on its internal port, with no dependence on how -- or whether -- the
+# server publishes a port to the host. Naming `default` explicitly is required:
+# listing any network at all replaces the implicit one.
+network_block=""
+if [ -n "$abs_network" ]; then
+  network_block="    networks: !override
+      - default
+      - abs
+"
+  network_decl="
+networks:
+  abs:
+    external: true
+    name: $abs_network
+"
+else
+  network_decl=""
+fi
+
 override_body="# Written by install.sh.
 #
 # The database lives beside this file rather than in a named volume, so that it
@@ -258,11 +432,11 @@ services:
     volumes: !override
       - ./data:/data
 $library_mount
-  cli:
+$network_block  cli:
     volumes: !override
       - ./data:/data
 $library_mount
-$nfs_volume"
+$network_block$nfs_volume$network_decl"
 
 if [ "$dry_run" -eq 1 ]; then
   say "Would install into: $install_dir"
@@ -330,6 +504,40 @@ while [ "$i" -lt 60 ]; do
   sleep 1
 done
 
+# ---- connect it -----------------------------------------------------------
+#
+# The one thing discovery cannot supply is a credential: /status is the only
+# unauthenticated endpoint AudiobookShelf offers and it reveals nothing else.
+# So the URL and the paths are filled in, and only the login is asked for.
+connected=0
+if [ -n "$abs_url" ]; then
+  if [ -z "$abs_username" ] && interactive; then
+    say ""
+    say "abs-butler can connect to $abs_url now. It stores the API token it is"
+    say "given in exchange, never the password."
+    if confirm "Sign in and connect?"; then
+      abs_username="$(ask 'Admin username' '--abs-username')"
+    fi
+  fi
+
+  if [ -n "$abs_username" ]; then
+    # Passed through to the CLI, which prompts for the password itself when it
+    # was not given as a flag -- and does not echo it.
+    set -- connect --url "$abs_url" --username "$abs_username" --library-root /audiobooks
+    [ -n "$abs_password" ] && set -- "$@" --password "$abs_password"
+    [ -n "$path_prefix" ] && set -- "$@" --path-prefix "$path_prefix"
+    # -T only without a terminal: with one, the CLI prompts for the password
+    # itself and needs the TTY to do it without echoing.
+    if interactive; then tty_flag=""; else tty_flag="-T"; fi
+    # shellcheck disable=SC2086
+    if docker compose run --rm $tty_flag cli "$@"; then
+      connected=1
+    else
+      warn "could not connect automatically. Add the server in the browser instead."
+    fi
+  fi
+fi
+
 say ""
 if [ "$i" -ge 60 ]; then
   warn "started, but $url/api/health did not answer within 60s. Check 'docker compose logs -f butler'."
@@ -337,6 +545,19 @@ else
   note "up at $url"
 fi
 
+if [ "$connected" -eq 1 ]; then
+  cat <<EOF
+
+AudiobookShelf is already connected: $abs_url
+
+  1. Open $url and set a password. The setup page stays open for 15
+     minutes after start; 'docker compose restart butler' reopens it, and the
+     startup log carries a code that works after it closes.
+
+  2. Nothing else to configure. Check what it can see with:
+     docker compose run --rm cli status
+EOF
+else
 cat <<EOF
 
 Next, in the browser — none of this is configured here:
@@ -345,12 +566,14 @@ Next, in the browser — none of this is configured here:
      minutes after start; 'docker compose restart butler' reopens it, and the
      startup log carries a code that works after it closes.
 
-  2. Add your AudiobookShelf server. If it runs in Docker on this same host,
-     the URL is http://host.docker.internal:13378 — already wired up.
+  2. Add your AudiobookShelf server${abs_url:+ at $abs_url}.
      Sign in with an admin username and password, or paste an API token.
 
   3. For file organizing, set the library root to /audiobooks. That is where
      this container sees $([ -n "$nfs" ] && echo "the NAS export" || echo "$library"), whatever the path is outside it.
+EOF
+fi
+cat <<EOF
 
 Useful later:
 

@@ -35,12 +35,19 @@ a bind mount is fixed when the container is created.
 
 ```bash
 curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
-sh install.sh --library /srv/audiobooks     # omit --library and it asks
+sh install.sh                               # finds AudiobookShelf and asks about it
 ```
 
+It looks for AudiobookShelf running on the same machine and, from the container, reads three things
+at once: the URL, the host directory holding the library, and the path AudiobookShelf itself reports
+— which is the path prefix, otherwise the easiest setting to get wrong. It will not guess between
+several servers. Give it an admin username and it connects on the spot, so one command goes from
+nothing to connected; decline and it just fills in the form for you.
+
 It derives file ownership from the library directory, binds the UI to loopback, and prints what to
-do next. `--dry-run` shows every file it would write without touching anything. Read it before you
-run it — it is one file, and it is meant to be read.
+do next. `--library` skips the search, `--no-discover` turns it off, and `--dry-run` shows every
+file it would write without touching anything. Read it before you run it — it is one file, and it
+is meant to be read.
 
 **Docker, by hand** — the compose file pulls a published multi-arch image:
 
