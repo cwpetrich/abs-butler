@@ -12,7 +12,18 @@ curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
 sh install.sh --library /srv/audiobooks
 ```
 
-It asks for the library directory if you do not pass one, derives `PUID`/`PGID` from that
+It finds AudiobookShelf first. A container running it answers three questions at once — the
+published port gives the URL, and the library bind mount gives both the host path to mount and the
+path AudiobookShelf reports for it, which is the path prefix. `/status` confirms the candidate is
+really AudiobookShelf rather than whatever else holds the port, and a host install with no container
+is found the same way. Several servers means it asks; it never picks one for you.
+
+Where the server is on a Docker network, the generated override joins it and addresses the server by
+container name on its **internal** port. That is deliberate: `host.docker.internal` resolves to the
+bridge gateway on Linux, so a server published on `127.0.0.1` — the sensible default — is
+unreachable from another container that way. Joining the network works regardless of the binding.
+
+It also asks for the library directory if none was found or passed, derives `PUID`/`PGID` from that
 directory so files `organize` creates stay readable by AudiobookShelf, publishes the UI on
 loopback, and writes an override putting the database in `./data` next to the compose file.
 `--nfs HOST:/EXPORT` mounts a NAS export directly for shares that are not already mounted on the
