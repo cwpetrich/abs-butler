@@ -133,7 +133,8 @@ everywhere else they are environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `BUTLER_DATA_DIR` | Where the database and encryption key live. Defaults to `~/.local/share/abs-butler`, and `/data` in Docker. |
-| `BUTLER_HOST` / `BUTLER_PORT` | Listen address. Defaults to `0.0.0.0:13380` — one above AudiobookShelf's `13378` and `abs-sync`'s `13379`, so the tools for one server sit together. |
+| `BUTLER_HOST` / `BUTLER_PORT` | Listen address *inside* the process. Defaults to `0.0.0.0:13380` — one above AudiobookShelf's `13378` and `abs-sync`'s `13379`, so the tools for one server sit together. |
+| `BUTLER_BIND` | Docker only: which host address the compose file publishes on. Defaults to `127.0.0.1`, so the UI is reachable from the machine it runs on and nowhere else. Set it to `0.0.0.0` to reach abs-butler from another machine — and read the note under [About that first-run password](#about-that-first-run-password) before you do. |
 
 The listen address deliberately stays out of the UI: a wrong value set there would lock you out of
 the only thing that could fix it, and under Docker the internal port is remapped host-side anyway.
@@ -382,6 +383,22 @@ accident.
 CI runs typecheck, tests (on Node 24 and on 22.13, the floor `engines` declares), and a build on
 every push, plus the Docker image for amd64 and arm64 and the snap for amd64. Releases are cut by
 pushing a `v*` tag, which publishes the multi-arch image and both snap architectures.
+
+## Upgrading to 0.4
+
+The database migrates on first start; nothing to do there. Two things changed around it:
+
+- **The Docker UI is published on loopback now.** `docker-compose.yml` used to publish on every
+  interface, which put the anonymous first-run setup page in front of the whole network. It now
+  binds `127.0.0.1` by default. If you reached abs-butler from another machine, set
+  `BUTLER_BIND=0.0.0.0` in `.env` to get that back.
+- **`BUTLER_PORT` works properly.** It was both the app's listen port and the host side of the port
+  mapping, so setting it to anything but `13380` moved the listener while the mapping stayed put and
+  the UI simply vanished. Both sides follow it now, so an existing `BUTLER_PORT` that appeared to do
+  nothing will start taking effect.
+
+New, and optional: connecting with an admin username and password instead of an API token, and
+`install.sh` for setting up beside AudiobookShelf.
 
 ## Upgrading from 0.3
 
