@@ -56,23 +56,24 @@ optional and mostly exists to tell abs-butler where your audiobooks are.
 
 ### Reaching it from another machine
 
-`--remote` publishes the UI on every interface instead of loopback, which is what a headless server
-needs, and generates a `BUTLER_SETUP_CODE` to go with it:
+Nothing to do: the UI is published on every interface, the same as AudiobookShelf. A loopback
+default would be wrong for the machine this runs on — a headless server has no browser — and being
+stricter than the server being managed buys little, since anyone who can reach abs-butler can
+already reach AudiobookShelf, which can delete the library outright.
 
-```bash
-sh install.sh --remote
-```
+Two things carry that default:
 
-The code is not decoration. Until a password exists the setup page has to be reachable by an
-anonymous visitor, so on a network the first person to load it would otherwise take the account.
-With `BUTLER_SETUP_CODE` set, the code is required whether or not the window is open — the race
-closes, and the 15-minute limit stops applying at the same time.
+- `install.sh` generates a `BUTLER_SETUP_CODE`. Until a password exists the setup page must answer
+  an anonymous visitor, so on a network the first person to load it would otherwise take the
+  account. With the code set it is required whether or not the 15-minute window is open — the race
+  closes and the limit stops applying together.
+- Failed logins and failed setup codes are throttled per client address: five free attempts, then a
+  doubling wait to a 15-minute cap. scrypt already makes each guess expensive; this makes a run of
+  them pointless.
 
-Publishing on every interface still puts the UI in front of anyone who can route to the port. If
-that is more than you want, leave the default and reach it over SSH
+`--local` publishes on `127.0.0.1` instead, for reaching it over SSH
 (`ssh -L 13380:127.0.0.1:13380 you@server`) or Tailscale
-(`tailscale serve --bg --https=13380 http://127.0.0.1:13380`), neither of which needs the port open
-at all.
+(`tailscale serve --bg --https=13380 http://127.0.0.1:13380`), neither of which needs an open port.
 
 ### Re-running it
 

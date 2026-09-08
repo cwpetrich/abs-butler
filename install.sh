@@ -66,10 +66,10 @@ Options:
   --dir PATH            Where to install (default: /opt/abs-butler as root,
                         otherwise ./abs-butler)
   --port N              Port for the web UI (default: 13380)
-  --remote              Reachable from other machines: publishes on 0.0.0.0 and
-                        requires a setup code, which it generates and prints.
-                        The right choice for a server with no browser on it.
-  --bind ADDR           Address to publish on (default: 127.0.0.1)
+  --local               Publish on 127.0.0.1 only, reachable from this machine
+                        alone. The default is every interface, like the server
+                        abs-butler manages.
+  --bind ADDR           Address to publish on (default: 0.0.0.0)
   --setup-code CODE     Require this code to set the first password. Generated
                         automatically whenever the UI is not on loopback.
   --puid N / --pgid N   Ownership for files 'organize' creates. Defaults to the
@@ -110,7 +110,8 @@ while [ $# -gt 0 ]; do
     --abs-password) [ $# -ge 2 ] || usage_error "--abs-password needs a password"; abs_password="$2"; shift 2 ;;
     --abs-password=*) abs_password="${1#*=}"; shift ;;
     --no-discover) no_discover=1; shift ;;
-    --remote) remote=1; shift ;;
+    --remote) remote=1; shift ;;                       # kept: it was the old spelling of the default
+    --local) bind="127.0.0.1"; shift ;;
     --setup-code) [ $# -ge 2 ] || usage_error "--setup-code needs a value"; setup_code="$2"; shift 2 ;;
     --setup-code=*) setup_code="${1#*=}"; shift ;;
     -y|--yes) assume_yes=1; shift ;;
@@ -245,7 +246,6 @@ fi
 
 # Whatever is still unanswered falls back to the defaults.
 [ -n "$port" ] || port="13380"
-[ -n "$bind" ] || bind="127.0.0.1"
 [ -n "$image" ] || image="$IMAGE_DEFAULT"
 
 # ---- preflight -------------------------------------------------------------
@@ -386,17 +386,15 @@ fi
 [ -n "$puid" ] || puid=1000
 [ -n "$pgid" ] || pgid=1000
 
-# A server with no browser on it cannot use a loopback default, so this is
-# asked rather than left to be discovered the hard way.
-if [ "$remote" -eq 0 ] && [ "$bind" = "127.0.0.1" ] && interactive; then
-  say ""
-  say "The UI is published on 127.0.0.1 by default, reachable only from this machine."
-  if confirm "Open abs-butler from another machine on the network?"; then
-    remote=1
-  fi
-fi
-
-[ "$remote" -eq 1 ] && [ "$bind" = "127.0.0.1" ] && bind="0.0.0.0"
+# Published on every interface, like AudiobookShelf itself and every other
+# service of this kind. A loopback default is wrong on the machine this is
+# built for -- a headless server has no browser to open it with -- and being
+# stricter than the server being managed buys nothing: the same network can
+# already reach AudiobookShelf, which can delete the library outright.
+#
+# What makes that safe is below, not here: setup needs a code, and failed
+# logins are throttled.
+[ -n "$bind" ] || bind="0.0.0.0"
 
 # Publishing beyond loopback without this is the one genuinely unsafe
 # combination: until a password exists the setup page must be reachable by an
