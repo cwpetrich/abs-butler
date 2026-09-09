@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type AuthStatus, type Connection, type Meta } from './api';
+import { api, type AuthStatus, type Connection, type Meta, type UpdateStatus } from './api';
 import { Banner, Link, Spinner, useAsync, useRoute } from './lib';
 import { ConnectionPage } from './pages/Connection';
 import { LoginPage } from './pages/Login';
@@ -113,6 +113,7 @@ function Shell({
             Sign out
           </button>
           <div style={{ marginTop: 8 }}>v0.4.2</div>
+          <UpdateNotice />
         </div>
       </nav>
 
@@ -185,4 +186,32 @@ function Route({
 function isActive(current: string, target: string): boolean {
   if (target === '/') return current === '/' || current.startsWith('/runs');
   return current === target || current.startsWith(`${target}/`);
+}
+
+/**
+ * A quiet line in the sidebar when a newer version has been tagged.
+ *
+ * Deliberately not a modal or a badge on every page: knowing there is an
+ * update is useful, being interrupted by it is not. Says nothing at all when
+ * the check is off, failed, or found nothing.
+ */
+function UpdateNotice() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+
+  useEffect(() => {
+    api.update().then(setStatus).catch(() => setStatus(null));
+  }, []);
+
+  if (!status?.available || !status.latest) return null;
+
+  return (
+    <div className="update-notice">
+      <strong>{status.latest} available</strong>
+      <div className="hint">
+        Update with{' '}
+        <span className="mono">sh install.sh --update</span> in the directory abs-butler was
+        installed into.
+      </div>
+    </div>
+  );
 }

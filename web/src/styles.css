@@ -430,3 +430,17 @@ label .hint {
     padding: 16px;
   }
 }
+
+/* A newer version exists. Informative, not urgent — it sits in the sidebar
+   footer rather than interrupting whatever the page is for. */
+.update-notice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.update-notice .hint {
+  margin-top: 3px;
+}

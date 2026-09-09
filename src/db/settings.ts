@@ -10,6 +10,13 @@ export const SettingsSchema = z.object({
   /** Providers consulted for ratings and metadata, in order of trust. */
   providers: z.array(z.string()).default(['audnexus', 'openlibrary', 'googlebooks']),
   googleBooksApiKey: z.string().default(''),
+  /**
+   * Ask GitHub, once every few hours, whether a newer version has been tagged.
+   * On by default: an instance that quietly runs an old build is the more
+   * likely harm. It is the only request abs-butler makes that is not about
+   * your library, and turning it off stops it entirely.
+   */
+  checkForUpdates: z.boolean().default(true),
   /** Audible marketplace Audnexus is asked about; a book absent from it 404s. */
   audibleRegion: z.enum(['us', 'ca', 'uk', 'au', 'fr', 'de', 'jp', 'it', 'in', 'es']).default('us'),
   providerConcurrency: z.number().int().min(1).max(16).default(4),
