@@ -396,6 +396,19 @@ fi
 # logins are throttled.
 [ -n "$bind" ] || bind="0.0.0.0"
 
+# Settings inherited from an existing .env are reported, not applied quietly.
+# Preserving them is right -- a re-run must not undo what a previous one set --
+# but silence about it reads as the installer ignoring its own default, which
+# is exactly how it looks when the inherited value is loopback and the new
+# default is not.
+if [ "$existing_env" -eq 1 ]; then
+  note "keeping the settings already in $install_dir/.env; flags override them"
+  if [ "$bind" = "127.0.0.1" ] || [ "$bind" = "localhost" ]; then
+    note "  BUTLER_BIND=$bind — reachable only from this machine."
+    note "  To publish it to the network:  sh $0 --dir $install_dir --bind 0.0.0.0"
+  fi
+fi
+
 # Publishing beyond loopback without this is the one genuinely unsafe
 # combination: until a password exists the setup page must be reachable by an
 # anonymous visitor, so on a network the first person to load it takes the
