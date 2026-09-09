@@ -2,6 +2,7 @@
 // Must precede every other import: see the module for why.
 import './silence-warnings.js';
 import { Command, Option } from 'commander';
+import { VERSION } from './version.js';
 import { AbsApiError } from './abs/client.js';
 import { runAudit } from './commands/audit.js';
 import { runMetadata, METADATA_FIELDS } from './commands/metadata.js';
@@ -30,7 +31,7 @@ const program = new Command();
 program
   .name('abs-butler')
   .description('Keep one AudiobookShelf library clean, enriched, and organized.')
-  .version('0.4.2')
+  .version(VERSION)
   .option('-l, --library <idOrName>', 'limit to one library (defaults to all book libraries)')
   .option('-v, --verbose', 'print debug logging')
   .option('-q, --quiet', 'only print errors')

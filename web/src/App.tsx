@@ -112,7 +112,6 @@ function Shell({
           >
             Sign out
           </button>
-          <div style={{ marginTop: 8 }}>v0.4.2</div>
           <UpdateNotice />
         </div>
       </nav>
@@ -202,10 +201,16 @@ function UpdateNotice() {
     api.update().then(setStatus).catch(() => setStatus(null));
   }, []);
 
-  if (!status?.available || !status.latest) return null;
+  // The running version comes from the API rather than being compiled in, so
+  // there is nothing here to drift out of step with the server.
+  const running = status ? <div style={{ marginTop: 8 }}>v{status.current}</div> : null;
+
+  if (!status?.available || !status.latest) return running;
 
   return (
-    <div className="update-notice">
+    <>
+      {running}
+      <div className="update-notice">
       <strong>{status.latest} available</strong>
       <div className="hint">
         <a
@@ -216,10 +221,11 @@ function UpdateNotice() {
           What&rsquo;s in it
         </a>
       </div>
-      <div className="hint">
-        Apply it with <span className="mono">sh install.sh --update</span> in the directory
-        abs-butler was installed into.
+        <div className="hint">
+          Apply it with <span className="mono">sh install.sh --update</span> in the directory
+          abs-butler was installed into.
+        </div>
       </div>
-    </div>
+    </>
   );
 }
