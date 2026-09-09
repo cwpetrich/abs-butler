@@ -60,7 +60,17 @@ safe rather than merely convenient:
 - **Failed logins are throttled** per client address, backing off to a 15-minute wait. A weak
   password stops being brute-forceable at network speed.
 
-`--local` publishes on `127.0.0.1` instead, if you would rather reach it over SSH or Tailscale. Read it before you run it — it is one file, and it
+`--local` publishes on `127.0.0.1` instead, if you would rather reach it over SSH or Tailscale.
+
+Updating later is the same script:
+
+```bash
+sh install.sh --update --dir /opt/abs-butler
+```
+
+It refreshes the compose file, pulls the current image, restarts, and changes no settings of its
+own. If the install predates a change that needs a decision, it says so and gives the flag that
+adopts it — see [Updating](docs/docker.md#updating). Read it before you run it — it is one file, and it
 is meant to be read.
 
 **Docker, by hand** — the compose file pulls a published multi-arch image:

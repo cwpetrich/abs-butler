@@ -16,6 +16,12 @@
 set -eu
 
 VERSION="0.4.0"
+
+# The shape of the files this script generates. Bumped whenever a change here
+# needs an existing install to do something, and recorded in .env so a later
+# run can tell how far behind that install is. Notes for each step live in
+# migration_notes().
+INSTALL_VERSION=2
 IMAGE_DEFAULT="ghcr.io/cwpetrich/abs-butler:latest"
 COMPOSE_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml"
 
@@ -37,6 +43,7 @@ path_prefix=""
 no_discover=0
 setup_code=""
 remote=0
+do_update=0
 
 say()  { printf '%s\n' "$*"; }
 note() { printf 'abs-butler: %s\n' "$*"; }
@@ -77,6 +84,10 @@ Options:
                         AudiobookShelf able to read its own library.
   --image REF           Container image (default: $IMAGE_DEFAULT)
   -y, --yes             Do not prompt; fail instead if something is missing
+  --update              Bring an existing install up to date: refresh the
+                        compose file, pull the current image, restart, and
+                        report anything that needs a decision. Changes no
+                        settings of its own.
   --dry-run             Print what would be written, change nothing
   -h, --help            This text
 
@@ -110,6 +121,7 @@ while [ $# -gt 0 ]; do
     --abs-password) [ $# -ge 2 ] || usage_error "--abs-password needs a password"; abs_password="$2"; shift 2 ;;
     --abs-password=*) abs_password="${1#*=}"; shift ;;
     --no-discover) no_discover=1; shift ;;
+    --update) do_update=1; no_discover=1; shift ;;
     --remote) remote=1; shift ;;                       # kept: it was the old spelling of the default
     --local) bind="127.0.0.1"; shift ;;
     --setup-code) [ $# -ge 2 ] || usage_error "--setup-code needs a value"; setup_code="$2"; shift 2 ;;
@@ -216,6 +228,26 @@ discover_bare() {
   done
 }
 
+# ---- what changed between generations --------------------------------------
+#
+# Printed on any run that finds an older stamp, newest step last. A note is
+# only worth adding here when an existing install has to decide something: a
+# change that applies itself needs no paragraph, and a change nobody has to act
+# on is release notes, not this.
+migration_notes() {
+  from="$1"
+  if [ "$from" -lt 2 ]; then
+    say "  Since generation 1:"
+    say "    - The UI is now published on every interface by default, as"
+    say "      AudiobookShelf is. Your install keeps whatever it already had;"
+    say "      --bind 0.0.0.0 adopts the new default, --local keeps loopback."
+    say "    - Setting the first password needs a generated code whenever the UI"
+    say "      is not on loopback. Only relevant if no password is set yet."
+    say "    - Failed logins are throttled from 0.4.2 on. Update the image to"
+    say "      get it: --update does."
+  fi
+}
+
 # ---- where to install, and what is already there ---------------------------
 
 if [ -z "$install_dir" ]; then
@@ -240,8 +272,12 @@ if [ -f "$install_dir/.env" ]; then
   [ -n "$pgid" ]        || pgid=$(env_value PGID)
   [ -n "$library" ]     || library=$(env_value HOST_LIBRARY_PATH)
   [ -n "$setup_code" ]  || setup_code=$(env_value BUTLER_SETUP_CODE)
+  installed_version=$(env_value BUTLER_INSTALL_VERSION)
+  # Absent means it predates the stamp, which is generation 1.
+  [ -n "$installed_version" ] || installed_version=1
 else
   existing_env=0
+  installed_version="$INSTALL_VERSION"
 fi
 
 # Whatever is still unanswered falls back to the defaults.
@@ -401,6 +437,14 @@ fi
 # but silence about it reads as the installer ignoring its own default, which
 # is exactly how it looks when the inherited value is loopback and the new
 # default is not.
+if [ "$existing_env" -eq 1 ] && [ "$installed_version" -lt "$INSTALL_VERSION" ]; then
+  say ""
+  say "This install came from an older install.sh (generation $installed_version; this is $INSTALL_VERSION)."
+  say "None of the following is applied on its own — each is a decision left to you."
+  migration_notes "$installed_version"
+  say ""
+fi
+
 if [ "$existing_env" -eq 1 ]; then
   note "keeping the settings already in $install_dir/.env; flags override them"
   if [ "$bind" = "127.0.0.1" ] || [ "$bind" = "localhost" ]; then
@@ -425,6 +469,9 @@ fi
 # ---- what gets written -----------------------------------------------------
 
 env_body="# Written by install.sh on $(date -u '+%Y-%m-%dT%H:%M:%SZ').
+# Which generation of this file this is. install.sh reads it to work out what
+# an older install still needs told; do not edit it by hand.
+BUTLER_INSTALL_VERSION=$INSTALL_VERSION
 # The AudiobookShelf URL, credentials and library root are NOT here — those are
 # set in the browser and kept in abs-butler's database.
 BUTLER_IMAGE=$image
@@ -525,18 +572,41 @@ fi
 mkdir -p "$install_dir" || die "could not create $install_dir. Run as root, or pass --dir somewhere writable."
 cd "$install_dir"
 
+# docker-compose.yml is generated, not configuration: what belongs to this
+# install lives in .env and the override beside it. So it is refreshed rather
+# than left alone -- an install that keeps its original copy forever never
+# receives a fix made to it, which is how BUTLER_BIND would have failed to
+# reach anyone who installed before it existed.
+fetch_compose() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$COMPOSE_URL" -o "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$1" "$COMPOSE_URL"
+  else
+    return 2
+  fi
+}
+
 if [ ! -f docker-compose.yml ]; then
   note "fetching docker-compose.yml"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$COMPOSE_URL" -o docker-compose.yml || die "could not download docker-compose.yml. If the repository is private, copy the file here yourself."
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO docker-compose.yml "$COMPOSE_URL" || die "could not download docker-compose.yml. If the repository is private, copy the file here yourself."
-  else
-    die "neither curl nor wget is available. Copy docker-compose.yml into $install_dir and re-run."
-  fi
+  fetch_compose docker-compose.yml || die "could not download docker-compose.yml. Copy it into $install_dir yourself, or check the network."
 else
-  note "using the docker-compose.yml already in $install_dir"
+  if fetch_compose docker-compose.yml.new 2>/dev/null && [ -s docker-compose.yml.new ]; then
+    if cmp -s docker-compose.yml docker-compose.yml.new; then
+      rm -f docker-compose.yml.new
+    else
+      # Kept rather than discarded: a hand-edited compose file is not the
+      # supported arrangement, but losing someone's edit silently is worse.
+      cp docker-compose.yml docker-compose.yml.bak
+      mv docker-compose.yml.new docker-compose.yml
+      note "docker-compose.yml updated (previous copy kept as docker-compose.yml.bak)"
+    fi
+  else
+    rm -f docker-compose.yml.new
+    [ "$do_update" -eq 1 ] && warn "could not reach GitHub to refresh docker-compose.yml; keeping the existing one."
+  fi
 fi
+
 
 # Values already in the file were adopted above, so this rewrite preserves them
 # and only applies what was asked for on this run.
@@ -560,6 +630,11 @@ if ! chown "${puid}:${pgid}" data 2>/dev/null; then
   if [ "$(stat -c %u data 2>/dev/null || stat -f %u data 2>/dev/null || echo '')" != "$puid" ]; then
     warn "could not give $install_dir/data to ${puid}:${pgid} — re-run as root if the log says 'unable to open database file'."
   fi
+fi
+
+if [ "$do_update" -eq 1 ]; then
+  note "pulling the current image"
+  docker compose pull butler 2>&1 | grep -viE '^$' | tail -3 || true
 fi
 
 note "pulling and starting"

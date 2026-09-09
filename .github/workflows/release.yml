@@ -51,6 +51,31 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # A tag alone gives nothing to read. abs-butler tells an operator that a new
+  # version exists and links here for what is in it, so the page has to exist
+  # before the notice can point at it.
+  release:
+    name: Publish the GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Idempotent: re-running a release that failed later on must not fail
+          # here because the release it already created is in the way.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          fi
+
   snap:
     name: Build and publish the snap
     runs-on: ${{ matrix.runner }}

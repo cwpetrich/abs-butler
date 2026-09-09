@@ -120,6 +120,15 @@ export interface Settings {
   googleBooksApiKeySet: boolean;
 }
 
+export interface UpdateStatus {
+  current: string;
+  latest: string | null;
+  available: boolean;
+  checkedAt: number | null;
+  disabled: boolean;
+  error?: string;
+}
+
 export interface Meta {
   commands: RunCommand[];
   fileCommands: RunCommand[];
@@ -179,6 +188,7 @@ export const api = {
 
   meta: () => request<Meta>('/api/meta'),
 
+  update: () => request<UpdateStatus>('/api/update'),
   connection: () => request<{ connection: Connection | null }>('/api/connection'),
   saveConnection: (input: Record<string, unknown>) =>
     request<{ connection: Connection }>('/api/connection', { method: 'PUT', body: body(input) }),
