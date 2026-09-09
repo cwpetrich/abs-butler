@@ -16,6 +16,7 @@ import { getRun, listRuns, type RunCommand, type RunStatus } from '../db/runs.js
 import { countRevisions } from '../db/revisions.js';
 import { openContext } from '../context.js';
 import { checkForUpdate } from '../core/updates.js';
+import { VERSION } from '../version.js';
 import { runRevertTask } from '../core/revert.js';
 import {
   createSchedule,
@@ -395,7 +396,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
     defaultTemplate: DEFAULT_TEMPLATE,
   }));
 
-  router.get('/api/health', () => ({ ok: true, version: '0.4.2' }), { isPublic: true });
+  router.get('/api/health', () => ({ ok: true, version: VERSION }), { isPublic: true });
 
   /**
    * Whether a newer version exists. Answers with the check switched off rather
@@ -403,9 +404,9 @@ export function buildApiRouter(deps: ApiDeps): Router {
    */
   router.get('/api/update', async () => {
     if (!getSettings(db).checkForUpdates) {
-      return { current: '0.4.2', latest: null, available: false, checkedAt: null, disabled: true };
+      return { current: VERSION, latest: null, available: false, checkedAt: null, disabled: true };
     }
-    return { ...(await checkForUpdate('0.4.2')), disabled: false };
+    return { ...(await checkForUpdate(VERSION)), disabled: false };
   });
 
   return router;
