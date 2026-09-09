@@ -88,8 +88,8 @@ Options:
   --update              Bring an existing install up to date: refresh the
                         compose file, pull the current image, restart, and
                         report anything that needs a decision. Changes no
-                        settings of its own. Download this script again first —
-                        it is not installed, so it does not update itself.
+                        settings of its own. Updates this script first, then
+                        re-runs with it.
   --dry-run             Print what would be written, change nothing
   -h, --help            This text
 
@@ -97,6 +97,73 @@ The AudiobookShelf URL, the API token or username and password, and the library
 root all go in the browser after this finishes. None of them belong here.
 EOF
 }
+
+# ---- keeping this script current -------------------------------------------
+#
+# install.sh is downloaded rather than installed, so a copy is whatever was
+# published the day it was fetched -- and a copy older than a flag cannot run
+# it. On --update it therefore replaces itself first and re-runs, so the rest
+# of the update is performed by the current script rather than by whatever
+# happened to be on disk.
+#
+# Only on --update. A plain install run must not silently swap the script
+# someone is reading.
+self_update() {
+  su_new="${TMPDIR:-/tmp}/abs-butler-install.$$"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$SELF_URL" -o "$su_new" 2>/dev/null || { rm -f "$su_new"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$su_new" "$SELF_URL" 2>/dev/null || { rm -f "$su_new"; return 1; }
+  else
+    return 1
+  fi
+
+  # A truncated download, a captive-portal login page, or an HTML error would
+  # all "download" fine. Replacing a working script with one of those is worse
+  # than staying out of date, so it has to parse first.
+  if [ ! -s "$su_new" ] || ! sh -n "$su_new" 2>/dev/null; then
+    rm -f "$su_new"
+    return 1
+  fi
+
+  if cmp -s "$su_self" "$su_new" 2>/dev/null; then
+    rm -f "$su_new"
+    return 1   # already current: nothing to announce, nothing to re-run
+  fi
+
+  printf 'abs-butler: %s\n' "updating install.sh itself first" >&2
+  # The copy on disk is replaced so the next run starts current, but the
+  # running shell is never asked to read a file that changed underneath it:
+  # the new script is exec'd from its own path.
+  if [ -w "$su_self" ]; then
+    cp "$su_self" "$su_self.bak" 2>/dev/null || true
+    if cat "$su_new" > "$su_self" 2>/dev/null; then
+      rm -f "$su_new"
+      su_run="$su_self"
+    else
+      su_run="$su_new"
+    fi
+  else
+    printf 'abs-butler: %s\n' "  (${su_self} is not writable; running the new copy without replacing it)" >&2
+    su_run="$su_new"
+  fi
+
+  # The guard stops the new copy doing this again: without it a difference the
+  # comparison cannot resolve would loop forever.
+  ABS_BUTLER_SELF_UPDATED=1
+  export ABS_BUTLER_SELF_UPDATED
+  exec sh "$su_run" "$@"
+}
+
+su_self=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")
+if [ "${ABS_BUTLER_SELF_UPDATED:-0}" != "1" ] && [ -f "$su_self" ]; then
+  for su_arg in "$@"; do
+    if [ "$su_arg" = "--update" ]; then
+      self_update "$@" || true
+      break
+    fi
+  done
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -631,25 +698,6 @@ if ! chown "${puid}:${pgid}" data 2>/dev/null; then
   # and the symptom is unmistakable once it starts.
   if [ "$(stat -c %u data 2>/dev/null || stat -f %u data 2>/dev/null || echo '')" != "$puid" ]; then
     warn "could not give $install_dir/data to ${puid}:${pgid} — re-run as root if the log says 'unable to open database file'."
-  fi
-fi
-
-# The script is downloaded, not installed, so it goes stale on its own. It
-# cannot warn retroactively -- a copy too old to know about --update is too old
-# to carry this check -- but it stops the next round of the same problem.
-if [ "$do_update" -eq 1 ]; then
-  if fetch_compose /dev/null 2>/dev/null; then
-    self_new="$TMPDIR_ABS/install.sh.remote.$$"
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "$SELF_URL" -o "$self_new" 2>/dev/null || rm -f "$self_new"
-    elif command -v wget >/dev/null 2>&1; then
-      wget -qO "$self_new" "$SELF_URL" 2>/dev/null || rm -f "$self_new"
-    fi
-    if [ -s "$self_new" ] && [ -f "$0" ] && ! cmp -s "$0" "$self_new"; then
-      warn "a newer install.sh is available; this run uses the copy you have."
-      warn "  curl -fsSL -O $SELF_URL"
-    fi
-    rm -f "$self_new"
   fi
 fi
 

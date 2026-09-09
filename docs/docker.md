@@ -87,13 +87,22 @@ Turn the check off in Settings if you would rather it made no outbound request a
 
 
 ```bash
-curl -fsSL -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
 sh install.sh --update --dir /opt/abs-butler
 ```
 
-Fetch the script again first. It is downloaded rather than installed, so it does not update itself,
-and a copy older than a flag cannot run it — an install.sh from before `--update` existed answers
-`unknown option '--update'`. A current copy warns when a newer one is available.
+`--update` updates `install.sh` itself before doing anything else, then re-runs with the new copy,
+so the rest of the update is performed by the current script rather than by whatever was on disk.
+The replaced copy is kept as `install.sh.bak`.
+
+The downloaded script is validated before it replaces anything — a truncated file, or the HTML a
+captive portal returns, downloads perfectly well, and replacing a working script with one of those
+is worse than staying out of date.
+
+A copy older than this behaviour cannot bootstrap itself. Fetch it once:
+
+```bash
+curl -fsSL -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
+```
 
 That refreshes `docker-compose.yml`, pulls the current image, restarts, and changes no settings of
 its own. The compose file is treated as generated rather than as configuration — what belongs to an

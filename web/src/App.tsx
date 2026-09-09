@@ -194,6 +194,8 @@ function isActive(current: string, target: string): boolean {
  * update is useful, being interrupted by it is not. Says nothing at all when
  * the check is off, failed, or found nothing.
  */
+const UPDATE_SCRIPT_URL = 'https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh';
+
 function UpdateNotice() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
 
@@ -222,12 +224,12 @@ function UpdateNotice() {
         </a>
       </div>
         <div className="hint">
-          Apply it from the directory abs-butler was installed into. Fetch the script again
-          first — it is downloaded rather than installed, so it does not update itself:
-          <div className="mono update-cmd">
-            curl -fsSL -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
-            {'\n'}sh install.sh --update
-          </div>
+          From the directory abs-butler was installed into:
+          <div className="mono update-cmd">sh install.sh --update</div>
+          It updates itself first. A copy older than that behaviour answers{' '}
+          <span className="mono">unknown option</span> — fetch it once with{' '}
+          <span className="mono">curl -fsSL -O {UPDATE_SCRIPT_URL}</span> and it stays current
+          after that.
         </div>
       </div>
     </>
