@@ -75,6 +75,32 @@ Two things carry that default:
 (`ssh -L 13380:127.0.0.1:13380 you@server`) or Tailscale
 (`tailscale serve --bg --https=13380 http://127.0.0.1:13380`), neither of which needs an open port.
 
+### Updating
+
+```bash
+sh install.sh --update --dir /opt/abs-butler
+```
+
+That refreshes `docker-compose.yml`, pulls the current image, restarts, and changes no settings of
+its own. The compose file is treated as generated rather than as configuration — what belongs to an
+install lives in `.env` and the override beside it — so a fix made to it reaches existing installs
+instead of only new ones. The previous copy is kept as `docker-compose.yml.bak`.
+
+`.env` records the generation of the files that produced it as `BUTLER_INSTALL_VERSION`. When a
+later `install.sh` finds an older stamp it prints what changed since, and the flag that adopts each
+one:
+
+```
+This install came from an older install.sh (generation 1; this is 2).
+None of the following is applied on its own — each is a decision left to you.
+  Since generation 1:
+    - The UI is now published on every interface by default …
+      --bind 0.0.0.0 adopts the new default, --local keeps loopback.
+```
+
+Nothing there applies itself. A change that would alter how an install is reached is a decision, not
+a side effect of updating, so `--update` never makes one.
+
 ### Re-running it
 
 `install.sh` is safe to run again on an existing install, and it is the way to pick up a newer
