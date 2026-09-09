@@ -87,8 +87,13 @@ Turn the check off in Settings if you would rather it made no outbound request a
 
 
 ```bash
+curl -fsSL -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
 sh install.sh --update --dir /opt/abs-butler
 ```
+
+Fetch the script again first. It is downloaded rather than installed, so it does not update itself,
+and a copy older than a flag cannot run it — an install.sh from before `--update` existed answers
+`unknown option '--update'`. A current copy warns when a newer one is available.
 
 That refreshes `docker-compose.yml`, pulls the current image, restarts, and changes no settings of
 its own. The compose file is treated as generated rather than as configuration — what belongs to an

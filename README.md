@@ -65,9 +65,11 @@ safe rather than merely convenient:
 Updating later is the same script:
 
 ```bash
+curl -fsSL -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
 sh install.sh --update --dir /opt/abs-butler
 ```
 
+Fetch the script again first — it is downloaded rather than installed, so it does not update itself.
 It refreshes the compose file, pulls the current image, restarts, and changes no settings of its
 own. If the install predates a change that needs a decision, it says so and gives the flag that
 adopts it — see [Updating](docs/docker.md#updating). Read it before you run it — it is one file, and it

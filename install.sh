@@ -24,6 +24,7 @@ VERSION="0.4.0"
 INSTALL_VERSION=2
 IMAGE_DEFAULT="ghcr.io/cwpetrich/abs-butler:latest"
 COMPOSE_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml"
+SELF_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh"
 
 library=""
 nfs=""
@@ -87,7 +88,8 @@ Options:
   --update              Bring an existing install up to date: refresh the
                         compose file, pull the current image, restart, and
                         report anything that needs a decision. Changes no
-                        settings of its own.
+                        settings of its own. Download this script again first —
+                        it is not installed, so it does not update itself.
   --dry-run             Print what would be written, change nothing
   -h, --help            This text
 
@@ -629,6 +631,25 @@ if ! chown "${puid}:${pgid}" data 2>/dev/null; then
   # and the symptom is unmistakable once it starts.
   if [ "$(stat -c %u data 2>/dev/null || stat -f %u data 2>/dev/null || echo '')" != "$puid" ]; then
     warn "could not give $install_dir/data to ${puid}:${pgid} — re-run as root if the log says 'unable to open database file'."
+  fi
+fi
+
+# The script is downloaded, not installed, so it goes stale on its own. It
+# cannot warn retroactively -- a copy too old to know about --update is too old
+# to carry this check -- but it stops the next round of the same problem.
+if [ "$do_update" -eq 1 ]; then
+  if fetch_compose /dev/null 2>/dev/null; then
+    self_new="$TMPDIR_ABS/install.sh.remote.$$"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL "$SELF_URL" -o "$self_new" 2>/dev/null || rm -f "$self_new"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO "$self_new" "$SELF_URL" 2>/dev/null || rm -f "$self_new"
+    fi
+    if [ -s "$self_new" ] && [ -f "$0" ] && ! cmp -s "$0" "$self_new"; then
+      warn "a newer install.sh is available; this run uses the copy you have."
+      warn "  curl -fsSL -O $SELF_URL"
+    fi
+    rm -f "$self_new"
   fi
 fi
 

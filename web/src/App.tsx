@@ -222,8 +222,12 @@ function UpdateNotice() {
         </a>
       </div>
         <div className="hint">
-          Apply it with <span className="mono">sh install.sh --update</span> in the directory
-          abs-butler was installed into.
+          Apply it from the directory abs-butler was installed into. Fetch the script again
+          first — it is downloaded rather than installed, so it does not update itself:
+          <div className="mono update-cmd">
+            curl -fsSL -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
+            {'\n'}sh install.sh --update
+          </div>
         </div>
       </div>
     </>
