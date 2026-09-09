@@ -222,8 +222,11 @@ function UpdateNotice() {
         </a>
       </div>
         <div className="hint">
-          Apply it with <span className="mono">sh install.sh --update</span> in the directory
-          abs-butler was installed into.
+          From the directory abs-butler was installed into:
+          <div className="mono update-cmd">docker compose pull{'\n'}docker compose up -d</div>
+          Release notes say when a version also needs{' '}
+          <span className="mono">sh install.sh --update</span>, which is only when the compose
+          file or <span className="mono">.env</span> changed.
         </div>
       </div>
     </>

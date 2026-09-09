@@ -65,12 +65,13 @@ safe rather than merely convenient:
 Updating later is the same script:
 
 ```bash
-sh install.sh --update --dir /opt/abs-butler
+cd /opt/abs-butler && docker compose pull && docker compose up -d
 ```
 
-It refreshes the compose file, pulls the current image, restarts, and changes no settings of its
-own. If the install predates a change that needs a decision, it says so and gives the flag that
-adopts it — see [Updating](docs/docker.md#updating). Read it before you run it — it is one file, and it
+The image tag is `:latest`, so that is the whole update — the same thing AudiobookShelf asks of you.
+`install.sh --update` exists for the rarer case where the scaffolding around the container changed
+rather than abs-butler itself, and a release that needs it says so. See
+[Updating](docs/docker.md#updating). Read it before you run it — it is one file, and it
 is meant to be read.
 
 **Docker, by hand** — the compose file pulls a published multi-arch image:
