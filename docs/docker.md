@@ -87,6 +87,19 @@ Turn the check off in Settings if you would rather it made no outbound request a
 
 
 ```bash
+cd /opt/abs-butler
+docker compose pull
+docker compose up -d
+```
+
+That is the whole update, and it is what AudiobookShelf asks of you too: the image tag is
+`:latest`, so pulling and recreating is a new version. `./data` is a bind mount and is not touched.
+
+`install.sh` is not involved, because a new version of abs-butler does not need it. It is needed
+only when the scaffolding around the container changes — a new key in `.env`, or a fix to
+`docker-compose.yml` — and a release that needs it says so:
+
+```bash
 sh install.sh --update --dir /opt/abs-butler
 ```
 

@@ -194,8 +194,6 @@ function isActive(current: string, target: string): boolean {
  * update is useful, being interrupted by it is not. Says nothing at all when
  * the check is off, failed, or found nothing.
  */
-const UPDATE_SCRIPT_URL = 'https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh';
-
 function UpdateNotice() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
 
@@ -225,11 +223,10 @@ function UpdateNotice() {
       </div>
         <div className="hint">
           From the directory abs-butler was installed into:
-          <div className="mono update-cmd">sh install.sh --update</div>
-          It updates itself first. A copy older than that behaviour answers{' '}
-          <span className="mono">unknown option</span> — fetch it once with{' '}
-          <span className="mono">curl -fsSL -O {UPDATE_SCRIPT_URL}</span> and it stays current
-          after that.
+          <div className="mono update-cmd">docker compose pull{'\n'}docker compose up -d</div>
+          Release notes say when a version also needs{' '}
+          <span className="mono">sh install.sh --update</span>, which is only when the compose
+          file or <span className="mono">.env</span> changed.
         </div>
       </div>
     </>
