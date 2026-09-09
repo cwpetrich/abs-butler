@@ -22,11 +22,11 @@ COMPOSE_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-
 library=""
 nfs=""
 install_dir=""
-port="13380"
-bind="127.0.0.1"
+port=""
+bind=""
 puid=""
 pgid=""
-image="$IMAGE_DEFAULT"
+image=""
 assume_yes=0
 dry_run=0
 abs_url=""
@@ -35,6 +35,8 @@ abs_password=""
 abs_network=""
 path_prefix=""
 no_discover=0
+setup_code=""
+remote=0
 
 say()  { printf '%s\n' "$*"; }
 note() { printf 'abs-butler: %s\n' "$*"; }
@@ -64,8 +66,12 @@ Options:
   --dir PATH            Where to install (default: /opt/abs-butler as root,
                         otherwise ./abs-butler)
   --port N              Port for the web UI (default: 13380)
-  --bind ADDR           Address to publish on (default: 127.0.0.1; use 0.0.0.0
-                        to expose it to the network, and read the warning)
+  --local               Publish on 127.0.0.1 only, reachable from this machine
+                        alone. The default is every interface, like the server
+                        abs-butler manages.
+  --bind ADDR           Address to publish on (default: 0.0.0.0)
+  --setup-code CODE     Require this code to set the first password. Generated
+                        automatically whenever the UI is not on loopback.
   --puid N / --pgid N   Ownership for files 'organize' creates. Defaults to the
                         owner of the library directory, which is what keeps
                         AudiobookShelf able to read its own library.
@@ -104,6 +110,10 @@ while [ $# -gt 0 ]; do
     --abs-password) [ $# -ge 2 ] || usage_error "--abs-password needs a password"; abs_password="$2"; shift 2 ;;
     --abs-password=*) abs_password="${1#*=}"; shift ;;
     --no-discover) no_discover=1; shift ;;
+    --remote) remote=1; shift ;;                       # kept: it was the old spelling of the default
+    --local) bind="127.0.0.1"; shift ;;
+    --setup-code) [ $# -ge 2 ] || usage_error "--setup-code needs a value"; setup_code="$2"; shift 2 ;;
+    --setup-code=*) setup_code="${1#*=}"; shift ;;
     -y|--yes) assume_yes=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -205,6 +215,38 @@ discover_bare() {
       "(not in a container)" "" "$db_p" "127.0.0.1:$db_p" "" "" "$db_v"
   done
 }
+
+# ---- where to install, and what is already there ---------------------------
+
+if [ -z "$install_dir" ]; then
+  if [ "$(id -u)" -eq 0 ]; then install_dir="/opt/abs-butler"; else install_dir="$PWD/abs-butler"; fi
+fi
+
+# An existing .env is the answer to every question it already covers. Re-running
+# to pick up a newer compose file, or to change one thing, must not quietly
+# revert the rest to defaults -- reverting BUTLER_BIND alone would take a
+# working remote install off the network.
+env_value() {
+  [ -f "$install_dir/.env" ] || return 0
+  sed -n "s/^$1=//p" "$install_dir/.env" | tail -1
+}
+
+if [ -f "$install_dir/.env" ]; then
+  existing_env=1
+  [ -n "$bind" ]        || bind=$(env_value BUTLER_BIND)
+  [ -n "$port" ]        || port=$(env_value BUTLER_PORT)
+  [ -n "$image" ]       || image=$(env_value BUTLER_IMAGE)
+  [ -n "$puid" ]        || puid=$(env_value PUID)
+  [ -n "$pgid" ]        || pgid=$(env_value PGID)
+  [ -n "$library" ]     || library=$(env_value HOST_LIBRARY_PATH)
+  [ -n "$setup_code" ]  || setup_code=$(env_value BUTLER_SETUP_CODE)
+else
+  existing_env=0
+fi
+
+# Whatever is still unanswered falls back to the defaults.
+[ -n "$port" ] || port="13380"
+[ -n "$image" ] || image="$IMAGE_DEFAULT"
 
 # ---- preflight -------------------------------------------------------------
 
@@ -344,16 +386,26 @@ fi
 [ -n "$puid" ] || puid=1000
 [ -n "$pgid" ] || pgid=1000
 
-# ---- where to install ------------------------------------------------------
+# Published on every interface, like AudiobookShelf itself and every other
+# service of this kind. A loopback default is wrong on the machine this is
+# built for -- a headless server has no browser to open it with -- and being
+# stricter than the server being managed buys nothing: the same network can
+# already reach AudiobookShelf, which can delete the library outright.
+#
+# What makes that safe is below, not here: setup needs a code, and failed
+# logins are throttled.
+[ -n "$bind" ] || bind="0.0.0.0"
 
-if [ -z "$install_dir" ]; then
-  if [ "$(id -u)" -eq 0 ]; then install_dir="/opt/abs-butler"; else install_dir="$PWD/abs-butler"; fi
-fi
-
-if [ "$bind" = "0.0.0.0" ]; then
-  warn "publishing on 0.0.0.0 exposes the UI to the whole network. Until a password is set — the first 15 minutes — the setup page is reachable by anyone who can see the port, and the first visitor claims the account."
-  if ! confirm "Continue with 0.0.0.0?"; then
-    die "stopped. Re-run without --bind to keep it on 127.0.0.1."
+# Publishing beyond loopback without this is the one genuinely unsafe
+# combination: until a password exists the setup page must be reachable by an
+# anonymous visitor, so on a network the first person to load it takes the
+# account. Setting BUTLER_SETUP_CODE changes the rule — the code is then
+# required whether or not the 15-minute window is open, which both closes the
+# race and removes the rush.
+if [ "$bind" != "127.0.0.1" ] && [ "$bind" != "localhost" ]; then
+  if [ -z "$setup_code" ]; then
+    setup_code=$(od -An -tx1 -N10 /dev/urandom 2>/dev/null | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
+    [ -n "$setup_code" ] || setup_code=$(date +%s | tr -d '\n')
   fi
 fi
 
@@ -368,6 +420,11 @@ BUTLER_PORT=$port
 PUID=$puid
 PGID=$pgid
 "
+if [ -n "$setup_code" ]; then
+  env_body="${env_body}# Required to set the first password, instead of the 15-minute open window.
+BUTLER_SETUP_CODE=$setup_code
+"
+fi
 if [ -n "$library" ]; then
   env_body="${env_body}HOST_LIBRARY_PATH=$library
 "
@@ -468,7 +525,9 @@ else
   note "using the docker-compose.yml already in $install_dir"
 fi
 
-if [ -f .env ] && ! confirm "$install_dir/.env exists. Overwrite it?"; then
+# Values already in the file were adopted above, so this rewrite preserves them
+# and only applies what was asked for on this run.
+if [ -f .env ] && [ "$assume_yes" -eq 0 ] && ! confirm "$install_dir/.env exists. Update it?"; then
   die "stopped, leaving the existing .env alone."
 fi
 
@@ -495,11 +554,24 @@ docker compose up -d butler || die "compose failed to start. 'docker compose log
 
 # The container has its own healthcheck; this just waits for the port to answer
 # so the closing message is not a lie.
+# The address to print. On a machine with no browser, "localhost" is useless
+# advice, so a routable address is worked out and shown instead.
+host_address() {
+  ha=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [ -n "$ha" ] || ha=$(ipconfig getifaddr en0 2>/dev/null || true)
+  [ -n "$ha" ] || ha=$(hostname 2>/dev/null || echo localhost)
+  printf '%s' "$ha"
+}
+
 i=0
-url="http://${bind}:${port}"
-[ "$bind" = "0.0.0.0" ] && url="http://localhost:${port}"
+probe_url="http://127.0.0.1:${port}"
+if [ "$bind" = "127.0.0.1" ] || [ "$bind" = "localhost" ]; then
+  url="http://127.0.0.1:${port}"
+else
+  url="http://$(host_address):${port}"
+fi
 while [ "$i" -lt 60 ]; do
-  if curl -fsS "$url/api/health" >/dev/null 2>&1; then break; fi
+  if curl -fsS "$probe_url/api/health" >/dev/null 2>&1; then break; fi
   i=$((i + 1))
   sleep 1
 done
@@ -540,9 +612,22 @@ fi
 
 say ""
 if [ "$i" -ge 60 ]; then
-  warn "started, but $url/api/health did not answer within 60s. Check 'docker compose logs -f butler'."
+  warn "started, but $probe_url/api/health did not answer within 60s. Check 'docker compose logs -f butler'."
 else
   note "up at $url"
+fi
+
+if [ -n "$setup_code" ]; then
+  cat <<EOF
+
+  The UI is published on $bind, so setting the first password needs this code:
+
+      $setup_code
+
+  It is in $install_dir/.env as BUTLER_SETUP_CODE. Because it is set, the
+  15-minute window does not apply — nobody can claim the account without the
+  code, and there is no rush.
+EOF
 fi
 
 if [ "$connected" -eq 1 ]; then
@@ -550,9 +635,7 @@ if [ "$connected" -eq 1 ]; then
 
 AudiobookShelf is already connected: $abs_url
 
-  1. Open $url and set a password. The setup page stays open for 15
-     minutes after start; 'docker compose restart butler' reopens it, and the
-     startup log carries a code that works after it closes.
+  1. Open $url from any machine on the network and set a password.
 
   2. Nothing else to configure. Check what it can see with:
      docker compose run --rm cli status

@@ -6,7 +6,8 @@ import { hashPassword, keyFilePath, keySource, randomToken, verifyPassword } fro
 import { getMeta, setMeta } from '../db/settings.js';
 import { setupCode } from '../config.js';
 import { log } from '../logger.js';
-import { badRequest, unauthorized, type RequestContext } from './router.js';
+import { badRequest, tooManyRequests, unauthorized, type RequestContext } from './router.js';
+import { clientKey, Throttle } from './throttle.js';
 
 export const SESSION_COOKIE = 'abs_butler_session';
 export const SETUP_COOKIE = 'abs_butler_setup';
@@ -64,6 +65,19 @@ export class Auth {
   private readonly code = setupCode() ?? generateCode();
   private readonly codeFromEnv = Boolean(setupCode());
   private claim: { token: string; at: number } | null = null;
+  private readonly throttle = new Throttle();
+
+  /** Refuses early, so a blocked caller never reaches the hash comparison. */
+  private guard(ctx: RequestContext | undefined): string {
+    const key = clientKey(ctx?.req?.socket?.remoteAddress);
+    const waitMs = this.throttle.retryAfterMs(key);
+    if (waitMs > 0) {
+      throw tooManyRequests(
+        `Too many failed attempts. Try again in ${Math.ceil(waitMs / 1000)}s.`,
+      );
+    }
+    return key;
+  }
 
   constructor(
     private readonly db: Db,
@@ -139,7 +153,9 @@ export class Auth {
       throw badRequest('Start setup in this browser before setting a password.');
     }
     if (state.codeRequired) {
+      const key = this.guard(ctx);
       if (!code || !constantTimeEquals(code.trim().toUpperCase(), this.code)) {
+        this.throttle.recordFailure(key);
         throw unauthorized(
           this.codeFromEnv
             ? 'Incorrect setup code. It is the value of BUTLER_SETUP_CODE.'
@@ -156,10 +172,15 @@ export class Auth {
     return createSession(this.db);
   }
 
-  login(password: string): string {
+  login(password: string, ctx?: RequestContext): string {
+    const key = this.guard(ctx);
     const hash = this.hash;
     if (!hash) throw badRequest('abs-butler has not been set up yet.');
-    if (!verifyPassword(password, hash)) throw unauthorized('Incorrect password');
+    if (!verifyPassword(password, hash)) {
+      this.throttle.recordFailure(key);
+      throw unauthorized('Incorrect password');
+    }
+    this.throttle.clear(key);
     return createSession(this.db);
   }
 

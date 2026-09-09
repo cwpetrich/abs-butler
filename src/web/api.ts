@@ -186,7 +186,7 @@ export function buildApiRouter(deps: ApiDeps): Router {
 
   router.post('/api/auth/login', (ctx) => {
     const { password } = parse(z.object({ password: z.string().min(1) }), ctx.body);
-    const sessionId = auth.login(password);
+    const sessionId = auth.login(password, ctx);
     setSessionCookie(ctx.res, sessionId, deps.isSecure(ctx));
     return { ok: true };
   }, { isPublic: true });

@@ -54,6 +54,41 @@ Open <http://localhost:13380>, set a password, and add your server's URL and API
 to be configured before that first launch — no password file, no secret to generate. `.env` is
 optional and mostly exists to tell abs-butler where your audiobooks are.
 
+### Reaching it from another machine
+
+Nothing to do: the UI is published on every interface, the same as AudiobookShelf. A loopback
+default would be wrong for the machine this runs on — a headless server has no browser — and being
+stricter than the server being managed buys little, since anyone who can reach abs-butler can
+already reach AudiobookShelf, which can delete the library outright.
+
+Two things carry that default:
+
+- `install.sh` generates a `BUTLER_SETUP_CODE`. Until a password exists the setup page must answer
+  an anonymous visitor, so on a network the first person to load it would otherwise take the
+  account. With the code set it is required whether or not the 15-minute window is open — the race
+  closes and the limit stops applying together.
+- Failed logins and failed setup codes are throttled per client address: five free attempts, then a
+  doubling wait to a 15-minute cap. scrypt already makes each guess expensive; this makes a run of
+  them pointless.
+
+`--local` publishes on `127.0.0.1` instead, for reaching it over SSH
+(`ssh -L 13380:127.0.0.1:13380 you@server`) or Tailscale
+(`tailscale serve --bg --https=13380 http://127.0.0.1:13380`), neither of which needs an open port.
+
+### Re-running it
+
+`install.sh` is safe to run again on an existing install, and it is the way to pick up a newer
+compose file. Anything already in `.env` is kept — the binding, the port, the ownership, the setup
+code — so a second run does not quietly revert what the first one set. Flags still win, so a
+setting is changed by naming it:
+
+```bash
+sh install.sh --bind 127.0.0.1     # stop publishing to the network
+sh install.sh --remote             # and put it back
+```
+
+The database lives in `./data` and is untouched by any of this.
+
 ### The setup window
 
 Until a password exists, abs-butler has nothing to authenticate against, so the setup screen has to

@@ -100,6 +100,7 @@ export class HttpError extends Error {
 export const badRequest = (message: string) => new HttpError(400, message);
 export const unauthorized = (message = 'Authentication required') => new HttpError(401, message);
 export const notFound = (message = 'Not found') => new HttpError(404, message);
+export const tooManyRequests = (message: string) => new HttpError(429, message);
 
 export function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};

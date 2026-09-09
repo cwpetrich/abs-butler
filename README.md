@@ -44,9 +44,23 @@ at once: the URL, the host directory holding the library, and the path Audiobook
 several servers. Give it an admin username and it connects on the spot, so one command goes from
 nothing to connected; decline and it just fills in the form for you.
 
-It derives file ownership from the library directory, binds the UI to loopback, and prints what to
-do next. `--library` skips the search, `--no-discover` turns it off, and `--dry-run` shows every
-file it would write without touching anything. Read it before you run it — it is one file, and it
+It derives file ownership from the library directory and prints what to do next. `--library` skips
+the search, `--no-discover` turns it off, and `--dry-run` shows every file it would write without
+touching anything.
+
+The UI is published on every interface, the same as AudiobookShelf itself — most of these servers
+are headless, and a loopback default would leave nothing able to open it. Two things make that
+safe rather than merely convenient:
+
+- **Setup needs a code**, generated during install, printed at the end, and stored as
+  `BUTLER_SETUP_CODE`. Until a password exists the setup page has to answer an anonymous visitor,
+  so without this the first person on the network to load it would take the account. With the code
+  set it is required whether or not the 15-minute window is open — the race closes and the clock
+  stops mattering.
+- **Failed logins are throttled** per client address, backing off to a 15-minute wait. A weak
+  password stops being brute-forceable at network speed.
+
+`--local` publishes on `127.0.0.1` instead, if you would rather reach it over SSH or Tailscale. Read it before you run it — it is one file, and it
 is meant to be read.
 
 **Docker, by hand** — the compose file pulls a published multi-arch image:
