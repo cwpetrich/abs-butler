@@ -30,7 +30,7 @@ const program = new Command();
 program
   .name('abs-butler')
   .description('Keep one AudiobookShelf library clean, enriched, and organized.')
-  .version('0.4.1')
+  .version('0.4.2')
   .option('-l, --library <idOrName>', 'limit to one library (defaults to all book libraries)')
   .option('-v, --verbose', 'print debug logging')
   .option('-q, --quiet', 'only print errors')
