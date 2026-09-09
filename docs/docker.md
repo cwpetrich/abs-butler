@@ -77,6 +77,15 @@ Two things carry that default:
 
 ### Updating
 
+abs-butler asks GitHub every few hours whether a newer version has been tagged, and says so in the
+sidebar with a link to what changed. It does not update itself, which is the same choice
+AudiobookShelf makes: replacing a running container means handing the application the Docker socket,
+and that is root on the host. A web UI reachable from the network should not hold that. So the
+notice tells you, and you decide when.
+
+Turn the check off in Settings if you would rather it made no outbound request at all.
+
+
 ```bash
 sh install.sh --update --dir /opt/abs-butler
 ```

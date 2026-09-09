@@ -208,9 +208,17 @@ function UpdateNotice() {
     <div className="update-notice">
       <strong>{status.latest} available</strong>
       <div className="hint">
-        Update with{' '}
-        <span className="mono">sh install.sh --update</span> in the directory abs-butler was
-        installed into.
+        <a
+          href={`https://github.com/cwpetrich/abs-butler/releases/tag/${status.latest}`}
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          What&rsquo;s in it
+        </a>
+      </div>
+      <div className="hint">
+        Apply it with <span className="mono">sh install.sh --update</span> in the directory
+        abs-butler was installed into.
       </div>
     </div>
   );
