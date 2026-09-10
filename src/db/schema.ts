@@ -162,4 +162,22 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_revisions_run ON revisions(run_id, id);
   `,
+
+  // 7 — enrol existing installs in the two providers added since
+  //
+  // `updateSettings` writes every key, not just the changed one, so anyone who
+  // has ever opened Settings and saved has an explicit `providers` row. A new
+  // provider added to the schema default would never reach them: they would
+  // silently keep asking three sources while the release notes described four.
+  //
+  // Rewritten only where the stored list is still exactly the old default —
+  // that is someone who never chose, and the new default is what they would
+  // get on a fresh install today. A list anyone has actually edited is left
+  // alone, including one that deliberately drops a provider.
+  `
+  UPDATE settings
+     SET value = '["audible","audiosilo","audnexus","openlibrary","googlebooks"]'
+   WHERE key = 'providers'
+     AND value = '["audnexus","openlibrary","googlebooks"]';
+  `,
 ];

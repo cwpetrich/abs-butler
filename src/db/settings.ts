@@ -8,7 +8,9 @@ import { z } from 'zod';
  */
 export const SettingsSchema = z.object({
   /** Providers consulted for ratings and metadata, in order of trust. */
-  providers: z.array(z.string()).default(['audnexus', 'openlibrary', 'googlebooks']),
+  providers: z
+    .array(z.string())
+    .default(['audible', 'audiosilo', 'audnexus', 'openlibrary', 'googlebooks']),
   googleBooksApiKey: z.string().default(''),
   /**
    * Ask GitHub, once every few hours, whether a newer version has been tagged.
