@@ -153,8 +153,8 @@ export function SettingsPage() {
             <label>
               Audible region
               <span className="hint">
-                Which marketplace Audnexus is asked about. A book absent from it simply returns
-                nothing, and the other providers answer instead.
+                Which marketplace the two Audible sources are asked about. A book absent from it
+                falls through to a title search, and the other providers answer alongside.
               </span>
               <select
                 value={form.audibleRegion}

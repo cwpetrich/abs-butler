@@ -18,6 +18,7 @@ import { resetKeyCache } from '../core/crypto.js';
 import { completeRun, createRun, listRuns, markRunning, pruneRuns, reconcileOrphanedRuns } from './runs.js';
 import { appendLog, listLogs } from './logs.js';
 import { getSettings, updateSettings } from './settings.js';
+import { MIGRATIONS } from './schema.js';
 import { createSchedule, dueSchedules, markScheduleRun, updateSchedule } from './schedules.js';
 
 let db: Db;
@@ -273,6 +274,48 @@ describe('settings migration', () => {
     // getSettings ignores unknown keys, so the guard must start off regardless
     // of whatever the retired setting happened to say.
     expect(getSettings(db).allowFileChanges).toBe(false);
+  });
+
+  /**
+   * `updateSettings` writes every key, so anyone who has ever saved Settings
+   * has an explicit provider list — and would otherwise never see a provider
+   * added to the schema default afterwards.
+   */
+  describe('the provider list', () => {
+    // The migration is already applied to `db`; re-running it is how its effect
+    // on a row written before it can be observed.
+    const enrol = () => db.exec(MIGRATIONS.at(-1)!);
+
+    it('defaults to every provider on a fresh install', () => {
+      expect(getSettings(db).providers).toEqual([
+        'audible',
+        'audiosilo',
+        'audnexus',
+        'openlibrary',
+        'googlebooks',
+      ]);
+    });
+
+    it('adds the new sources to an install still carrying the old default', () => {
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(
+        'providers',
+        JSON.stringify(['audnexus', 'openlibrary', 'googlebooks']),
+      );
+      enrol();
+      expect(getSettings(db).providers).toEqual([
+        'audible',
+        'audiosilo',
+        'audnexus',
+        'openlibrary',
+        'googlebooks',
+      ]);
+    });
+
+    it('leaves a list someone actually chose alone', () => {
+      updateSettings(db, { providers: ['openlibrary'] });
+      enrol();
+      expect(getSettings(db).providers).toEqual(['openlibrary']);
+    });
   });
 
   it('keeps allowFileChanges off unless it is explicitly turned on', () => {
