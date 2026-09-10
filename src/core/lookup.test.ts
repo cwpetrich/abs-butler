@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { closeDb, openDb, type Db } from '../db/index.js';
 import { lookupStats } from '../db/lookups.js';
-import { lookupItem, queryKey, ttlFor } from './lookup.js';
+import { GIVE_UP_AFTER, lookupItem, queryKey, ttlFor } from './lookup.js';
+import { ProviderRefusedError } from '../providers/http.js';
 import type { BookQuery, MetadataProvider, ProviderResult } from '../providers/types.js';
 
 /** Counts how many times it was actually asked, which is the point of the cache. */
@@ -35,7 +36,28 @@ class ThrowingProvider implements MetadataProvider {
   }
 }
 
+/** Google Books with no key, in miniature: it says no until told to stop asking. */
+class RefusingProvider implements MetadataProvider {
+  readonly name = 'googlebooks';
+  calls = 0;
+  /** Answers normally once this many calls have been refused. */
+  constructor(private readonly refuseFirst = Infinity) {}
+  isAvailable(): boolean {
+    return true;
+  }
+  async search(): Promise<ProviderResult[]> {
+    this.calls += 1;
+    if (this.calls > this.refuseFirst) return [match()];
+    throw new ProviderRefusedError('www.googleapis.com', 429);
+  }
+}
+
 const hobbit: BookQuery = { title: 'The Hobbit', author: 'J.R.R. Tolkien', isbn: null, asin: null };
+
+/** Distinct queries, so nothing is answered from the cache. */
+function book(n: number): BookQuery {
+  return { title: `Book ${n}`, author: 'A Writer', isbn: null, asin: null };
+}
 
 function match(): ProviderResult {
   return { provider: 'test', title: 'The Hobbit', authors: ['J.R.R. Tolkien'], signals: [] };
@@ -158,6 +180,66 @@ describe('lookupItem', () => {
     const found = await lookupItem(deps, { ...hobbit, isbn: '9780261102217' });
     expect(found.candidates.map((c) => c.result.provider)).toEqual(['strong', 'weak']);
     expect(found.best?.match.basis).toBe('isbn');
+  });
+
+  // The whole point: one book's rejection is cheap, a thousand books' is a run
+  // that never ends and never learns anything.
+  it('stops asking a provider that keeps refusing', async () => {
+    const provider = new RefusingProvider();
+    const deps = { providers: [provider], db, cacheDays: 30 };
+
+    for (let i = 0; i < 20; i++) await lookupItem(deps, book(i));
+
+    expect(provider.calls).toBe(GIVE_UP_AFTER);
+  });
+
+  it('keeps asking a provider that recovers', async () => {
+    const provider = new RefusingProvider(GIVE_UP_AFTER - 1);
+    const deps = { providers: [provider], db, cacheDays: 30 };
+
+    for (let i = 0; i < 10; i++) await lookupItem(deps, book(i));
+
+    // Refused twice, answered eight times: a per-minute limit is not a quota.
+    expect(provider.calls).toBe(10);
+  });
+
+  // Giving up means "stop asking", not "forget what it already told us".
+  it('still serves a cached answer from a provider it gave up on', async () => {
+    const provider = new RefusingProvider();
+    const deps = { providers: [provider], db, cacheDays: 30 };
+
+    const answered = new CountingProvider('googlebooks', [match()]);
+    await lookupItem({ providers: [answered], db, cacheDays: 30 }, hobbit);
+
+    for (let i = 0; i < GIVE_UP_AFTER; i++) await lookupItem(deps, book(i));
+    const found = await lookupItem(deps, hobbit);
+
+    expect(found.best?.result.title).toBe('The Hobbit');
+    expect(found.cached).toEqual(['googlebooks']);
+  });
+
+  // A refusal is not an answer, so it must not poison the cache with an empty one.
+  it('does not cache a refusal', async () => {
+    const deps = { providers: [new RefusingProvider()], db, cacheDays: 30 };
+    await lookupItem(deps, hobbit);
+    expect(lookupStats(db).total).toBe(0);
+  });
+
+  it('lets a stopped run through rather than treating it as a dead provider', async () => {
+    const controller = new AbortController();
+    const provider: MetadataProvider = {
+      name: 'test',
+      isAvailable: () => true,
+      async search() {
+        controller.abort(new Error('Stopped'));
+        controller.signal.throwIfAborted();
+        return [];
+      },
+    };
+
+    await expect(
+      lookupItem({ providers: [provider], db, cacheDays: 30, signal: controller.signal }, hobbit),
+    ).rejects.toThrow('Stopped');
   });
 
   it('drops a provider result that does not match the book', async () => {
