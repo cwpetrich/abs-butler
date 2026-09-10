@@ -1,3 +1,4 @@
+import { languageCode, normalizeAsin } from './audible.js';
 import { getJson } from './http.js';
 import type { BookQuery, MetadataProvider, ProviderResult } from './types.js';
 
@@ -52,11 +53,11 @@ interface AudnexBook {
  * field this tool wants to normalize but could not before — narrator, series
  * name and position, subtitle — comes from here.
  *
- * The trade is that it is keyed on ASIN alone. There is no title search, so a
- * book AudiobookShelf never matched yields nothing and the general-purpose
- * providers carry the lookup. That is the right shape: an ASIN is an exact
- * identifier for one edition, which is precisely the confidence needed before
- * overwriting a title someone can see.
+ * The trade is that it is keyed on ASIN alone: a book AudiobookShelf never
+ * matched yields nothing here. That gap is why `audible.ts` exists, which
+ * queries the same catalogue directly and can search by title. Audnexus stays
+ * in the set alongside it as the maintained, sanctioned route to the same
+ * data — when one of the two stops answering, the other is already configured.
  */
 export class AudnexusProvider implements MetadataProvider {
   readonly name = 'audnexus';
@@ -67,7 +68,7 @@ export class AudnexusProvider implements MetadataProvider {
     return true;
   }
 
-  async search(query: BookQuery): Promise<ProviderResult[]> {
+  async search(query: BookQuery, signal?: AbortSignal): Promise<ProviderResult[]> {
     const asin = normalizeAsin(query.asin);
     if (!asin) return [];
 
@@ -77,7 +78,7 @@ export class AudnexusProvider implements MetadataProvider {
     // A 404 covers both "no such ASIN" and "not sold in this region", and
     // getJson turns either into null — nothing to distinguish, since both mean
     // this provider has no answer.
-    const book = await getJson<AudnexBook>(url);
+    const book = await getJson<AudnexBook>(url, { signal });
     if (!book?.title) return [];
 
     const genres = (book.genres ?? []).map((g) => g.name).filter(isPresent);
@@ -127,50 +128,14 @@ function buildSignals(book: AudnexBook, genres: string[]): ProviderResult['signa
 }
 
 /**
- * Audible ASINs are 10 characters, and AudiobookShelf stores whatever was typed
- * into it — sometimes a full product URL. Anything that is not a bare ASIN is
- * rejected rather than guessed at, since a wrong one returns another book's
- * narrator with complete confidence.
+ * `year` stays here because Audnexus dates are its own; `normalizeAsin` and
+ * `languageCode` are facts about Audible itself and are shared with the direct
+ * provider rather than written twice.
  */
-export function normalizeAsin(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const trimmed = value.trim().toUpperCase();
-  return /^[A-Z0-9]{10}$/.test(trimmed) ? trimmed : null;
-}
-
 function year(releaseDate: string | undefined): string | undefined {
   if (!releaseDate) return undefined;
   const match = /^(\d{4})/.exec(releaseDate);
   return match?.[1];
-}
-
-/**
- * Audnexus reports a language name ("english"), while AudiobookShelf and every
- * other provider here speak in codes. Only the languages worth a confident
- * mapping are translated; anything else is dropped rather than written wrong.
- */
-const LANGUAGE_CODES: Record<string, string> = {
-  english: 'en',
-  spanish: 'es',
-  french: 'fr',
-  german: 'de',
-  italian: 'it',
-  portuguese: 'pt',
-  dutch: 'nl',
-  swedish: 'sv',
-  norwegian: 'no',
-  danish: 'da',
-  finnish: 'fi',
-  polish: 'pl',
-  russian: 'ru',
-  japanese: 'ja',
-  chinese: 'zh',
-  korean: 'ko',
-};
-
-export function languageCode(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  return LANGUAGE_CODES[value.trim().toLowerCase()];
 }
 
 function isPresent(value: string | undefined): value is string {

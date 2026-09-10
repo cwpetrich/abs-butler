@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { AudnexusProvider, languageCode, normalizeAsin } from './audnexus.js';
+import { languageCode, normalizeAsin } from './audible.js';
+import { AudnexusProvider } from './audnexus.js';
 
 describe('normalizeAsin', () => {
   it('accepts a bare ASIN in either case', () => {
