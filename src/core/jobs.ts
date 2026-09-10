@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db/index.js';
+import { pruneFindings } from '../db/findings.js';
 import { appendLog, pruneLogs } from '../db/logs.js';
 import { pruneLookups } from '../db/lookups.js';
 import {
@@ -237,6 +238,9 @@ export class JobRunner extends EventEmitter {
       // Expired rows are already ignored on read; this stops the table growing
       // without bound on a library that keeps churning through unmatched books.
       pruneLookups(this.db, settings.lookupCacheDays * 24 * 60 * 60 * 1000);
+      // Audit detail is bulky and only interesting while it is current; the
+      // counts in each run's summary outlive it.
+      pruneFindings(this.db);
       pruneSessions(this.db);
     } catch (err) {
       log.debug(`retention pass failed: ${(err as Error).message}`);
