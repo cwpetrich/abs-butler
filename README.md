@@ -276,6 +276,12 @@ Issue codes: `missing-on-disk`, `invalid`, `no-audio`, `missing-title`, `missing
 Duplicates are found by normalizing title and author, so `The Hobbit` by `J.R.R. Tolkien` and
 `Hobbit, The (Unabridged)` by `Tolkien, J.R.R.` land in the same group.
 
+**Ebooks are not broken audiobooks.** A book library can hold EPUBs and PDFs, and one of those has
+no audio by its nature. `no-audio` is raised only when an item has neither audio files nor an ebook
+— an import that produced an empty record — and an ebook-only item is not asked for a narrator it
+was never going to have. An item holding both an audiobook and an ebook is still audited as an
+audiobook.
+
 **A first audit flags everything, and that is not a fault.** `unrated` is true of every book until
 `rate` has run once, so a fresh library reports 100% affected. Read the breakdown, not the total.
 
