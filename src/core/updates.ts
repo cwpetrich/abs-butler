@@ -3,9 +3,17 @@ import { log } from '../logger.js';
 /**
  * Whether a newer abs-butler has been published.
  *
- * Releases are git tags — the workflow publishes images and snaps but creates
- * no GitHub Release, so /tags is the list that actually exists and /releases
- * would always 404.
+ * Read from /releases rather than /tags, which is not a detail. A tag exists
+ * the instant it is pushed, before anything is built; a release exists only
+ * after the image is published, because the release job is gated on it. Read
+ * from tags, a failed image build would still tell every install that an
+ * upgrade was available and send its operator to a version they cannot pull.
+ * The rule is the same one the release workflow follows: announce nothing that
+ * cannot be fetched.
+ *
+ * Drafts and prereleases are skipped, and the ordering GitHub returns is
+ * GitHub's business rather than a promise, so the tag names are compared
+ * instead of trusted.
  *
  * The check is best-effort in every direction: it is cached, it times out, and
  * a failure is logged at debug and reported as "unknown" rather than raised.
@@ -13,7 +21,7 @@ import { log } from '../logger.js';
  * GitHub is unreachable, rate-limits an unauthenticated caller, or is simply
  * slow.
  */
-const TAGS_URL = 'https://api.github.com/repos/cwpetrich/abs-butler/tags';
+const RELEASES_URL = 'https://api.github.com/repos/cwpetrich/abs-butler/releases';
 const CACHE_MS = 6 * 60 * 60_000;
 const TIMEOUT_MS = 5_000;
 
@@ -66,13 +74,19 @@ export async function checkForUpdate(
   const fresh = cache && Date.now() - cache.at < CACHE_MS;
   if (!fresh) {
     try {
-      const res = await fetchImpl(TAGS_URL, {
+      const res = await fetchImpl(RELEASES_URL, {
         headers: { Accept: 'application/vnd.github+json' },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
-      const body = (await res.json()) as Array<{ name?: string }>;
-      const names = Array.isArray(body) ? body.map((t) => t.name ?? '') : [];
+      const body = (await res.json()) as Array<{
+        tag_name?: string;
+        draft?: boolean;
+        prerelease?: boolean;
+      }>;
+      const names = Array.isArray(body)
+        ? body.filter((r) => !r.draft && !r.prerelease).map((r) => r.tag_name ?? '')
+        : [];
       cache = { at: Date.now(), latest: newestTag(names) };
     } catch (err) {
       const message = (err as Error).message;
