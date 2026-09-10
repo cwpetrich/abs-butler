@@ -50,6 +50,7 @@ describe('GET /api/runs/:id/findings', () => {
       { itemId: 'a', title: 'Dune', author: 'Frank Herbert', path: '/b/dune', issues: ['unrated'] },
       { itemId: 'b', title: 'Emma', author: 'Jane Austen', path: '/b/emma', issues: ['unrated', 'unmatched'] },
       { itemId: 'c', title: 'Nameless', author: null, path: '/b/c', issues: ['missing-title'] },
+      { itemId: 'd', title: 'Persuasion', author: 'Jane Austen', path: '/b/p', issues: [] },
     ]);
     return runId;
   }
@@ -61,9 +62,11 @@ describe('GET /api/runs/:id/findings', () => {
       total: number;
     };
 
-    expect(result.total).toBe(3);
-    expect(result.findings.map((f) => f.title)).toEqual(['Dune', 'Emma', 'Nameless']);
+    expect(result.total).toBe(4);
+    expect(result.findings.map((f) => f.title)).toEqual(['Dune', 'Emma', 'Nameless', 'Persuasion']);
     expect(result.findings[1]!.issues).toEqual(['unrated', 'unmatched']);
+    // The item that passed is in the report, with nothing against it.
+    expect(result.findings[3]!.issues).toEqual([]);
   });
 
   it('filters to one issue code', async () => {
@@ -86,7 +89,30 @@ describe('GET /api/runs/:id/findings', () => {
 
     expect(result.findings).toHaveLength(2);
     // The total is what tells the UI there is more to ask for.
-    expect(result.total).toBe(3);
+    expect(result.total).toBe(4);
+  });
+
+  it('splits passes from problems', async () => {
+    const runId = seed();
+
+    const clean = (await get(`/api/runs/${runId}/findings?status=clean`)) as {
+      findings: Array<{ itemId: string }>;
+      total: number;
+    };
+    expect(clean.findings.map((f) => f.itemId)).toEqual(['d']);
+
+    const problems = (await get(`/api/runs/${runId}/findings?status=issues`)) as {
+      findings: Array<{ itemId: string }>;
+      total: number;
+    };
+    expect(problems.total).toBe(3);
+    expect(problems.findings.map((f) => f.itemId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('ignores a status it does not recognize rather than filtering to nothing', async () => {
+    const runId = seed();
+    const result = (await get(`/api/runs/${runId}/findings?status=banana`)) as { total: number };
+    expect(result.total).toBe(4);
   });
 
   it('caps the page size a caller can ask for', async () => {

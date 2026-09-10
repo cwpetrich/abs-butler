@@ -219,8 +219,11 @@ export const api = {
     );
   },
   run: (id: number) => request<Run>(`/api/runs/${id}`),
-  /** Audit detail: which items, and what was wrong with each. */
-  findings: (id: number, params: { issue?: string; limit?: number; offset?: number } = {}) => {
+  /** Audit detail: every audited item, and what was wrong with each — if anything. */
+  findings: (
+    id: number,
+    params: { issue?: string; status?: 'issues' | 'clean'; limit?: number; offset?: number } = {},
+  ) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== '') query.set(key, String(value));

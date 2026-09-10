@@ -52,24 +52,37 @@ export interface AuditFinding {
   issues: IssueCode[];
 }
 
+/**
+ * Every audited item, with the issues found on it — an empty list meaning the
+ * item passed every check.
+ *
+ * Clean items are included rather than omitted, so an audit is a report on the
+ * library rather than a list of complaints about part of it. "Which books did
+ * you look at" and "which books are fine" are both questions an audit should
+ * answer, and a book silently absent from the output is indistinguishable from
+ * one that was never scanned.
+ *
+ * Sorted worst-first, so the items wanting attention lead and the clean ones
+ * trail.
+ */
 export function auditItems(items: AbsLibraryItem[], only?: string[]): AuditFinding[] {
   const wanted = only && only.length > 0 ? new Set(only) : null;
   const active = (wanted ? ISSUES.filter((spec) => wanted.has(spec.code)) : ISSUES).filter((s) => s.test);
 
-  const findings = new Map<string, AuditFinding>();
+  const findings = new Map<string, AuditFinding>(
+    items.map((item) => [
+      item.id,
+      {
+        itemId: item.id,
+        title: itemTitle(item),
+        author: itemAuthor(item),
+        path: item.relPath ?? item.path,
+        issues: [] as IssueCode[],
+      },
+    ]),
+  );
   const record = (item: AbsLibraryItem, code: IssueCode) => {
-    const existing = findings.get(item.id);
-    if (existing) {
-      existing.issues.push(code);
-      return;
-    }
-    findings.set(item.id, {
-      itemId: item.id,
-      title: itemTitle(item),
-      author: itemAuthor(item),
-      path: item.relPath ?? item.path,
-      issues: [code],
-    });
+    findings.get(item.id)?.issues.push(code);
   };
 
   for (const item of items) {
@@ -130,12 +143,13 @@ export async function runAuditTask(
   const libraries = await resolveLibraries(ctx, options.library);
   const items = await collectItems(ctx, libraries, { limit: options.limit });
   const findings = auditItems(items, options.only);
+  const affected = findings.filter((finding) => finding.issues.length > 0);
 
   const issueCounts = summarizeFindings(findings);
 
   log.info(`audited ${items.length} item(s) across ${libraries.length} librar(ies)`);
-  if (findings.length === 0) {
-    log.success('No issues found.');
+  if (affected.length === 0) {
+    log.success(`No issues found — all ${items.length} item(s) passed every check.`);
   } else {
     // Named on one line rather than as a table, which both the CLI and the web
     // UI already draw from the same counts. Without it the log says only "25
@@ -144,7 +158,10 @@ export async function runAuditTask(
     const breakdown = ISSUES.filter((spec) => issueCounts[spec.code])
       .map((spec) => `${issueCounts[spec.code]} ${spec.code}`)
       .join(', ');
-    log.info(`${findings.length} item(s) have at least one issue — ${breakdown}`);
+    log.info(
+      `${affected.length} of ${items.length} item(s) have at least one issue — ${breakdown}` +
+        `; ${items.length - affected.length} passed`,
+    );
   }
 
   // Kept for the run, so the web UI can show which books and why rather than
@@ -157,7 +174,7 @@ export async function runAuditTask(
     scanned: items.length,
     libraries: libraries.map((l) => ({ id: l.id, name: l.name })),
     issueCounts,
-    itemsWithIssues: findings.length,
+    itemsWithIssues: affected.length,
     findings,
   };
 }

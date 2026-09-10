@@ -108,7 +108,8 @@ program
   .command('audit')
   .description('Report metadata and file problems across the library')
   .option('--json', 'emit JSON instead of a table')
-  .option('--details', 'list every affected item, not just counts')
+  .option('--details', 'list every audited item and its issues, not just counts')
+  .option('--only-issues', 'with --details, leave out the items that passed')
   .addOption(new Option('--only <codes...>', 'restrict to these issue codes').choices(AUDIT_CODES))
   .option('--limit <n>', 'stop after N items (for a quick look)', Number)
   .action(async (opts) => runAudit({ ...globals(), ...opts }));

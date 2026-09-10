@@ -30,6 +30,9 @@ const sample = [
   { itemId: 'c', title: 'No Title', author: null, path: '/b/x', issues: ['missing-title'] },
 ];
 
+/** An audited item with nothing wrong with it. */
+const clean = { itemId: 'd', title: 'Persuasion', author: 'Jane Austen', path: '/b/p', issues: [] };
+
 describe('findings', () => {
   it('records and reads back what an audit found', () => {
     const runId = audit();
@@ -45,6 +48,24 @@ describe('findings', () => {
       issues: ['unrated', 'missing-cover'],
     });
     expect(all[2]!.author).toBeNull();
+  });
+
+  it('separates the items that passed from the ones that did not', () => {
+    const runId = audit();
+    recordFindings(db, runId, [...sample, clean]);
+
+    expect(listFindings(db, { runId, status: 'clean' }).map((f) => f.itemId)).toEqual(['d']);
+    expect(listFindings(db, { runId, status: 'issues' }).map((f) => f.itemId)).toEqual(['a', 'b', 'c']);
+    // Unfiltered means everything audited, which is the point of recording the
+    // passes at all.
+    expect(countFindings(db, { runId })).toBe(4);
+    expect(countFindings(db, { runId, status: 'clean' })).toBe(1);
+  });
+
+  it('reads an empty issue list back as empty', () => {
+    const runId = audit();
+    recordFindings(db, runId, [clean]);
+    expect(listFindings(db, { runId })[0]!.issues).toEqual([]);
   });
 
   it('filters by issue code without matching a code inside another', () => {

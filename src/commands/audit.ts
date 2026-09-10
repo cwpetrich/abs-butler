@@ -10,6 +10,8 @@ export interface AuditOptions extends GlobalOptions {
   only?: string[];
   limit?: number;
   details?: boolean;
+  /** With --details, leave out the items that passed. */
+  onlyIssues?: boolean;
 }
 
 export async function runAudit(options: AuditOptions): Promise<void> {
@@ -49,14 +51,28 @@ export async function runAudit(options: AuditOptions): Promise<void> {
   );
 
   if (options.details) {
+    // Everything audited, worst first, with the clean ones trailing — a report
+    // on the library rather than a list of complaints about part of it. A book
+    // silently absent from the output would be indistinguishable from one that
+    // was never scanned.
+    const rows = options.onlyIssues
+      ? result.findings.filter((f) => f.issues.length > 0)
+      : result.findings;
+
     log.out('');
-    printTable(result.findings, [
+    printTable(rows, [
+      { header: '', value: (f) => (f.issues.length === 0 ? color.green('ok') : color.yellow('!!')) },
       { header: 'TITLE', value: (f) => truncate(f.title, 48), maxWidth: 48 },
       { header: 'AUTHOR', value: (f) => truncate(f.author ?? '—', 26), maxWidth: 26 },
-      { header: 'ISSUES', value: (f) => f.issues.join(', ') },
+      { header: 'ISSUES', value: (f) => (f.issues.length === 0 ? color.dim('—') : f.issues.join(', ')) },
     ]);
-  } else if (result.findings.length > 0) {
-    log.info('re-run with --details to list the affected items');
+    log.out('');
+    log.info(
+      `${result.itemsWithIssues} of ${result.scanned} item(s) have at least one issue, ` +
+        `${result.scanned - result.itemsWithIssues} passed`,
+    );
+  } else if (result.itemsWithIssues > 0) {
+    log.info('re-run with --details to list every item, or --details --only-issues for just the problems');
   }
 }
 

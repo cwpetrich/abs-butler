@@ -44,6 +44,24 @@ const items = [
     },
   },
   {
+    id: 'item-3',
+    relPath: 'Austen/Emma',
+    media: {
+      id: 'm3',
+      coverPath: '/covers/3.jpg',
+      tags: ['abs-butler:rated', 'age:teen'],
+      numTracks: 9,
+      metadata: {
+        title: 'Emma',
+        authorName: 'Jane Austen',
+        isbn: '9780141439587',
+        description: 'A matchmaker.',
+        publishedYear: '1815',
+        narratorName: 'Juliet Stevenson',
+      },
+    },
+  },
+  {
     id: 'item-2',
     relPath: 'Unknown/Mystery',
     media: {
@@ -97,10 +115,14 @@ describe('runAuditTask', () => {
     const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
 
     return runAuditTask(context(runId)).then((result) => {
+      expect(result.scanned).toBe(3);
       expect(result.itemsWithIssues).toBe(2);
 
+      // Every audited item is recorded, including the one with nothing wrong:
+      // a book missing from the report is indistinguishable from one that was
+      // never scanned.
       const stored = listFindings(db, { runId });
-      expect(stored).toHaveLength(2);
+      expect(stored).toHaveLength(3);
 
       const mystery = stored.find((f) => f.itemId === 'item-2')!;
       // The second book is missing nearly everything, and each gap is named.
@@ -122,9 +144,32 @@ describe('runAuditTask', () => {
     expect(dune.issues).toEqual(['unrated']);
   });
 
+  it('records a clean item with no issues rather than leaving it out', async () => {
+    const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
+    await runAuditTask(context(runId));
+
+    const clean = listFindings(db, { runId, status: 'clean' });
+    expect(clean.map((f) => f.itemId)).toEqual(['item-3']);
+    expect(clean[0]!.issues).toEqual([]);
+
+    expect(listFindings(db, { runId, status: 'issues' }).map((f) => f.itemId).sort()).toEqual([
+      'item-1',
+      'item-2',
+    ]);
+  });
+
+  it('lists the worst first and the clean last', async () => {
+    const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
+    await runAuditTask(context(runId));
+
+    // item-2 is missing nearly everything, item-1 is only unrated, item-3 is
+    // fine — so attention-first ordering is 2, 1, 3.
+    expect(listFindings(db, { runId }).map((f) => f.itemId)).toEqual(['item-2', 'item-1', 'item-3']);
+  });
+
   it('records nothing when no run owns the work', async () => {
     const result = await runAuditTask(context());
-    expect(result.findings).toHaveLength(2);
+    expect(result.findings).toHaveLength(3);
     expect(countFindings(db, { runId: 0 })).toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS n FROM findings').get()).toMatchObject({ n: 0 });
   });

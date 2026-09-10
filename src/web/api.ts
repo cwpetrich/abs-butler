@@ -291,16 +291,20 @@ export function buildApiRouter(deps: ApiDeps): Router {
   /**
    * What an audit found, item by item.
    *
-   * Paged and filterable by issue code, because "which books have no narrator"
-   * is the question someone actually has, and a library's worth of findings is
-   * not something to send in one response.
+   * Every audited item is here, passes included, so the panel can say what was
+   * looked at rather than only what went wrong. Paged and filterable — by issue
+   * code, because "which books have no narrator" is the question someone
+   * actually has, and by status, because "show me only the problems" is the
+   * other one.
    */
   router.get('/api/runs/:id/findings', (ctx) => {
     const runId = numericParam(ctx, 'id');
     const issue = ctx.url.searchParams.get('issue');
+    const status = ctx.url.searchParams.get('status');
     const query = {
       runId,
       ...(issue ? { issue } : {}),
+      ...(status === 'issues' || status === 'clean' ? { status: status as 'issues' | 'clean' } : {}),
       limit: Math.min(Number(ctx.url.searchParams.get('limit') ?? 100), 500),
       offset: Number(ctx.url.searchParams.get('offset') ?? 0),
     };
