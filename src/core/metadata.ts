@@ -2,10 +2,9 @@ import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
-import { buildProviders } from '../providers/index.js';
 import type { ProviderResult } from '../providers/types.js';
 import { isBlank } from '../util/text.js';
-import { lookupItem, type LookupDeps } from './lookup.js';
+import { lookupItem, lookupDepsFor, type LookupDeps } from './lookup.js';
 import { applyPatch } from './revisions.js';
 import { itemQuery } from './query.js';
 
@@ -114,26 +113,17 @@ export async function runMetadataTask(
     throw new Error(`Unknown field(s): ${invalid.join(', ')}. Valid: ${FILLABLE.join(', ')}`);
   }
 
-  const providers = buildProviders(
-    {
-      googleBooksApiKey: ctx.settings.googleBooksApiKey || undefined,
-      audibleRegion: ctx.settings.audibleRegion,
-      providerConcurrency: ctx.settings.providerConcurrency,
-    },
-    options.providers ?? ctx.settings.providers,
-  );
-  const deps: LookupDeps = {
-    providers,
-    db: ctx.db,
-    cacheDays: ctx.settings.lookupCacheDays,
-  };
+  const deps = lookupDepsFor(ctx, options.providers);
 
   const libraries = await resolveLibraries(ctx, options.library);
   const items = await collectItems(ctx, libraries, { limit: options.limit });
   log.info(`checking ${items.length} item(s) for missing ${requested.join(', ')}…`);
 
-  const plans = await mapLimit(items, ctx.settings.providerConcurrency, (item) =>
-    planMetadata(item, deps, { fields: requested, overwrite: options.overwrite }),
+  const plans = await mapLimit(
+    items,
+    ctx.settings.providerConcurrency,
+    (item) => planMetadata(item, deps, { fields: requested, overwrite: options.overwrite }),
+    { signal: ctx.signal },
   );
   const actionable = plans.filter((p) => p.changes.length > 0);
   const fieldsToFill = actionable.reduce((sum, p) => sum + p.changes.length, 0);
@@ -143,6 +133,7 @@ export async function runMetadataTask(
   let updated = 0;
   if (options.apply) {
     for (const plan of actionable) {
+      ctx.signal?.throwIfAborted();
       const patch: AbsMediaPatch = { metadata: {} };
       for (const change of plan.changes) {
         (patch.metadata as Record<string, string>)[change.field] = change.to;

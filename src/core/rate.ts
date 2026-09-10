@@ -10,8 +10,7 @@ import {
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
-import { buildProviders } from '../providers/index.js';
-import { lookupItem, type LookupDeps } from './lookup.js';
+import { lookupItem, lookupDepsFor, type LookupDeps } from './lookup.js';
 import { itemQuery } from './query.js';
 import { applyPatch } from './revisions.js';
 
@@ -87,20 +86,7 @@ export async function runRateTask(
   ctx: TaskContext,
   options: RateTaskOptions = {},
 ): Promise<RateTaskResult> {
-  const providers = buildProviders(
-    {
-      googleBooksApiKey: ctx.settings.googleBooksApiKey || undefined,
-      audibleRegion: ctx.settings.audibleRegion,
-      providerConcurrency: ctx.settings.providerConcurrency,
-    },
-    options.providers ?? ctx.settings.providers,
-  );
-  log.info(`using providers: ${providers.map((p) => p.name).join(', ')}`);
-  const deps: LookupDeps = {
-    providers,
-    db: ctx.db,
-    cacheDays: ctx.settings.lookupCacheDays,
-  };
+  const deps = lookupDepsFor(ctx, options.providers);
 
   const libraries = await resolveLibraries(ctx, options.library);
   const all = await collectItems(ctx, libraries, { limit: options.limit });
@@ -125,12 +111,17 @@ export async function runRateTask(
 
   const minConfidence = options.minConfidence ?? ctx.settings.minConfidence;
   let done = 0;
-  const results = await mapLimit(items, ctx.settings.providerConcurrency, async (item) => {
-    const result = await rateItem(item, deps, { minConfidence });
-    done += 1;
-    if (done % 25 === 0) log.info(`  ${done}/${items.length}`);
-    return result;
-  });
+  const results = await mapLimit(
+    items,
+    ctx.settings.providerConcurrency,
+    async (item) => {
+      const result = await rateItem(item, deps, { minConfidence });
+      done += 1;
+      if (done % 25 === 0) log.info(`  ${done}/${items.length}`);
+      return result;
+    },
+    { signal: ctx.signal },
+  );
 
   const bandCounts: Record<string, number> = {};
   for (const result of results) {
@@ -145,6 +136,7 @@ export async function runRateTask(
   if (options.apply) {
     const byId = new Map(all.map((item) => [item.id, item]));
     for (const change of changes) {
+      ctx.signal?.throwIfAborted();
       await applyPatch(ctx, byId.get(change.itemId)!, { tags: change.proposedTags });
       tagged += 1;
       if (tagged % 25 === 0) log.info(`  wrote ${tagged}/${changes.length}`);
