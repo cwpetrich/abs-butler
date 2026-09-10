@@ -37,20 +37,42 @@ describe('newestTag', () => {
 
 describe('checkForUpdate', () => {
   it('reports an update when the newest tag is ahead', async () => {
-    const s = await checkForUpdate('0.4.2', reply([{ name: 'v0.5.0' }, { name: 'v0.4.2' }]));
+    const s = await checkForUpdate('0.4.2', reply([{ tag_name: 'v0.5.0' }, { tag_name: 'v0.4.2' }]));
     expect(s.available).toBe(true);
     expect(s.latest).toBe('v0.5.0');
   });
 
   it('reports none when current is the newest', async () => {
-    const s = await checkForUpdate('0.4.2', reply([{ name: 'v0.4.2' }]));
+    const s = await checkForUpdate('0.4.2', reply([{ tag_name: 'v0.4.2' }]));
+    expect(s.available).toBe(false);
+  });
+
+  // A tag exists the moment it is pushed; a release exists only once the image
+  // it names has been published. Announcing the former sends an operator to a
+  // version they cannot pull.
+  it('ignores drafts and prereleases', async () => {
+    const s = await checkForUpdate(
+      '0.4.2',
+      reply([
+        { tag_name: 'v0.9.0', draft: true },
+        { tag_name: 'v0.8.0', prerelease: true },
+        { tag_name: 'v0.5.0' },
+      ]),
+    );
+    expect(s.latest).toBe('v0.5.0');
+    expect(s.available).toBe(true);
+  });
+
+  it('reports nothing when every release is a draft', async () => {
+    const s = await checkForUpdate('0.4.2', reply([{ tag_name: 'v0.9.0', draft: true }]));
+    expect(s.latest).toBeNull();
     expect(s.available).toBe(false);
   });
 
   // Running ahead of the newest tag is normal on a development build and must
   // not be announced as an update.
   it('does not offer a downgrade', async () => {
-    const s = await checkForUpdate('0.5.0', reply([{ name: 'v0.4.2' }]));
+    const s = await checkForUpdate('0.5.0', reply([{ tag_name: 'v0.4.2' }]));
     expect(s.available).toBe(false);
   });
 
@@ -80,7 +102,7 @@ describe('checkForUpdate', () => {
     let calls = 0;
     const counting = (async () => {
       calls++;
-      return { ok: true, status: 200, json: async () => [{ name: 'v0.9.0' }] };
+      return { ok: true, status: 200, json: async () => [{ tag_name: 'v0.9.0' }] };
     }) as unknown as typeof fetch;
     await checkForUpdate('0.4.2', counting);
     await checkForUpdate('0.4.2', counting);
