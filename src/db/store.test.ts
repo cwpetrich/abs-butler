@@ -283,8 +283,11 @@ describe('settings migration', () => {
    */
   describe('the provider list', () => {
     // The migration is already applied to `db`; re-running it is how its effect
-    // on a row written before it can be observed.
-    const enrol = () => db.exec(MIGRATIONS.at(-1)!);
+    // on a row written before it can be observed. Pinned by number rather than
+    // taken as the last one, so a later migration does not silently become the
+    // thing under test — which is exactly what happened when one was added.
+    const PROVIDER_ENROLMENT = 7;
+    const enrol = () => db.exec(MIGRATIONS[PROVIDER_ENROLMENT - 1]!);
 
     it('defaults to every provider on a fresh install', () => {
       expect(getSettings(db).providers).toEqual([

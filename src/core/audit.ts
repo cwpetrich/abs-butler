@@ -1,6 +1,7 @@
 import type { AbsLibraryItem } from '../abs/types.js';
 import { TAG_PREFIX } from '../content/ageRating.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
+import { recordFindings } from '../db/findings.js';
 import { log } from '../logger.js';
 import { isBlank, normalizeAuthor, normalizeTitle } from '../util/text.js';
 
@@ -130,14 +131,32 @@ export async function runAuditTask(
   const items = await collectItems(ctx, libraries, { limit: options.limit });
   const findings = auditItems(items, options.only);
 
+  const issueCounts = summarizeFindings(findings);
+
   log.info(`audited ${items.length} item(s) across ${libraries.length} librar(ies)`);
-  if (findings.length === 0) log.success('No issues found.');
-  else log.info(`${findings.length} item(s) have at least one issue`);
+  if (findings.length === 0) {
+    log.success('No issues found.');
+  } else {
+    // Named on one line rather than as a table, which both the CLI and the web
+    // UI already draw from the same counts. Without it the log says only "25
+    // items have at least one issue", which reads as an alarm when it is
+    // usually one benign check: every book is `unrated` until `rate` has run.
+    const breakdown = ISSUES.filter((spec) => issueCounts[spec.code])
+      .map((spec) => `${issueCounts[spec.code]} ${spec.code}`)
+      .join(', ');
+    log.info(`${findings.length} item(s) have at least one issue — ${breakdown}`);
+  }
+
+  // Kept for the run, so the web UI can show which books and why rather than
+  // only how many. Absent on a context with no run — nothing owns the rows.
+  if (ctx.runId !== undefined) {
+    recordFindings(ctx.db, ctx.runId, findings);
+  }
 
   return {
     scanned: items.length,
     libraries: libraries.map((l) => ({ id: l.id, name: l.name })),
-    issueCounts: summarizeFindings(findings),
+    issueCounts,
     itemsWithIssues: findings.length,
     findings,
   };

@@ -180,4 +180,34 @@ export const MIGRATIONS: string[] = [
    WHERE key = 'providers'
      AND value = '["audnexus","openlibrary","googlebooks"]';
   `,
+
+  // 8 — keep what an audit found, not just how much it found
+  //
+  // The summary carries counts, and counts answer the wrong question: "37
+  // books have no narrator" is not actionable until you know which 37. The
+  // findings themselves were computed and then discarded, so the web UI had no
+  // way to show them and the CLI could only print them at the moment they were
+  // produced.
+  //
+  // They live here rather than in the run's summary JSON because /api/runs
+  // returns fifty runs with their summaries in one response; a library's worth
+  // of findings on every row would make listing runs cost more than running
+  // one. Retention is separate too — see pruneFindings, which keeps the detail
+  // only for recent audits while the counts survive for as long as the run does.
+  //
+  // `issues` is a comma-joined list wrapped in commas at both ends, so a filter
+  // can match one code exactly with LIKE '%,code,%' without 'missing-title'
+  // also matching 'title'.
+  `
+  CREATE TABLE findings (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id  INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    item_id TEXT    NOT NULL,
+    title   TEXT    NOT NULL DEFAULT '',
+    author  TEXT,
+    path    TEXT    NOT NULL DEFAULT '',
+    issues  TEXT    NOT NULL
+  );
+  CREATE INDEX idx_findings_run ON findings(run_id, id);
+  `,
 ];
