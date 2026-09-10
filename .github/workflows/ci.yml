@@ -103,6 +103,19 @@ jobs:
       # compiles and nothing else. Kept so a reviewer can install the actual
       # package a change produces:
       #   sudo snap install --dangerous ./abs-butler_*.snap
+      #
+      # This job is deliberately *not* a required check on main, because it is
+      # nine of the ten minutes a merge waits for and its publish step in
+      # release.yml is skipped entirely for want of SNAPCRAFT_STORE_CREDENTIALS
+      # -- so a red result today means "the snapcraft.yaml broke" and nothing
+      # downstream can act on it. Add that credential and this must go back to
+      # required: at that point a broken snap can actually reach the store.
+      #
+      #   gh api -X PATCH repos/cwpetrich/abs-butler/branches/main/protection/required_status_checks \
+      #     -f 'contexts[]=Typecheck, test, build' \
+      #     -f 'contexts[]=Test on the minimum supported Node' \
+      #     -f 'contexts[]=Docker image (amd64 + arm64)' \
+      #     -f 'contexts[]=Snap package'
       - uses: actions/upload-artifact@v4
         with:
           name: snap-amd64
