@@ -280,15 +280,23 @@ Duplicates are found by normalizing title and author, so `The Hobbit` by `J.R.R.
 `rate` has run once, so a fresh library reports 100% affected. Read the breakdown, not the total.
 
 Counts alone are not actionable — "37 books have no narrator" cannot be acted on until you know
-which 37 — so the affected items are kept with the run:
+which 37 — so every audited item is kept with the run, **passes included**:
 
 ```
-abs-butler audit --details              # the item table, alongside the counts
+abs-butler audit --details                 # every item, worst first, clean ones trailing
+abs-butler audit --details --only-issues   # just the problems
 ```
 
-In the web UI the same detail is on the run's page under **What the audit found**, where each issue
-count doubles as a filter: click *No ISBN or ASIN* to see exactly those books. Detail is kept for
-the ten most recent audits; the counts survive for as long as the run is in history.
+A book that is absent from a report is indistinguishable from one that was never scanned, which is
+why the clean ones are listed rather than omitted.
+
+In the web UI the same report is on the run's page under **What the audit found**. *Everything*,
+*With issues* and *Passed* switch between them, and each issue count doubles as a filter: click
+*No ISBN or ASIN* to see exactly those books.
+
+Detail is kept for the ten most recent audits and pruned after that — it is one row per book per
+audit, so it is the bulky part. The counts in each run's summary survive for as long as the run is
+in history.
 
 The one count worth reading first is **`unmatched`**. Those books carry no ISBN and no ASIN, so no
 provider can rewrite them — if that number is high, `metadata` is doing real work before

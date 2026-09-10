@@ -103,59 +103,83 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
 }
 
 /**
- * Which books, and what was wrong with each.
+ * Every book the audit looked at, and what was wrong with each — if anything.
+ *
+ * Passes are listed, not omitted. A book absent from the report is
+ * indistinguishable from one that was never scanned, and "which of my books
+ * are fine" is as much a question as "which are broken". The counts double as
+ * filters, so picking one narrows the table to the items behind it.
  *
  * The summary answers "how many", which on its own reads as an alarm and gives
  * nobody anything to do: every book is `unrated` until `rate` has run once, so
- * a first audit legitimately flags the whole library. The counts double as the
- * filter here, so picking a row narrows the table to the items behind it.
+ * a first audit legitimately flags the whole library.
  */
 function FindingsPanel({ run }: { run: Run }) {
-  const [issue, setIssue] = useState('');
+  const [filter, setFilter] = useState<{ issue?: string; status?: 'issues' | 'clean' }>({});
   const [limit, setLimit] = useState(100);
   const meta = useAsync(() => api.meta(), []);
-  const page = useAsync(() => api.findings(run.id, { issue, limit }), [run.id, issue, limit]);
+  const page = useAsync(
+    () => api.findings(run.id, { ...filter, limit }),
+    [run.id, filter.issue, filter.status, limit],
+  );
 
   const counts = (run.summary?.issueCounts ?? {}) as Record<string, number>;
+  const scanned = (run.summary?.scanned as number) ?? 0;
+  const affected = (run.summary?.itemsWithIssues as number) ?? 0;
   const labels = new Map((meta.data?.auditIssues ?? []).map((i) => [i.code, i]));
   // Ordered by the server's own list, so the most serious issues lead rather
   // than whichever happened to be counted first.
   const present = (meta.data?.auditIssues ?? []).filter((i) => (counts[i.code] ?? 0) > 0);
 
   if (run.status === 'running' || run.status === 'queued') return null;
-  if (page.data && page.data.total === 0 && !issue) return null;
 
   const tone = (code: string) =>
     labels.get(code)?.severity === 'error' ? 'err' : labels.get(code)?.severity === 'warn' ? 'warn' : '';
+  const chip = (active: boolean) => (active ? 'small primary' : 'small');
+  const selected = filter.issue ?? filter.status ?? 'all';
 
   return (
     <div className="card">
       <h2>What the audit found</h2>
 
-      {present.length > 0 && (
-        <div className="actions" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
-          <button className={issue === '' ? 'small primary' : 'small'} onClick={() => setIssue('')}>
-            All ({run.summary?.itemsWithIssues as number})
+      <p className="hint">
+        {affected} of {scanned} item(s) have at least one issue; {scanned - affected} passed every
+        check.
+      </p>
+
+      <div className="actions" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
+        <button className={chip(selected === 'all')} onClick={() => setFilter({})}>
+          Everything ({scanned})
+        </button>
+        <button
+          className={chip(selected === 'issues')}
+          onClick={() => setFilter({ status: 'issues' })}
+        >
+          With issues ({affected})
+        </button>
+        <button className={chip(selected === 'clean')} onClick={() => setFilter({ status: 'clean' })}>
+          Passed ({scanned - affected})
+        </button>
+        {present.map((spec) => (
+          <button
+            key={spec.code}
+            className={chip(selected === spec.code)}
+            title={spec.code}
+            onClick={() => setFilter({ issue: spec.code })}
+          >
+            {spec.label} ({counts[spec.code]})
           </button>
-          {present.map((spec) => (
-            <button
-              key={spec.code}
-              className={issue === spec.code ? 'small primary' : 'small'}
-              title={spec.code}
-              onClick={() => setIssue(spec.code)}
-            >
-              {spec.label} ({counts[spec.code]})
-            </button>
-          ))}
-        </div>
-      )}
+        ))}
+      </div>
 
       {page.loading && !page.data && <Spinner />}
       {page.error && <Banner tone="err">{page.error}</Banner>}
 
       {page.data && page.data.findings.length === 0 && (
         <p className="hint">
-          Nothing recorded for this run. Audits from before this version kept only the counts.
+          {selected === 'all'
+            ? 'Nothing recorded for this run. Audits from before this version kept only the counts.'
+            : 'No items match that filter.'}
         </p>
       )}
 
@@ -171,7 +195,12 @@ function FindingsPanel({ run }: { run: Run }) {
             </thead>
             <tbody>
               {page.data.findings.map((finding) => (
-                <FindingRow key={finding.id} finding={finding} tone={tone} label={(c) => labels.get(c)?.label ?? c} />
+                <FindingRow
+                  key={finding.id}
+                  finding={finding}
+                  tone={tone}
+                  label={(c) => labels.get(c)?.label ?? c}
+                />
               ))}
             </tbody>
           </table>
@@ -205,11 +234,15 @@ function FindingRow({
       <td title={finding.path}>{finding.title}</td>
       <td className="dim">{finding.author ?? '—'}</td>
       <td>
-        {finding.issues.map((code) => (
-          <span key={code} className={`badge ${tone(code)}`} style={{ marginRight: 4 }} title={code}>
-            {label(code)}
-          </span>
-        ))}
+        {finding.issues.length === 0 ? (
+          <span className="badge ok">No issues</span>
+        ) : (
+          finding.issues.map((code) => (
+            <span key={code} className={`badge ${tone(code)}`} style={{ marginRight: 4 }} title={code}>
+              {label(code)}
+            </span>
+          ))
+        )}
       </td>
     </tr>
   );

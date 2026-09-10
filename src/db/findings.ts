@@ -1,7 +1,8 @@
 import type { Db } from './index.js';
 
 /**
- * What an audit found, one row per affected item.
+ * What an audit found, one row per audited item — an empty `issues` list
+ * meaning the item passed every check.
  *
  * Kept out of the run's summary on purpose: summaries travel with every row of
  * the runs list, and a large library's findings would be paid for on every page
@@ -86,10 +87,15 @@ export function recordFindings(db: Db, runId: number, findings: FindingInput[]):
   }
 }
 
+/** An item that passed every check stores an empty list, which encodes to ",,". */
+const CLEAN = ',,';
+
 export interface FindingQuery {
   runId: number;
   /** Restrict to items carrying this issue code. */
   issue?: string;
+  /** 'issues' for items with at least one, 'clean' for the ones that passed. */
+  status?: 'all' | 'issues' | 'clean';
   limit?: number;
   offset?: number;
 }
@@ -101,12 +107,20 @@ function where(query: FindingQuery): { clause: string; params: Array<string | nu
     clause += ' AND issues LIKE ?';
     params.push(`%,${query.issue},%`);
   }
+  if (query.status === 'issues') {
+    clause += ' AND issues <> ?';
+    params.push(CLEAN);
+  } else if (query.status === 'clean') {
+    clause += ' AND issues = ?';
+    params.push(CLEAN);
+  }
   return { clause, params };
 }
 
 export function listFindings(db: Db, query: FindingQuery): FindingRecord[] {
   const { clause, params } = where(query);
   const rows = db
+    // Insertion order is the audit's own: worst first, clean last.
     .prepare(`SELECT * FROM findings ${clause} ORDER BY id LIMIT ? OFFSET ?`)
     .all(...params, query.limit ?? 100, query.offset ?? 0) as unknown as FindingRow[];
   return rows.map(toRecord);
@@ -122,9 +136,10 @@ export function countFindings(db: Db, query: FindingQuery): number {
 
 /**
  * Detail is worth keeping for the last few audits and not for the five
- * hundredth-from-last, which is what the run history holds by default. The
- * counts in each run's summary are unaffected, so an old audit still says what
- * it found — just not for which books.
+ * hundredth-from-last, which is what the run history holds by default. It is a
+ * row per book per audit — the bulky part — while the counts in each run's
+ * summary cost nothing and are left alone, so an old audit still says what it
+ * found, just not for which books.
  */
 export function pruneFindings(db: Db, keepRuns = 10): number {
   const result = db
