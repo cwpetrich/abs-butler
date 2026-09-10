@@ -459,6 +459,32 @@ than leaving an empty series folder. Sequence numbers are zero-padded so book 2 
 **This is the one command that touches the filesystem.** `audit`, `rate`, and `metadata` work purely
 over the API and need no mount at all.
 
+#### Single-file books
+
+A bare `The Hobbit.m4b` sitting in a library root is a perfectly ordinary AudiobookShelf item, and
+for many libraries it is most of them. Those are **left alone by default** and reported as skipped,
+rather than passed over in silence as they were before:
+
+```
+abs-butler organize --single-files          # dry run, showing where each loose file would go
+abs-butler organize --single-files --apply
+```
+
+Each one is given the folder the template describes, so the library ends up uniform:
+
+```
+The Hobbit.m4b  ->  J.R.R. Tolkien/The Hobbit/The Hobbit.m4b
+mistborn1.m4b   ->  Brandon Sanderson/Mistborn/01 - The Final Empire/The Final Empire.m4b
+```
+
+The file inside is named from the title rather than from the last template segment, so a series
+book does not become `01 - The Final Empire.m4b` inside a folder already called `01 - The Final
+Empire`. A file with no extension is left alone — it cannot be named on the far side without
+inventing a media type.
+
+It is off by default because it is the one change that *creates* structure rather than rearranging
+it, on the items most likely to be numerous, and no move can be undone by `revert`. Dry run first.
+
 Because AudiobookShelf reports paths as *it* sees them — and a containerized ABS sees
 `/audiobooks/...`, not your host path — abs-butler needs two settings to translate:
 

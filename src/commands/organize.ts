@@ -11,6 +11,7 @@ export interface OrganizeOptions extends GlobalOptions {
   json?: boolean;
   limit?: number;
   template?: string;
+  singleFiles?: boolean;
   noScan?: boolean;
 }
 
