@@ -4,13 +4,14 @@ import { assessCapability, checkLocalRoot } from '../core/capability.js';
 import { keyFilePath, keySource } from '../core/crypto.js';
 import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
-import { AUDIT_CODES } from '../core/audit.js';
+import { AUDIT_CODES, ISSUES } from '../core/audit.js';
 import { FILLABLE } from '../core/metadata.js';
 import { NORMALIZABLE } from '../core/normalize.js';
 import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
+import { countFindings, listFindings } from '../db/findings.js';
 import { listLogs } from '../db/logs.js';
 import { getRun, listRuns, type RunCommand, type RunStatus } from '../db/runs.js';
 import { countRevisions } from '../db/revisions.js';
@@ -287,6 +288,28 @@ export function buildApiRouter(deps: ApiDeps): Router {
     };
   });
 
+  /**
+   * What an audit found, item by item.
+   *
+   * Paged and filterable by issue code, because "which books have no narrator"
+   * is the question someone actually has, and a library's worth of findings is
+   * not something to send in one response.
+   */
+  router.get('/api/runs/:id/findings', (ctx) => {
+    const runId = numericParam(ctx, 'id');
+    const issue = ctx.url.searchParams.get('issue');
+    const query = {
+      runId,
+      ...(issue ? { issue } : {}),
+      limit: Math.min(Number(ctx.url.searchParams.get('limit') ?? 100), 500),
+      offset: Number(ctx.url.searchParams.get('offset') ?? 0),
+    };
+    return {
+      findings: listFindings(db, query),
+      total: countFindings(db, query),
+    };
+  });
+
   router.get('/api/runs/:id', (ctx) => {
     const run = getRun(db, numericParam(ctx, 'id'));
     if (!run) throw notFound('No such run');
@@ -388,6 +411,9 @@ export function buildApiRouter(deps: ApiDeps): Router {
     commands: COMMANDS,
     fileCommands: [...FILE_COMMANDS],
     auditCodes: AUDIT_CODES,
+    // Labels and severities travel with the codes so the UI can name an issue
+    // the same way the CLI does, rather than keeping its own copy that drifts.
+    auditIssues: ISSUES.map(({ code, severity, label }) => ({ code, severity, label })),
     metadataFields: [...FILLABLE],
     normalizeFields: [...NORMALIZABLE],
     providers: [...PROVIDER_NAMES],
