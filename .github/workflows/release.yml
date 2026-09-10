@@ -54,8 +54,20 @@ jobs:
   # A tag alone gives nothing to read. abs-butler tells an operator that a new
   # version exists and links here for what is in it, so the page has to exist
   # before the notice can point at it.
+  #
+  # Gated on the image, because the three jobs here used to run in parallel and
+  # the failure that produced was quiet and bad: a failed build still published
+  # a release page announcing a version, and the in-app update notice sends
+  # people straight to it. An operator would read "0.5.1 is available", follow
+  # the link, and find nothing to pull. Better to publish nothing than to
+  # announce a version that does not exist.
+  #
+  # The snap is deliberately not a gate. It is published to a separate store on
+  # its own schedule, and one architecture failing there should not withhold an
+  # image that built correctly.
   release:
     name: Publish the GitHub release
+    needs: [docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write
