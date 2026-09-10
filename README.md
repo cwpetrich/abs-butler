@@ -243,6 +243,30 @@ abs-butler serve                        # the web UI and scheduler
 Under Docker, prefix with `docker compose run --rm cli`. Add `--json` to anything for piping, and
 `--limit N` for a quick trial against part of a library.
 
+### What to run, in what order
+
+Two of these depend on each other; the rest is preference.
+
+1. **`audit`** — read-only. What is wrong, and how much of it.
+2. **`metadata`** — fills blank description, year, publisher, language and **ISBN**.
+3. **`normalize`** — titles, subtitles, authors, narrators, series.
+4. **`rate`** — age bands and content flags.
+5. **`organize`** — moves folders on disk. Last, always.
+
+`metadata` before `normalize` is a real dependency: an item with no ASIN and no ISBN is skipped by
+`normalize` outright, because a fuzzy match is capped below the rewrite threshold by design and so
+could not change the outcome. Filling ISBNs first is what lets providers correct those books at all.
+
+`organize` last matters more. The default template is `{author}/{series}/{sequence} - {title}`, so
+it bakes whatever the metadata says at that moment into the folder path. Run it before `normalize`
+and every path is rebuilt from names that are about to change.
+
+`rate` after `normalize` is a softer preference: lookups match on title and author, so cleaner
+values match better.
+
+Every command is a dry run until `--apply`. `organize` is the one `revert` cannot undo — it moves
+files and records no revisions — so its dry run is the only preview you get.
+
 ### Auditing
 
 Issue codes: `missing-on-disk`, `invalid`, `no-audio`, `missing-title`, `missing-author`,
@@ -251,6 +275,24 @@ Issue codes: `missing-on-disk`, `invalid`, `no-audio`, `missing-title`, `missing
 
 Duplicates are found by normalizing title and author, so `The Hobbit` by `J.R.R. Tolkien` and
 `Hobbit, The (Unabridged)` by `Tolkien, J.R.R.` land in the same group.
+
+**A first audit flags everything, and that is not a fault.** `unrated` is true of every book until
+`rate` has run once, so a fresh library reports 100% affected. Read the breakdown, not the total.
+
+Counts alone are not actionable — "37 books have no narrator" cannot be acted on until you know
+which 37 — so the affected items are kept with the run:
+
+```
+abs-butler audit --details              # the item table, alongside the counts
+```
+
+In the web UI the same detail is on the run's page under **What the audit found**, where each issue
+count doubles as a filter: click *No ISBN or ASIN* to see exactly those books. Detail is kept for
+the ten most recent audits; the counts survive for as long as the run is in history.
+
+The one count worth reading first is **`unmatched`**. Those books carry no ISBN and no ASIN, so no
+provider can rewrite them — if that number is high, `metadata` is doing real work before
+`normalize` can.
 
 ### Age ratings and content flags
 
