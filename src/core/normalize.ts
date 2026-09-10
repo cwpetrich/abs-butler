@@ -2,7 +2,6 @@ import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
-import { buildProviders } from '../providers/index.js';
 import {
   isBlank,
   normalizeAuthor,
@@ -10,7 +9,7 @@ import {
   normalizeTitle,
   normalizeTitleText,
 } from '../util/text.js';
-import { lookupItem, type LookupDeps } from './lookup.js';
+import { lookupItem, lookupDepsFor } from './lookup.js';
 import { MATCH_MIN_IDENTITY, MATCH_MIN_REWRITE, type Candidate } from './matching.js';
 import { itemQuery } from './query.js';
 import { applyPatch } from './revisions.js';
@@ -349,6 +348,77 @@ function unachievableRename(field: Normalizable, from: string | null, to: string
   return from.toLowerCase() === to.toLowerCase();
 }
 
+/**
+ * What the sources that identified this edition agree on, for one field.
+ */
+export interface ProviderVote<T> {
+  value: T;
+  /** Every source that gave this value, most-trusted first. */
+  providers: string[];
+}
+
+/**
+ * Counts the sources rather than believing the first one.
+ *
+ * Before this, a rewrite took whatever the single best-scoring candidate said
+ * and the rest were decoration. Two things were wrong with that. A source with
+ * nothing to say about a field still won it — Audible carries a subtitle where
+ * AudioSilo carries none, so a reordering of the provider list could have
+ * replaced a correct subtitle with nothing. And where sources genuinely
+ * disagree — "The Mistborn Saga" against "Mistborn" — the answer was decided by
+ * position in an array rather than by evidence.
+ *
+ * So each field is settled on its own: a source only votes where it has a
+ * value, the most-agreed value wins, and a tie goes to the most trusted source
+ * that offered it. `candidates` arrives sorted by match strength with the
+ * configured provider order breaking its ties, so iterating in order and only
+ * replacing the leader on a *strictly* higher count is exactly that rule.
+ *
+ * Every voter has already cleared MATCH_MIN_REWRITE, so counting them adds
+ * reach without lowering the bar: this changes which identified answer is
+ * chosen, never whether an unidentified one may be used.
+ */
+export function voteOn<T>(
+  candidates: Candidate[],
+  read: (result: Candidate['result']) => T | null | undefined,
+  key: (value: T) => string,
+): ProviderVote<T> | null {
+  const groups = new Map<string, ProviderVote<T>>();
+
+  for (const candidate of candidates) {
+    const value = read(candidate.result);
+    if (value === null || value === undefined) continue;
+    const identity = key(value);
+    if (!identity) continue;
+
+    const group = groups.get(identity);
+    // The first source to say it also decides how it is written, which is why
+    // insertion order matters: it is the most trusted one that said it.
+    if (group) group.providers.push(candidate.result.provider);
+    else groups.set(identity, { value, providers: [candidate.result.provider] });
+  }
+
+  let winner: ProviderVote<T> | null = null;
+  for (const group of groups.values()) {
+    if (!winner || group.providers.length > winner.providers.length) winner = group;
+  }
+  return winner;
+}
+
+/** A list of people votes as a unit: the same names in the same order agree. */
+function peopleKey(names: string[]): string {
+  return names.map((name) => normalizeAuthor(name)).join('|');
+}
+
+function nonEmpty(names: string[] | undefined): string[] | null {
+  return names && names.length > 0 ? names : null;
+}
+
+/** How a voted proposal explains itself in a dry run: "audible + audnexus". */
+function attribution(vote: ProviderVote<unknown>): string {
+  return vote.providers.join(' + ');
+}
+
 function propose(
   list: FieldProposal[],
   field: Normalizable,
@@ -424,20 +494,28 @@ export function planNormalize(
   const wanted = new Set(options.fields);
   const proposals: FieldProposal[] = [];
 
-  // Only an identifier-grade match may rewrite what someone can already read.
-  const best = candidates[0] ?? null;
-  const trusted = best && best.match.score >= MATCH_MIN_REWRITE ? best : null;
+  // Only identifier-grade matches may rewrite what someone can already read —
+  // every one of them, not merely the best. See voteOn.
+  const rewritable = candidates.filter((c) => c.match.score >= MATCH_MIN_REWRITE);
 
   if (wanted.has('title')) {
     const current = metadata?.title ?? null;
     propose(proposals, 'title', current, normalizeTitleText(current), 'local', 'article/edition text');
-    if (trusted) {
-      propose(proposals, 'title', current, normalizeTitleText(trusted.result.title) ?? trusted.result.title, 'provider', trusted.result.provider);
-    }
+    const vote = voteOn(
+      rewritable,
+      (r) => (r.title ? normalizeTitleText(r.title) ?? r.title : null),
+      normalizeTitle,
+    );
+    if (vote) propose(proposals, 'title', current, vote.value, 'provider', attribution(vote));
   }
 
-  if (wanted.has('subtitle') && trusted) {
-    propose(proposals, 'subtitle', metadata?.subtitle ?? null, trusted.result.subtitle, 'provider', trusted.result.provider);
+  if (wanted.has('subtitle')) {
+    // A source with no subtitle abstains rather than voting for an empty one,
+    // which is the whole point of settling fields separately.
+    const vote = voteOn(rewritable, (r) => r.subtitle ?? null, normalizeTitle);
+    if (vote) {
+      propose(proposals, 'subtitle', metadata?.subtitle ?? null, vote.value, 'provider', attribution(vote));
+    }
   }
 
   if (wanted.has('author')) {
@@ -462,9 +540,10 @@ export function planNormalize(
     // provider that lists fewer authors than the library would silently delete
     // the rest. Audible routinely credits only the lead author of a
     // collaboration, which makes this the common case rather than the odd one.
-    const fromProvider = trusted?.result.authors ?? [];
-    if (fromProvider.length >= current.length && fromProvider.length > 0) {
-      propose(proposals, 'author', currentText, fromProvider.join(', '), 'provider', trusted!.result.provider, fromProvider);
+    const vote = voteOn(rewritable, (r) => nonEmpty(r.authors), peopleKey);
+    const fromProvider = vote?.value ?? [];
+    if (vote && fromProvider.length >= current.length) {
+      propose(proposals, 'author', currentText, fromProvider.join(', '), 'provider', attribution(vote), fromProvider);
     }
   }
 
@@ -479,9 +558,10 @@ export function planNormalize(
       propose(proposals, 'narrator', currentText || null, joinIfChanged(agreed, current), 'consensus', 'library spelling', agreed);
     }
 
-    const narrated = trusted?.result.narrators ?? [];
-    if (narrated.length >= current.length && narrated.length > 0) {
-      propose(proposals, 'narrator', currentText || null, narrated.join(', '), 'provider', trusted!.result.provider, narrated);
+    const vote = voteOn(rewritable, (r) => nonEmpty(r.narrators), peopleKey);
+    const narrated = vote?.value ?? [];
+    if (vote && narrated.length >= current.length) {
+      propose(proposals, 'narrator', currentText || null, narrated.join(', '), 'provider', attribution(vote), narrated);
     }
   }
 
@@ -499,10 +579,12 @@ export function planNormalize(
     // A provider knows about one series, so it can rename the book's own but
     // never enumerate the set. Applied to the first entry, or added when there
     // is none at all.
-    const found = trusted?.result.series?.name;
-    if (found) {
-      const merged = current.length > 0 ? [found, ...current.slice(1)] : [found];
-      propose(proposals, 'series', currentText, joinIfChanged(merged, current), 'provider', trusted!.result.provider, merged);
+    // The field the sources most often disagree on, and the reason the vote
+    // exists: "The Mistborn Saga" and "Mistborn" are both real names for it.
+    const vote = voteOn(rewritable, (r) => r.series?.name ?? null, normalizeTitle);
+    if (vote) {
+      const merged = current.length > 0 ? [vote.value, ...current.slice(1)] : [vote.value];
+      propose(proposals, 'series', currentText, joinIfChanged(merged, current), 'provider', attribution(vote), merged);
     }
   }
 
@@ -644,15 +726,7 @@ export async function runNormalizeTask(
     throw new Error(`Unknown field(s): ${invalid.join(', ')}. Valid: ${NORMALIZABLE.join(', ')}`);
   }
 
-  const providers = buildProviders(
-    {
-      googleBooksApiKey: ctx.settings.googleBooksApiKey || undefined,
-      audibleRegion: ctx.settings.audibleRegion,
-      providerConcurrency: ctx.settings.providerConcurrency,
-    },
-    options.providers ?? ctx.settings.providers,
-  );
-  const deps: LookupDeps = { providers, db: ctx.db, cacheDays: ctx.settings.lookupCacheDays };
+  const deps = lookupDepsFor(ctx, options.providers);
 
   const libraries = await resolveLibraries(ctx, options.library);
   // Expanded: this command reads and rewrites the structured author, narrator
@@ -674,25 +748,30 @@ export async function runNormalizeTask(
 
   log.info(`checking ${items.length} item(s) for ${requested.join(', ')} inconsistencies…`);
 
-  const plans = await mapLimit(items, ctx.settings.providerConcurrency, async (item) => {
-    // An item with no ISBN and no ASIN can never reach MATCH_MIN_REWRITE — a
-    // fuzzy match is capped below it by design — so the lookup could not
-    // change the outcome and is skipped outright. On a library ABS has not
-    // matched, that makes this command entirely local and effectively free.
-    const query = itemQuery(item);
-    const identified = Boolean(query.asin || query.isbn);
-    const wanted = new Set(requested);
-    // The work tier needs Open Library whether or not the item carries an
-    // identifier, since a work key is what an unidentified book most needs;
-    // the rewrite tiers still ignore anything below identifier grade.
-    const needsLookup = identified || wanted.has('work');
-    const candidates = needsLookup ? (await lookupItem(deps, query)).candidates : [];
+  const plans = await mapLimit(
+    items,
+    ctx.settings.providerConcurrency,
+    async (item) => {
+      // An item with no ISBN and no ASIN can never reach MATCH_MIN_REWRITE — a
+      // fuzzy match is capped below it by design — so the lookup could not
+      // change the outcome and is skipped outright. On a library ABS has not
+      // matched, that makes this command entirely local and effectively free.
+      const query = itemQuery(item);
+      const identified = Boolean(query.asin || query.isbn);
+      const wanted = new Set(requested);
+      // The work tier needs Open Library whether or not the item carries an
+      // identifier, since a work key is what an unidentified book most needs;
+      // the rewrite tiers still ignore anything below identifier grade.
+      const needsLookup = identified || wanted.has('work');
+      const candidates = needsLookup ? (await lookupItem(deps, query)).candidates : [];
 
-    return planNormalize(item, candidates, consensus, {
-      fields: requested,
-      ...(options.noConsensus === undefined ? {} : { noConsensus: options.noConsensus }),
-    });
-  });
+      return planNormalize(item, candidates, consensus, {
+        fields: requested,
+        ...(options.noConsensus === undefined ? {} : { noConsensus: options.noConsensus }),
+      });
+    },
+    { signal: ctx.signal },
+  );
 
   const actionable = plans.filter((p) => p.proposals.length > 0);
   const fieldsToChange = actionable.reduce((sum, p) => sum + p.proposals.length, 0);
@@ -722,6 +801,7 @@ export async function runNormalizeTask(
   let updated = 0;
   if (options.apply) {
     for (const plan of applicable) {
+      ctx.signal?.throwIfAborted();
       const item = byId.get(plan.itemId)!;
       await applyPatch(ctx, item, planToPatch(item, plan));
       updated += 1;

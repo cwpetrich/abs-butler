@@ -14,6 +14,7 @@ import {
   dropNarratorsFromAuthors,
   findNarratorsByTrade,
   itemWorkKey,
+  voteOn,
   workKeyFrom,
   WORK_TAG_PREFIX,
   type Consensus,
@@ -466,6 +467,138 @@ describe('planNormalize preserves collaborators', () => {
       { name: 'The Stormlight Archive', sequence: '1' },
       { name: 'The Cosmere', sequence: '4' },
     ]);
+  });
+});
+
+describe('voting across sources', () => {
+  /** An identifier-grade match, the only kind allowed to rewrite anything. */
+  const src = (provider: string, result: Partial<Candidate['result']>): Candidate => ({
+    result: { provider, signals: [], ...result },
+    match: { score: 1, basis: 'asin', reasons: [] },
+  });
+
+  const name = (v: string | null | undefined) => v ?? null;
+  const same = (v: string) => v.toLowerCase();
+
+  it('takes the value the most sources gave', () => {
+    const vote = voteOn(
+      [
+        src('audible', { title: 'The Mistborn Saga' }),
+        src('audiosilo', { title: 'Mistborn' }),
+        src('audnexus', { title: 'Mistborn' }),
+      ],
+      (r) => name(r.title),
+      same,
+    );
+    expect(vote).toEqual({ value: 'Mistborn', providers: ['audiosilo', 'audnexus'] });
+  });
+
+  // The configured order is the tie-break, not the decision.
+  it('falls back to the most trusted source when nothing is agreed', () => {
+    const vote = voteOn(
+      [src('audible', { title: 'A' }), src('audiosilo', { title: 'B' })],
+      (r) => name(r.title),
+      same,
+    );
+    expect(vote).toEqual({ value: 'A', providers: ['audible'] });
+  });
+
+  it('keeps the winning form from the most trusted source that said it', () => {
+    const vote = voteOn(
+      [
+        src('audible', { title: 'THE HOBBIT' }),
+        src('audiosilo', { title: 'the hobbit' }),
+        src('audnexus', { title: 'Something Else' }),
+      ],
+      (r) => name(r.title),
+      same,
+    );
+    expect(vote!.value).toBe('THE HOBBIT');
+    expect(vote!.providers).toEqual(['audible', 'audiosilo']);
+  });
+
+  it('lets a source abstain rather than vote for nothing', () => {
+    const vote = voteOn(
+      [src('audible', {}), src('audiosilo', { title: 'Mistborn' })],
+      (r) => name(r.title),
+      same,
+    );
+    expect(vote).toEqual({ value: 'Mistborn', providers: ['audiosilo'] });
+  });
+
+  it('has no answer when nobody does', () => {
+    expect(voteOn([src('audible', {})], (r) => name(r.title), same)).toBeNull();
+    expect(voteOn([], (r) => name(r.title), same)).toBeNull();
+  });
+});
+
+describe('planNormalize across several sources', () => {
+  const src = (provider: string, result: Partial<Candidate['result']>, score = 1): Candidate => ({
+    result: { provider, signals: [], ...result },
+    match: { score, basis: score === 1 ? 'asin' : 'fuzzy', reasons: [] },
+  });
+
+  /**
+   * The hazard field-level settling exists for: AudioSilo carries no subtitles,
+   * and under the old single-winner rule a reordering of the provider list
+   * would have replaced a correct subtitle with nothing.
+   */
+  it('does not let a source with no subtitle erase one', () => {
+    const plan = planNormalize(
+      book({ subtitle: 'Wrong Subtitle' }),
+      [src('audiosilo', { title: 'A Book' }), src('audible', { title: 'A Book', subtitle: 'Book One' })],
+      noConsensus,
+      { fields: ['subtitle'] },
+    );
+    expect(plan.proposals).toEqual([
+      expect.objectContaining({ field: 'subtitle', to: 'Book One', source: 'provider' }),
+    ]);
+  });
+
+  it('renames a series to what two of three sources call it', () => {
+    const series = (n: string) => ({ name: n });
+    const plan = planNormalize(
+      book({ series: [{ id: 's', name: 'Mistborn Saga', sequence: '1' }] }),
+      [
+        src('audible', { series: series('The Mistborn Saga') }),
+        src('audiosilo', { series: series('Mistborn') }),
+        src('audnexus', { series: series('Mistborn') }),
+      ],
+      noConsensus,
+      { fields: ['series'] },
+    );
+    expect(plan.proposals[0]).toMatchObject({
+      field: 'series',
+      to: 'Mistborn',
+      source: 'provider',
+      detail: 'audiosilo + audnexus',
+    });
+  });
+
+  // Counting sources must not become a way in for answers that never
+  // identified the book: only matches past MATCH_MIN_REWRITE get a vote.
+  it('gives no vote to a source that only matched on the title', () => {
+    const plan = planNormalize(
+      book({ title: 'A Book' }),
+      [
+        src('audible', { title: 'A Book' }),
+        src('audiosilo', { title: 'A Different Book' }, 0.85),
+        src('audnexus', { title: 'A Different Book' }, 0.85),
+      ],
+      noConsensus,
+      { fields: ['title'] },
+    );
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('still reports a single source as itself', () => {
+    const plan = planNormalize(
+      book({ narrators: ['Wrong Person'] }),
+      [src('audible', { narrators: ['Michael Kramer'] })],
+      noConsensus,
+      { fields: ['narrator'] },
+    );
+    expect(plan.proposals[0]).toMatchObject({ to: 'Michael Kramer', detail: 'audible' });
   });
 });
 
