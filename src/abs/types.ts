@@ -44,6 +44,14 @@ export interface AbsMedia {
   tags: string[];
   numTracks?: number;
   numAudioFiles?: number;
+  /**
+   * Set when the book has an ebook file. AudiobookShelf reports this in two
+   * shapes — a format string on the minified item a library listing returns,
+   * an object on the expanded one — and both are read, so a caller does not
+   * have to know which listing it is holding.
+   */
+  ebookFormat?: string | null;
+  ebookFile?: { ino?: string; ebookFormat?: string } | null;
   duration?: number;
   size?: number;
 }

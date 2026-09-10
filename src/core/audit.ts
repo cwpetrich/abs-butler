@@ -27,17 +27,40 @@ export interface IssueSpec {
   test?: (item: AbsLibraryItem) => boolean;
 }
 
+/**
+ * A book library is not only audiobooks. AudiobookShelf holds EPUBs and PDFs
+ * in the same libraries, and one of those has no audio by its nature — which
+ * is a description of the book, not a fault in it.
+ */
+export function hasAudio(item: AbsLibraryItem): boolean {
+  return (item.media?.numTracks ?? item.media?.numAudioFiles ?? 0) > 0;
+}
+
+export function hasEbook(item: AbsLibraryItem): boolean {
+  return Boolean(item.media?.ebookFormat || item.media?.ebookFile);
+}
+
+/** Reading copy only. An item carrying both is an audiobook with an ebook beside it. */
+export function isEbookOnly(item: AbsLibraryItem): boolean {
+  return !hasAudio(item) && hasEbook(item);
+}
+
 export const ISSUES: IssueSpec[] = [
   { code: 'missing-on-disk', severity: 'error', label: 'Files missing on disk', test: (i) => i.isMissing === true },
   { code: 'invalid', severity: 'error', label: 'Marked invalid by ABS', test: (i) => i.isInvalid === true },
-  { code: 'no-audio', severity: 'error', label: 'No audio tracks', test: (i) => (i.media?.numTracks ?? i.media?.numAudioFiles ?? 0) === 0 },
+  // An item with no audio *and* no ebook is empty, which is a real fault: the
+  // import produced a record with nothing in it. One with an ebook is a
+  // reading copy and is working exactly as intended.
+  { code: 'no-audio', severity: 'error', label: 'No audio or ebook files', test: (i) => !hasAudio(i) && !hasEbook(i) },
   { code: 'missing-title', severity: 'error', label: 'No title', test: (i) => isBlank(i.media?.metadata?.title) },
   { code: 'missing-author', severity: 'warn', label: 'No author', test: (i) => isBlank(itemAuthor(i)) },
   { code: 'missing-cover', severity: 'warn', label: 'No cover art', test: (i) => isBlank(i.media?.coverPath) },
   { code: 'unmatched', severity: 'warn', label: 'No ISBN or ASIN (never matched)', test: (i) => isBlank(i.media?.metadata?.isbn) && isBlank(i.media?.metadata?.asin) },
   { code: 'missing-description', severity: 'info', label: 'No description', test: (i) => isBlank(i.media?.metadata?.description) },
   { code: 'missing-year', severity: 'info', label: 'No published year', test: (i) => isBlank(i.media?.metadata?.publishedYear) },
-  { code: 'missing-narrator', severity: 'info', label: 'No narrator', test: (i) => isBlank(i.media?.metadata?.narratorName) && (i.media?.metadata?.narrators?.length ?? 0) === 0 },
+  // Not asked of a reading copy, which has no narrator to be missing. An item
+  // holding both an audiobook and an ebook is still asked.
+  { code: 'missing-narrator', severity: 'info', label: 'No narrator', test: (i) => !isEbookOnly(i) && isBlank(i.media?.metadata?.narratorName) && (i.media?.metadata?.narrators?.length ?? 0) === 0 },
   { code: 'unrated', severity: 'info', label: 'No age rating from abs-butler', test: (i) => !(i.media?.tags ?? []).includes(TAG_PREFIX.marker) },
   { code: 'duplicate', severity: 'warn', label: 'Possible duplicates' },
 ];

@@ -8,7 +8,7 @@ import { closeDb, openDb, type Db } from '../db/index.js';
 import { countFindings, listFindings } from '../db/findings.js';
 import { createRun } from '../db/runs.js';
 import { DEFAULT_SETTINGS } from '../db/settings.js';
-import { runAuditTask } from './audit.js';
+import { auditItems, runAuditTask } from './audit.js';
 
 /**
  * An audit that only counts is not actionable: "37 books have no narrator"
@@ -58,6 +58,44 @@ const items = [
         description: 'A matchmaker.',
         publishedYear: '1815',
         narratorName: 'Juliet Stevenson',
+      },
+    },
+  },
+  {
+    // An EPUB with no audio: a reading copy, not a broken import.
+    id: 'item-4',
+    relPath: 'Tolkien/The Hobbit',
+    media: {
+      id: 'm4',
+      coverPath: '/covers/4.jpg',
+      tags: ['abs-butler:rated'],
+      numTracks: 0,
+      ebookFormat: 'epub',
+      metadata: {
+        title: 'The Hobbit',
+        authorName: 'J.R.R. Tolkien',
+        isbn: '9780547928227',
+        description: 'A hobbit.',
+        publishedYear: '1937',
+      },
+    },
+  },
+  {
+    // Neither audio nor an ebook: an import that produced an empty record.
+    id: 'item-5',
+    relPath: 'Empty/Nothing',
+    media: {
+      id: 'm5',
+      coverPath: '/covers/5.jpg',
+      tags: ['abs-butler:rated'],
+      numTracks: 0,
+      metadata: {
+        title: 'Nothing At All',
+        authorName: 'A Writer',
+        isbn: '9780000000000',
+        description: 'Empty.',
+        publishedYear: '2020',
+        narratorName: 'Nobody',
       },
     },
   },
@@ -115,14 +153,14 @@ describe('runAuditTask', () => {
     const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
 
     return runAuditTask(context(runId)).then((result) => {
-      expect(result.scanned).toBe(3);
-      expect(result.itemsWithIssues).toBe(2);
+      expect(result.scanned).toBe(5);
+      expect(result.itemsWithIssues).toBe(3);
 
       // Every audited item is recorded, including the one with nothing wrong:
       // a book missing from the report is indistinguishable from one that was
       // never scanned.
       const stored = listFindings(db, { runId });
-      expect(stored).toHaveLength(3);
+      expect(stored).toHaveLength(5);
 
       const mystery = stored.find((f) => f.itemId === 'item-2')!;
       // The second book is missing nearly everything, and each gap is named.
@@ -149,12 +187,15 @@ describe('runAuditTask', () => {
     await runAuditTask(context(runId));
 
     const clean = listFindings(db, { runId, status: 'clean' });
-    expect(clean.map((f) => f.itemId)).toEqual(['item-3']);
+    // item-4 is an EPUB with no audio and no narrator, and both of those are
+    // descriptions of a reading copy rather than faults in it.
+    expect(clean.map((f) => f.itemId).sort()).toEqual(['item-3', 'item-4']);
     expect(clean[0]!.issues).toEqual([]);
 
     expect(listFindings(db, { runId, status: 'issues' }).map((f) => f.itemId).sort()).toEqual([
       'item-1',
       'item-2',
+      'item-5',
     ]);
   });
 
@@ -164,12 +205,41 @@ describe('runAuditTask', () => {
 
     // item-2 is missing nearly everything, item-1 is only unrated, item-3 is
     // fine — so attention-first ordering is 2, 1, 3.
-    expect(listFindings(db, { runId }).map((f) => f.itemId)).toEqual(['item-2', 'item-1', 'item-3']);
+    const order = listFindings(db, { runId }).map((f) => f.itemId);
+    expect(order[0]).toBe('item-2');
+    expect(order.slice(-2).sort()).toEqual(['item-3', 'item-4']);
+  });
+
+  it('does not call an ebook a broken book', async () => {
+    const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
+    const result = await runAuditTask(context(runId));
+
+    // The whole point: an EPUB has no audio because it is an EPUB.
+    expect(result.issueCounts['no-audio']).toBe(1);
+    const empty = listFindings(db, { runId }).find((f) => f.itemId === 'item-5')!;
+    expect(empty.issues).toContain('no-audio');
+
+    const ebook = listFindings(db, { runId }).find((f) => f.itemId === 'item-4')!;
+    expect(ebook.issues).not.toContain('no-audio');
+    // Nor is it missing a narrator it was never going to have.
+    expect(ebook.issues).not.toContain('missing-narrator');
+  });
+
+  it('still asks an audiobook for its narrator when an ebook sits beside it', () => {
+    const both = [
+      {
+        id: 'both',
+        relPath: 'X/Y',
+        media: { id: 'mb', coverPath: '/c.jpg', tags: [], numTracks: 4, ebookFormat: 'epub', metadata: { title: 'Both', authorName: 'A', isbn: '9780000000001', description: 'd', publishedYear: '2001' } },
+      },
+    ] as unknown as Parameters<typeof auditItems>[0];
+
+    expect(auditItems(both)[0]!.issues).toContain('missing-narrator');
   });
 
   it('records nothing when no run owns the work', async () => {
     const result = await runAuditTask(context());
-    expect(result.findings).toHaveLength(3);
+    expect(result.findings).toHaveLength(5);
     expect(countFindings(db, { runId: 0 })).toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS n FROM findings').get()).toMatchObject({ n: 0 });
   });
