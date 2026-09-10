@@ -37,7 +37,7 @@ export class GoogleBooksProvider implements MetadataProvider {
     return true;
   }
 
-  async search(query: BookQuery): Promise<ProviderResult[]> {
+  async search(query: BookQuery, signal?: AbortSignal): Promise<ProviderResult[]> {
     const terms: string[] = [];
     if (query.isbn) {
       terms.push(`isbn:${query.isbn.replace(/[^0-9Xx]/g, '')}`);
@@ -52,7 +52,7 @@ export class GoogleBooksProvider implements MetadataProvider {
     url.searchParams.set('printType', 'books');
     if (this.apiKey) url.searchParams.set('key', this.apiKey);
 
-    const data = await getJson<{ items?: GbVolume[] }>(url);
+    const data = await getJson<{ items?: GbVolume[] }>(url, { signal });
     return (data?.items ?? [])
       .filter((volume): volume is GbVolume & { volumeInfo: NonNullable<GbVolume['volumeInfo']> } =>
         Boolean(volume.volumeInfo),

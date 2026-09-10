@@ -106,11 +106,14 @@ export function startWebServer(db: Db, config: WebConfig): Promise<WebServer> {
       resolvePromise({
         server,
         runner,
-        close: () =>
-          new Promise<void>((done) => {
-            runner.stop();
-            server.close(() => done());
-          }),
+        close: async () => {
+          // Stopped first, then waited on: the running job is asked to wind up
+          // and given the chance to write its last log lines and its final
+          // status, since the caller closes the database next.
+          runner.stop();
+          await runner.drained();
+          await new Promise<void>((done) => server.close(() => done()));
+        },
       });
     });
   });

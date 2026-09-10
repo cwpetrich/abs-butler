@@ -317,17 +317,17 @@ export function buildApiRouter(deps: ApiDeps): Router {
     });
   });
 
+  /**
+   * Stops a run. Queued runs disappear; a running one is asked to stop and
+   * ends within a request or two, so the answer here is "asked", not "done" —
+   * the run's own status is what says it finished.
+   */
   router.post('/api/runs/:id/cancel', (ctx) => {
     const id = numericParam(ctx, 'id');
-    const cancelled = runner.cancel(id);
-    if (!cancelled) {
-      throw badRequest(
-        runner.activeRunId === id
-          ? 'This run is already executing and cannot be cancelled mid-flight.'
-          : 'This run is not queued.',
-      );
+    if (!runner.cancel(id)) {
+      throw badRequest('This run has already finished.');
     }
-    return { ok: true };
+    return { ok: true, stopping: runner.activeRunId === id };
   });
 
   // ---- logs ----

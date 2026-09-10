@@ -22,6 +22,9 @@ import { runTask, summarizeResult, FILE_COMMANDS } from './tasks.js';
 import { unavailableMessage } from './organize.js';
 import { checkLocalRoot } from './capability.js';
 
+/** The one wording for a stopped run, used in its log, its record, and the UI. */
+export const STOPPED = 'Stopped — this run was cancelled before it finished.';
+
 export interface EnqueueInput {
   command: RunCommand;
   options?: Record<string, unknown>;
@@ -39,7 +42,11 @@ export interface EnqueueInput {
 export class JobRunner extends EventEmitter {
   private queue: number[] = [];
   private active: number | null = null;
+  /** Aborts the run currently executing. Null whenever nothing is running. */
+  private activeController: AbortController | null = null;
   private draining = false;
+  /** Resolves when the queue is empty; see `drained`. */
+  private idle: Promise<void> = Promise.resolve();
   private schedulerTimer: NodeJS.Timeout | undefined;
   private stopped = false;
 
@@ -76,18 +83,43 @@ export class JobRunner extends EventEmitter {
     return run;
   }
 
-  /** Removes a queued run. A run already executing is left alone. */
+  /**
+   * Stops a run, queued or executing.
+   *
+   * A queued run is simply dropped. One already executing is asked to stop:
+   * the signal reaches the loop over items and the HTTP layer under it, so the
+   * run ends within a request or two rather than at the end of the library.
+   * Work already applied stays applied — a rate run that tagged 300 books
+   * before being stopped has tagged 300 books, and the run's undo record
+   * covers exactly those. Returns false only when the run is already over.
+   */
   cancel(runId: number): boolean {
     const index = this.queue.indexOf(runId);
-    if (index === -1) return false;
-    this.queue.splice(index, 1);
-    completeRun(this.db, runId, { status: 'cancelled' });
-    this.emit('updated', getRun(this.db, runId));
-    return true;
+    if (index !== -1) {
+      this.queue.splice(index, 1);
+      completeRun(this.db, runId, { status: 'cancelled' });
+      this.emit('updated', getRun(this.db, runId));
+      return true;
+    }
+
+    if (this.active === runId && this.activeController) {
+      // Aborting twice is not an error, but it is not news either.
+      if (!this.activeController.signal.aborted) {
+        log.info(`run ${runId}: stop requested`);
+        this.activeController.abort(new Error(STOPPED));
+      }
+      return true;
+    }
+
+    return false;
   }
 
-  private async drain(): Promise<void> {
-    if (this.draining || this.stopped) return;
+  private drain(): Promise<void> {
+    if (!this.draining && !this.stopped) this.idle = this.runQueue();
+    return this.idle;
+  }
+
+  private async runQueue(): Promise<void> {
     this.draining = true;
     try {
       while (this.queue.length > 0 && !this.stopped) {
@@ -99,11 +131,28 @@ export class JobRunner extends EventEmitter {
     }
   }
 
+  /**
+   * Resolves once nothing is executing — after `stop`, that is the run winding
+   * up. Shutdown waits on this so the run's last log lines and its final status
+   * are written before the database closes; without it a stopped run is still
+   * marked 'running' at exit and is reconciled as a failure on the next start.
+   *
+   * Bounded, because a task that ignores its signal must not hold the process
+   * open indefinitely. Exceeding the bound is the orphan case, and recovery
+   * already handles it.
+   */
+  async drained(timeoutMs = 10_000): Promise<void> {
+    const timer = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs).unref());
+    await Promise.race([this.idle, timer]);
+  }
+
   private async execute(runId: number): Promise<void> {
     const run = getRun(this.db, runId);
     if (!run || run.status === 'cancelled') return;
 
     this.active = runId;
+    const controller = new AbortController();
+    this.activeController = controller;
     markRunning(this.db, runId);
     this.emit('started', getRun(this.db, runId));
 
@@ -122,7 +171,11 @@ export class JobRunner extends EventEmitter {
     const flushTimer = setInterval(flush, 500);
 
     try {
-      const ctx = openContext(this.db);
+      // `runId` is what lets every write this run makes record how to undo it,
+      // and `signal` is what lets it be stopped; both belong to the run rather
+      // than to the connection, so they are added here rather than in
+      // openContext, which the CLI shares.
+      const ctx = { ...openContext(this.db), runId, signal: controller.signal };
 
       // Re-checked here as well as at enqueue: a mount can disappear between
       // queueing a job and running it, and a half-finished reorganization is
@@ -138,22 +191,39 @@ export class JobRunner extends EventEmitter {
       );
 
       flush();
-      completeRun(this.db, runId, {
-        status: 'success',
-        summary: summarizeResult(run.command, result),
-      });
+      // A task that noticed the stop and returned early — `organize` finishes
+      // the move it was making rather than throwing — still ended because it
+      // was stopped. Its summary is kept: it says how far it got.
+      const summary = summarizeResult(run.command, result);
+      completeRun(
+        this.db,
+        runId,
+        controller.signal.aborted
+          ? { status: 'cancelled', summary, error: STOPPED }
+          : { status: 'success', summary },
+      );
       this.emit('finished', getRun(this.db, runId));
     } catch (err) {
       const message = (err as Error).message;
-      buffer.push({ level: 'error', message });
-      flush();
-      completeRun(this.db, runId, { status: 'failed', error: message });
-      log.error(`run ${runId} (${run.command}) failed: ${message}`);
+      // A run that was asked to stop did what it was told; recording that as a
+      // failure would put a red mark against the person who pressed the button.
+      if (controller.signal.aborted) {
+        buffer.push({ level: 'warn', message: STOPPED });
+        flush();
+        completeRun(this.db, runId, { status: 'cancelled', error: STOPPED });
+        log.warn(`run ${runId} (${run.command}) stopped`);
+      } else {
+        buffer.push({ level: 'error', message });
+        flush();
+        completeRun(this.db, runId, { status: 'failed', error: message });
+        log.error(`run ${runId} (${run.command}) failed: ${message}`);
+      }
       this.emit('finished', getRun(this.db, runId));
     } finally {
       clearInterval(flushTimer);
       flush();
       this.active = null;
+      this.activeController = null;
       this.retain();
     }
   }
@@ -199,9 +269,16 @@ export class JobRunner extends EventEmitter {
     }
   }
 
+  /** Shuts the runner down: no new work, and the current run is asked to stop. */
   stop(): void {
     this.stopped = true;
     if (this.schedulerTimer) clearInterval(this.schedulerTimer);
     this.schedulerTimer = undefined;
+    // Without this a shutdown waits out whatever the run had left, and the
+    // process is usually killed before that — which is how runs ended up
+    // orphaned and reconciled as failures on the next start.
+    if (this.activeController && !this.activeController.signal.aborted) {
+      this.activeController.abort(new Error(STOPPED));
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Connection, type Meta, type RunCommand } from '../api';
+import { api, type Connection, type Meta, type Run, type RunCommand } from '../api';
 import { Banner, Empty, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 
 export function RunsPage({
@@ -90,6 +90,7 @@ export function RunsPage({
                 <th>Status</th>
                 <th>Started</th>
                 <th>Took</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -112,6 +113,9 @@ export function RunsPage({
                   </td>
                   <td className="dim">{formatTime(run.startedAt ?? run.queuedAt)}</td>
                   <td className="dim">{formatDuration(run.startedAt, run.finishedAt)}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <StopButton run={run} onStopped={runs.reload} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -119,6 +123,39 @@ export function RunsPage({
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * Stopping a run from the list.
+ *
+ * Here rather than only on the run's own page: a run that will not finish is
+ * noticed on this list, and making someone open it first to stop it is how
+ * "there is no way to stop this" starts. Shown for anything still live —
+ * `cancel` drops a queued run outright and asks a running one to wind up.
+ */
+function StopButton({ run, onStopped }: { run: Run; onStopped: () => void }) {
+  const [asked, setAsked] = useState(false);
+  if (run.status !== 'running' && run.status !== 'queued') return null;
+
+  return (
+    <button
+      className="small danger"
+      disabled={asked}
+      onClick={async (e) => {
+        // The row navigates on click; the button does not.
+        e.stopPropagation();
+        setAsked(true);
+        try {
+          await api.cancelRun(run.id);
+        } catch {
+          setAsked(false);
+        }
+        onStopped();
+      }}
+    >
+      {asked ? 'Stopping…' : run.status === 'running' ? 'Stop' : 'Cancel'}
+    </button>
   );
 }
 

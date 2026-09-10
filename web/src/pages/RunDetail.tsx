@@ -5,6 +5,8 @@ import { LogStream } from '../components/LogStream';
 
 export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (path: string) => void }) {
   const run = useAsync(() => api.run(runId), [runId], { pollMs: 2000 });
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
 
   if (run.loading) return <Spinner />;
   if (run.error) return <Banner tone="err">{run.error}</Banner>;
@@ -13,6 +15,18 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
   const data = run.data;
   const live = data.status === 'running' || data.status === 'queued';
 
+  const stop = async () => {
+    setStopping(true);
+    setStopError(null);
+    try {
+      await api.cancelRun(data.id);
+    } catch (err) {
+      setStopError((err as Error).message);
+      setStopping(false);
+    }
+    run.reload();
+  };
+
   return (
     <>
       <div className="page-head">
@@ -20,15 +34,9 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
           Run #{data.id} <span className="dim">{data.command}</span>
         </h1>
         <div className="actions">
-          {data.status === 'queued' && (
-            <button
-              className="small danger"
-              onClick={async () => {
-                await api.cancelRun(data.id);
-                run.reload();
-              }}
-            >
-              Cancel
+          {live && (
+            <button className="small danger" disabled={stopping} onClick={() => void stop()}>
+              {stopping ? 'Stopping…' : data.status === 'running' ? 'Stop run' : 'Cancel'}
             </button>
           )}
           <Link to="/runs" navigate={navigate}>
@@ -36,6 +44,14 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
           </Link>
         </div>
       </div>
+
+      {stopError && <Banner tone="err">{stopError}</Banner>}
+      {stopping && data.status === 'running' && (
+        <Banner tone="warn">
+          Stopping — the run finishes the book it is on and then stops. Anything it already applied
+          stays applied, and this run's undo record covers exactly that much.
+        </Banner>
+      )}
 
       <div className="card">
         <div className="summary-grid">
@@ -55,7 +71,10 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
         </div>
       </div>
 
-      {data.error && <Banner tone="err">{data.error}</Banner>}
+      {/* A stopped run did what it was asked to; it is not a failure in red. */}
+      {data.error && (
+        <Banner tone={data.status === 'cancelled' ? 'warn' : 'err'}>{data.error}</Banner>
+      )}
 
       <RevertPanel run={data} onReverted={run.reload} />
 

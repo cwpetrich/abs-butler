@@ -211,7 +211,9 @@ export const api = {
     request<Run>('/api/runs', { method: 'POST', body: body(input) }),
   revertRun: (id: number, input: { apply?: boolean; force?: boolean }) =>
     request<RevertResult>(`/api/runs/${id}/revert`, { method: 'POST', body: body(input) }),
-  cancelRun: (id: number) => request<{ ok: true }>(`/api/runs/${id}/cancel`, { method: 'POST' }),
+  /** `stopping` means the run was executing: it was asked to stop, not stopped. */
+  cancelRun: (id: number) =>
+    request<{ ok: true; stopping: boolean }>(`/api/runs/${id}/cancel`, { method: 'POST' }),
 
   logs: (params: { runId?: number; afterId?: number; level?: string; search?: string; limit?: number }) => {
     const query = new URLSearchParams();

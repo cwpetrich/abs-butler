@@ -282,6 +282,14 @@ export async function runOrganizeTask(
 
   const touchedLibraries = new Set<string>();
   for (const plan of plans) {
+    // Between whole items only. A stopped run leaves the moves it already made
+    // in place — they are on disk and correct — and the rescan below still
+    // fires for the libraries it touched, so AudiobookShelf is never left
+    // pointing at paths that moved out from under it.
+    if (ctx.signal?.aborted) {
+      log.warn(`stopped after ${moved} move(s) — the rest were left where they are.`);
+      break;
+    }
     const reason = await moveBlockedReason(plan);
     if (reason) {
       log.warn(`skipping "${plan.title}" — ${reason}`);
