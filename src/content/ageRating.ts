@@ -47,6 +47,26 @@ const RULES: Rule[] = [
   { pattern: /\bages?\s*(0|1|2|3|4|5|6|7)\s*[-–]\s*(6|7|8)\b/i, band: 'early-reader', strength: 1 },
   { pattern: /\breaders? (for|level) (beginner|1|2)\b/i, band: 'early-reader', strength: 0.8 },
 
+  // A whole-catalogue kids shelf, in the two spellings the audiobook sources
+  // use: Audible's ladder root "Children's Audiobooks", and AudioSilo's bare
+  // genre label "Childrens". Both span roughly ages 0-12 in one term, so this
+  // is held deliberately weak — anything more precise ("Early Readers",
+  // "Ages 3-5") has to be able to outvote it.
+  //
+  // Anchored on the bare form rather than matched loosely, so it cannot fire on
+  // an Open Library subject like "Children's stories, American". Those already
+  // match the stronger juvenile-fiction rule below, and a second rule scoring
+  // the same idea would flip bands this tool gets right today.
+  //
+  // 0.3 rather than something rounder because band scores sum across providers:
+  // two sources saying "kids book" and one saying "picture book" put a picture
+  // book in middle grade at 0.5, which is how *The Very Hungry Caterpillar* was
+  // banded when a third kids-shelf source was added. A term spanning ages 0-12
+  // has to stay quieter than one naming a band outright, however many sources
+  // repeat it. The cost is that a book only a kids shelf knows about lands
+  // below the confidence floor and goes untagged — which is the honest result.
+  { pattern: /^(children'?s|kids'?)$|\b(children'?s|kids'?) audiobooks?\b/i, band: 'middle-grade', strength: 0.3 },
+
   { pattern: /\b(middle grade|middle-grade)\b/i, band: 'middle-grade', strength: 1 },
   { pattern: /\b(juvenile fiction|juvenile nonfiction|juvenile literature|children'?s (fiction|stories|literature))\b/i, band: 'middle-grade', strength: 0.9 },
   { pattern: /\bages?\s*(8|9|10)\s*[-–]\s*(11|12|13)\b/i, band: 'middle-grade', strength: 1 },
