@@ -65,6 +65,11 @@ export interface MetadataProvider {
    * between them needs the query alongside the result, which is scoring's job
    * (see core/matching.ts), not the provider's. Returning only the top hit is
    * what let an unrelated book through whenever it happened to rank first.
+   *
+   * `signal` belongs to the run, and aborting it must abandon the request
+   * rather than finish it quietly: a stopped run that still had a minute of
+   * lookups queued would otherwise keep talking to strangers' servers long
+   * after the person who started it asked it to stop.
    */
-  search(query: BookQuery): Promise<ProviderResult[]>;
+  search(query: BookQuery, signal?: AbortSignal): Promise<ProviderResult[]>;
 }

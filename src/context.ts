@@ -31,6 +31,14 @@ export interface TaskContext {
    * commands must go through that rather than calling the client directly.
    */
   runId?: number;
+  /**
+   * Aborted when someone stops the run. Tasks are expected to cooperate: check
+   * it before starting the next item and let it reach the network layer, so a
+   * stopped run ends within a request rather than at the end of the library.
+   *
+   * Absent on the CLI paths, where Ctrl-C already ends the process.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export const NOT_CONNECTED =
@@ -116,6 +124,7 @@ export async function collectItems(
   outer: for (const library of libraries) {
     log.info(`reading library ${library.name}…`);
     for await (const item of ctx.client.iterateLibraryItems(library.id)) {
+      ctx.signal?.throwIfAborted();
       items.push(item);
       if (options.limit && items.length >= options.limit) break outer;
     }
@@ -128,12 +137,15 @@ export async function collectItems(
     try {
       return await ctx.client.getItem(item.id);
     } catch (err) {
+      // A stopped run is the one failure worth propagating — it is the answer
+      // to a question someone asked, not a flaw in the item.
+      if (ctx.signal?.aborted) throw err;
       // One unreadable item should not abort a whole run. The minified copy is
       // still usable for everything but the structured fields.
       log.debug(`could not expand ${item.id}: ${(err as Error).message}`);
       return item;
     }
-  });
+  }, { signal: ctx.signal });
 }
 
 export function itemTitle(item: AbsLibraryItem): string {

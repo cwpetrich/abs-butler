@@ -29,7 +29,7 @@ export class OpenLibraryProvider implements MetadataProvider {
     return true;
   }
 
-  async search(query: BookQuery): Promise<ProviderResult[]> {
+  async search(query: BookQuery, signal?: AbortSignal): Promise<ProviderResult[]> {
     const url = new URL(SEARCH_URL);
     url.searchParams.set('limit', '3');
     url.searchParams.set(
@@ -44,7 +44,7 @@ export class OpenLibraryProvider implements MetadataProvider {
       if (query.author) url.searchParams.set('author', query.author);
     }
 
-    const data = await getJson<{ docs?: OlDoc[] }>(url);
+    const data = await getJson<{ docs?: OlDoc[] }>(url, { signal });
     return (data?.docs ?? []).map((doc) => toResult(this.name, doc));
   }
 }
