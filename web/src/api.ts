@@ -69,6 +69,17 @@ export interface Run {
   error: string | null;
 }
 
+/** One audited item and every issue found on it. */
+export interface Finding {
+  id: number;
+  runId: number;
+  itemId: string;
+  title: string;
+  author: string | null;
+  path: string;
+  issues: string[];
+}
+
 export interface LogEntry {
   id: number;
   runId: number | null;
@@ -133,6 +144,7 @@ export interface Meta {
   commands: RunCommand[];
   fileCommands: RunCommand[];
   auditCodes: string[];
+  auditIssues: Array<{ code: string; severity: 'error' | 'warn' | 'info'; label: string }>;
   metadataFields: string[];
   normalizeFields: string[];
   providers: string[];
@@ -207,6 +219,14 @@ export const api = {
     );
   },
   run: (id: number) => request<Run>(`/api/runs/${id}`),
+  /** Audit detail: which items, and what was wrong with each. */
+  findings: (id: number, params: { issue?: string; limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    }
+    return request<{ findings: Finding[]; total: number }>(`/api/runs/${id}/findings?${query}`);
+  },
   startRun: (input: { command: RunCommand; options: Record<string, unknown> }) =>
     request<Run>('/api/runs', { method: 'POST', body: body(input) }),
   revertRun: (id: number, input: { apply?: boolean; force?: boolean }) =>

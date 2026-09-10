@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type Run, type RevertResult } from '../api';
+import { api, type Finding, type Run, type RevertResult } from '../api';
 import { Banner, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 import { LogStream } from '../components/LogStream';
 
@@ -76,6 +76,8 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
         <Banner tone={data.status === 'cancelled' ? 'warn' : 'err'}>{data.error}</Banner>
       )}
 
+      {data.command === 'audit' && <FindingsPanel run={data} />}
+
       <RevertPanel run={data} onReverted={run.reload} />
 
       {data.summary && (
@@ -97,6 +99,119 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
         <LogStream runId={data.id} live={live} />
       </div>
     </>
+  );
+}
+
+/**
+ * Which books, and what was wrong with each.
+ *
+ * The summary answers "how many", which on its own reads as an alarm and gives
+ * nobody anything to do: every book is `unrated` until `rate` has run once, so
+ * a first audit legitimately flags the whole library. The counts double as the
+ * filter here, so picking a row narrows the table to the items behind it.
+ */
+function FindingsPanel({ run }: { run: Run }) {
+  const [issue, setIssue] = useState('');
+  const [limit, setLimit] = useState(100);
+  const meta = useAsync(() => api.meta(), []);
+  const page = useAsync(() => api.findings(run.id, { issue, limit }), [run.id, issue, limit]);
+
+  const counts = (run.summary?.issueCounts ?? {}) as Record<string, number>;
+  const labels = new Map((meta.data?.auditIssues ?? []).map((i) => [i.code, i]));
+  // Ordered by the server's own list, so the most serious issues lead rather
+  // than whichever happened to be counted first.
+  const present = (meta.data?.auditIssues ?? []).filter((i) => (counts[i.code] ?? 0) > 0);
+
+  if (run.status === 'running' || run.status === 'queued') return null;
+  if (page.data && page.data.total === 0 && !issue) return null;
+
+  const tone = (code: string) =>
+    labels.get(code)?.severity === 'error' ? 'err' : labels.get(code)?.severity === 'warn' ? 'warn' : '';
+
+  return (
+    <div className="card">
+      <h2>What the audit found</h2>
+
+      {present.length > 0 && (
+        <div className="actions" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
+          <button className={issue === '' ? 'small primary' : 'small'} onClick={() => setIssue('')}>
+            All ({run.summary?.itemsWithIssues as number})
+          </button>
+          {present.map((spec) => (
+            <button
+              key={spec.code}
+              className={issue === spec.code ? 'small primary' : 'small'}
+              title={spec.code}
+              onClick={() => setIssue(spec.code)}
+            >
+              {spec.label} ({counts[spec.code]})
+            </button>
+          ))}
+        </div>
+      )}
+
+      {page.loading && !page.data && <Spinner />}
+      {page.error && <Banner tone="err">{page.error}</Banner>}
+
+      {page.data && page.data.findings.length === 0 && (
+        <p className="hint">
+          Nothing recorded for this run. Audits from before this version kept only the counts.
+        </p>
+      )}
+
+      {page.data && page.data.findings.length > 0 && (
+        <>
+          <table>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Author</th>
+                <th>Issues</th>
+              </tr>
+            </thead>
+            <tbody>
+              {page.data.findings.map((finding) => (
+                <FindingRow key={finding.id} finding={finding} tone={tone} label={(c) => labels.get(c)?.label ?? c} />
+              ))}
+            </tbody>
+          </table>
+
+          {page.data.total > page.data.findings.length && (
+            <div className="actions">
+              <button onClick={() => setLimit((n) => n + 200)}>
+                Showing {page.data.findings.length} of {page.data.total} — show more
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function FindingRow({
+  finding,
+  tone,
+  label,
+}: {
+  finding: Finding;
+  tone: (code: string) => string;
+  label: (code: string) => string;
+}) {
+  return (
+    <tr>
+      {/* The path is what someone needs to go and look at the book, and it is
+          too long for a column of its own on most libraries. */}
+      <td title={finding.path}>{finding.title}</td>
+      <td className="dim">{finding.author ?? '—'}</td>
+      <td>
+        {finding.issues.map((code) => (
+          <span key={code} className={`badge ${tone(code)}`} style={{ marginRight: 4 }} title={code}>
+            {label(code)}
+          </span>
+        ))}
+      </td>
+    </tr>
   );
 }
 
