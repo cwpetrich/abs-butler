@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { chmod, chown, cp, mkdir, readdir, rename, rm, rmdir, stat } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import type { ConnectionRecord } from '../db/connection.js';
@@ -24,6 +24,18 @@ export interface MovePlan {
   fromLocal: string;
   toLocal: string;
   libraryId: string;
+  /**
+   * The library folder this item lives under, on this machine. Tidying up after
+   * a move stops here: emptying a library root and then removing it would take
+   * the folder AudiobookShelf is configured to watch with it.
+   */
+  rootLocal: string;
+  /**
+   * True when the source is a loose file rather than a book folder. It changes
+   * what the move is allowed to find on disk, and it is the one case that
+   * creates the folder the file lands in.
+   */
+  fromFile?: boolean;
 }
 
 export interface TemplateVars {
@@ -66,6 +78,29 @@ export function renderTemplate(template: string, vars: TemplateVars): string {
     .join('/');
 }
 
+/**
+ * Where a loose file goes.
+ *
+ * AudiobookShelf accepts a bare `The Hobbit.m4b` sitting in a library root as
+ * a library item, and a great many libraries are largely that. The template
+ * renders a *folder* path, so a file needs one more decision: it is given the
+ * folder the template describes and keeps its own extension, which leaves the
+ * library uniform — every item a folder, nothing loose — and matches the
+ * layout AudiobookShelf recommends.
+ *
+ *   The Hobbit.m4b -> J.R.R. Tolkien/The Hobbit/The Hobbit.m4b
+ *
+ * The file inside is named from the title rather than from the last template
+ * segment, so a series book does not end up as `01 - The Final Empire.m4b`
+ * inside a folder already called `01 - The Final Empire`.
+ */
+function fileTarget(item: AbsLibraryItem, folderPath: string): string | null {
+  const extension = extname(item.relPath || item.path);
+  if (!extension) return null;
+  const vars = templateVars(item);
+  return `${folderPath}/${vars.title}${extension}`;
+}
+
 export function planMove(
   item: AbsLibraryItem,
   library: AbsLibrary,
@@ -75,7 +110,12 @@ export function planMove(
   const folder = library.folders.find((f) => f.id === item.folderId) ?? library.folders[0];
   if (!folder) return null;
 
-  const target = renderTemplate(template, templateVars(item));
+  const rendered = renderTemplate(template, templateVars(item));
+  if (!rendered) return null;
+
+  // A file with no extension is left alone: it cannot be named on the far side
+  // without inventing one, and guessing at a media type is not this tool's job.
+  const target = item.isFile ? fileTarget(item, rendered) : rendered;
   if (!target) return null;
 
   const currentRel = (item.relPath ?? '').replace(/^\/+/, '');
@@ -91,6 +131,8 @@ export function planMove(
   return {
     itemId: item.id,
     title: itemTitle(item),
+    ...(item.isFile ? { fromFile: true } : {}),
+    rootLocal: folderLocal,
     from: currentRel || item.path,
     to: target,
     fromLocal,
@@ -170,8 +212,17 @@ async function applyOwnershipDeep(path: string, uid: number, gid: number): Promi
   }
 }
 
-/** Moves a directory, falling back to copy+delete when crossing filesystems. */
-export async function movePath(from: string, to: string): Promise<void> {
+/**
+ * Moves a file or directory, falling back to copy+delete when crossing
+ * filesystems.
+ *
+ * `stopAt` bounds the tidying afterwards. Without it, moving the last item out
+ * of a library root would leave that root empty and then remove it — which is
+ * the folder AudiobookShelf is configured to watch, so the library would come
+ * back empty on the next scan. Loose files make this likely rather than
+ * theoretical: they sit in the root itself.
+ */
+export async function movePath(from: string, to: string, stopAt?: string): Promise<void> {
   await mkdirInheriting(dirname(to));
   // Captured before the move, since the source is gone by the time we need it.
   const source = await stat(from);
@@ -186,13 +237,18 @@ export async function movePath(from: string, to: string): Promise<void> {
     await applyOwnershipDeep(to, source.uid, source.gid);
     await rm(from, { recursive: true, force: true });
   }
-  await pruneEmptyParents(dirname(from));
+  await pruneEmptyParents(dirname(from), stopAt);
 }
 
-/** Cleans up directories left behind by a move, stopping at the first non-empty one. */
-async function pruneEmptyParents(dir: string, depth = 3): Promise<void> {
+/**
+ * Cleans up directories left behind by a move, stopping at the first non-empty
+ * one — and never at or above `boundary`, which is the library root.
+ */
+async function pruneEmptyParents(dir: string, boundary?: string, depth = 3): Promise<void> {
+  const limit = boundary ? resolve(boundary) : null;
   for (let i = 0; i < depth; i++) {
     if (!existsSync(dir) || dir === sep) return;
+    if (limit && (resolve(dir) === limit || !resolve(dir).startsWith(limit + sep))) return;
     const entries = await readdir(dir);
     if (entries.length > 0) return;
     await rmdir(dir);
@@ -206,6 +262,16 @@ export interface OrganizeTaskOptions {
   limit?: number;
   template?: string;
   noScan?: boolean;
+  /**
+   * Also file loose single-file items — a bare `The Hobbit.m4b` in a library
+   * root — into the folder the template describes.
+   *
+   * Off by default, and deliberately so. It is the one change here that
+   * *creates* structure rather than rearranging it, on the items most likely to
+   * be numerous, and `revert` cannot undo a move. Turn it on once a dry run has
+   * shown what it would do.
+   */
+  singleFiles?: boolean;
 }
 
 export interface OrganizeTaskResult {
@@ -255,6 +321,8 @@ export async function runOrganizeTask(
 
   const libraries = await resolveLibraries(ctx, options.library);
   const plans: MovePlan[] = [];
+  /** Single-file items passed over, so a dry run can say so out loud. */
+  const loose: Array<{ title: string; reason: string }> = [];
   for (const library of libraries) {
     // Expanded, because the path template renders {series} and {sequence} from
     // the structured series field. A minified item has neither, so every book
@@ -262,8 +330,11 @@ export async function runOrganizeTask(
     // of its series folder on apply.
     const items = await collectItems(ctx, [library], { limit: options.limit, expand: true });
     for (const item of items) {
-      if (item.isFile) {
-        log.debug(`skipping single-file item (not a book folder): ${itemTitle(item)}`);
+      if (item.isFile && !options.singleFiles) {
+        // Reported rather than hidden at debug. A library that is mostly loose
+        // m4b files would otherwise see "0 items to move" and conclude the tool
+        // had nothing to offer it, when in fact it had declined to look.
+        loose.push({ title: itemTitle(item), reason: 'single file — pass --single-files to include it' });
         continue;
       }
       const plan = planMove(item, library, template, ctx.connection);
@@ -271,7 +342,14 @@ export async function runOrganizeTask(
     }
   }
 
-  const skipped: Array<{ title: string; reason: string }> = [];
+  if (loose.length > 0) {
+    log.info(
+      `${loose.length} single-file item(s) left alone. --single-files files them into ` +
+        'the folder the template describes.',
+    );
+  }
+
+  const skipped: Array<{ title: string; reason: string }> = [...loose];
   let moved = 0;
   let rescanned = false;
 
@@ -296,7 +374,7 @@ export async function runOrganizeTask(
       skipped.push({ title: plan.title, reason });
       continue;
     }
-    await movePath(plan.fromLocal, plan.toLocal);
+    await movePath(plan.fromLocal, plan.toLocal, plan.rootLocal);
     touchedLibraries.add(plan.libraryId);
     moved += 1;
     log.debug(`moved ${plan.from} -> ${plan.to}`);
@@ -329,6 +407,10 @@ async function moveBlockedReason(plan: MovePlan): Promise<string | null> {
   if (!existsSync(plan.fromLocal)) return `not found at ${plan.fromLocal}`;
   if (existsSync(plan.toLocal)) return `destination already exists: ${plan.toLocal}`;
   const source = await stat(plan.fromLocal);
-  if (!source.isDirectory()) return `expected a folder at ${plan.fromLocal}`;
+  if (plan.fromFile) {
+    if (source.isDirectory()) return `expected a file at ${plan.fromLocal}, found a folder`;
+  } else if (!source.isDirectory()) {
+    return `expected a folder at ${plan.fromLocal}`;
+  }
   return null;
 }

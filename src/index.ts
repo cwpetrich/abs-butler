@@ -156,6 +156,7 @@ program
   .option('--apply', 'actually move files (default is a dry run)')
   .option('--json', 'emit JSON instead of a table')
   .option('--template <pattern>', `path template (default: ${DEFAULT_TEMPLATE})`, DEFAULT_TEMPLATE)
+  .option('--single-files', 'also file loose single-file items (a bare book.m4b) into a folder')
   .option('--no-scan', 'skip the library rescan after moving')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) => runOrganize({ ...globals(), ...opts, noScan: opts.scan === false }));

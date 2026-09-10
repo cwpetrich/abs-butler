@@ -172,6 +172,7 @@ function NewRunForm({
   const [apply, setApply] = useState(false);
   const [limit, setLimit] = useState('');
   const [template, setTemplate] = useState(meta.defaultTemplate);
+  const [singleFiles, setSingleFiles] = useState(false);
   const [force, setForce] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const [noConsensus, setNoConsensus] = useState(false);
@@ -215,7 +216,10 @@ function NewRunForm({
       const options: Record<string, unknown> = {};
       if (apply) options.apply = true;
       if (limit) options.limit = Number(limit);
-      if (command === 'organize') options.template = template;
+      if (command === 'organize') {
+        options.template = template;
+        if (singleFiles) options.singleFiles = true;
+      }
       if (command === 'rate' && force) options.force = true;
       if (command === 'metadata' && overwrite) options.overwrite = true;
       if (command === 'normalize' && noConsensus) options.noConsensus = true;
@@ -258,11 +262,21 @@ function NewRunForm({
       </div>
 
       {command === 'organize' && (
-        <label>
-          Path template
-          <span className="hint">Placeholders: author, title, series, sequence, year.</span>
-          <input value={template} onChange={(e) => setTemplate(e.target.value)} className="mono" />
-        </label>
+        <>
+          <label>
+            Path template
+            <span className="hint">Placeholders: author, title, series, sequence, year.</span>
+            <input value={template} onChange={(e) => setTemplate(e.target.value)} className="mono" />
+          </label>
+          <label className="checkbox">
+            <input type="checkbox" checked={singleFiles} onChange={(e) => setSingleFiles(e.target.checked)} />
+            Include single-file items
+          </label>
+          <span className="hint">
+            A bare book.m4b sitting in a library root is left alone by default. This files it into
+            the folder the template describes. Dry run first — moves cannot be undone.
+          </span>
+        </>
       )}
 
       {!canManageFiles && (
