@@ -18,6 +18,78 @@ describe('assessContent', () => {
     expect(assessment.confidence).toBeGreaterThan(0.4);
   });
 
+  /**
+   * The real ladder Audible files it under. The audience node sits at the top
+   * ("Children's Audiobooks"), the claim at the bottom ("Early Readers"), and
+   * a middle node contradicts both — a chapter book is middle grade. Weighted
+   * as the provider weights them, the leaf has to win.
+   */
+  it('lets an Audible ladder leaf outvote the shelf above it', () => {
+    const ladder = [
+      { name: "Children's Audiobooks", weight: 0.55 },
+      { name: 'Literature & Fiction', weight: 0.55 },
+      { name: 'Chapter Books & Readers', weight: 0.55 },
+      { name: 'Early Readers', weight: 0.9 },
+    ];
+    const assessment = assessContent([
+      result([], {
+        provider: 'audible',
+        signals: ladder.map((c) => ({ source: 'audible:category', value: c.name, weight: c.weight })),
+      }),
+    ]);
+    expect(assessment.band).toBe('early-reader');
+    expect(assessment.confidence).toBeGreaterThan(0.4);
+  });
+
+  it("reads Audible's kids shelf alone as middle-grade, weakly", () => {
+    const assessment = assessContent([
+      result([], {
+        provider: 'audible',
+        signals: [{ source: 'audible:category', value: "Children's Audiobooks", weight: 0.55 }],
+      }),
+    ]);
+    expect(assessment.band).toBe('middle-grade');
+    // One broad node is a hint, not a verdict, and should say so.
+    expect(assessment.confidence).toBeLessThan(0.4);
+  });
+
+  /**
+   * Three sources each contributing a broad "kids book" term must not outvote
+   * one naming a band outright. This is how *The Very Hungry Caterpillar* was
+   * banded middle grade the day a third kids-shelf source was added.
+   *
+   * Note what is *not* claimed: a source shelving it as juvenile fiction is a
+   * genuinely different assertion, scored far higher, and it is allowed to win.
+   * Only the vague term is held down.
+   */
+  it('lets one precise band claim outvote several vague ones', () => {
+    const kids = (provider: string, weight: number, value: string) =>
+      result([], { provider, signals: [{ source: `${provider}:genre`, value, weight }] });
+
+    const assessment = assessContent([
+      result([], {
+        provider: 'audible',
+        signals: [
+          { source: 'audible:category', value: "Children's Audiobooks", weight: 0.55 },
+          { source: 'audible:category', value: 'Early Readers', weight: 0.9 },
+        ],
+      }),
+      kids('audiosilo', 0.8, 'Childrens'),
+      kids('audnexus', 0.9, 'Kids'),
+    ]);
+    expect(assessment.band).toBe('early-reader');
+  });
+
+  it("reads Audible's teen shelf as young-adult", () => {
+    const assessment = assessContent([
+      result([], {
+        provider: 'audible',
+        signals: [{ source: 'audible:category', value: 'Teen & Young Adult', weight: 0.55 }],
+      }),
+    ]);
+    expect(assessment.band).toBe('young-adult');
+  });
+
   it('bands juvenile fiction as middle-grade', () => {
     const assessment = assessContent([result(['Juvenile fiction', 'Adventure and adventurers'])]);
     expect(assessment.band).toBe('middle-grade');
