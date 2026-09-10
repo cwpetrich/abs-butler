@@ -139,16 +139,36 @@ two concurrent rating runs against the same library would double the request rat
 queue lives in the database, so a restart doesn't lose it — and any run interrupted by a restart is
 marked failed rather than left claiming to be running forever.
 
+**Any run can be stopped**, from the Runs list or from its own page. A queued run disappears; a
+running one is asked to stop and ends within a request or two — it finishes the book it is on
+rather than being cut off mid-write. Whatever it already applied stays applied, and Undo on the run
+covers exactly that much. A stopped run is recorded as `cancelled`, not failed.
+
 ### Where the data comes from
 
 | Provider | Key needed | What it is for |
 | --- | --- | --- |
-| **Audnexus** | No | The audiobook source, and the only one that knows a **narrator** exists. Keyed on ASIN — the identifier AudiobookShelf itself matches on — so it answers for one exact audio edition, or not at all. Series name and position come from here too. |
+| **Audible** | No | Audible's own catalogue, asked directly. The largest audiobook source: **narrator**, series name and position, publisher, and hierarchical categories that carry the audience level. Searchable by title, so it answers for books AudiobookShelf never matched. |
+| **AudioSilo Meta** | No | An open, community-maintained audiobook database (CC0). The only source here that is not a retailer, and the only one that models a **work** separately from its **recordings** — so an ASIN from *any* marketplace resolves to one specific narration, not just a book. |
+| **Audnexus** | No | Audible's catalogue by way of a maintained community proxy, keyed on ASIN. Kept alongside the other two rather than behind them: when one stops answering, the others are already configured. |
 | **Open Library** | No | Crowd-sourced subjects, the richest audience signal for `rate`. |
 | **Google Books** | Optional | Publisher-assigned BISAC categories and an explicit maturity rating. |
 
-Audnexus only answers for books that have an ASIN, so the other two carry an unmatched library.
-Letting AudiobookShelf match your books first is what makes `normalize` able to do its best work.
+The first three describe an audio **edition** — they are the only sources that know a narrator
+exists. The last two describe the **work**, and carry the shelving that `rate` reads. Letting
+AudiobookShelf match your books first still gives the best results, since an ASIN identifies one
+exact edition, but it is no longer the difference between an answer and nothing.
+
+**Sources agreeing does not inflate a rating.** Each provider is scored independently and a rule
+counts at most once within one, so two of them saying the same thing raises the winning band and
+the runner-up together — leaving the margin, and therefore the confidence, where it was.
+
+**A provider that stops answering is dropped for the rest of the run.** Google Books without an API
+key shares an anonymous quota with everyone else on your address, and that quota is usually already
+spent — every lookup comes back rate limited. After three refusals in a row abs-butler stops asking
+that provider until the next run and says so once in the log, instead of paying two requests and a
+backoff per book to be told the same thing a thousand times. Anything it had already cached is
+still used.
 
 **Answers are cached.** A provider is asked about a book once and the answer is reused — for the
 rest of that run, for the other commands, and for the next scheduled run. Without this a nightly
@@ -268,7 +288,7 @@ Every proposed change carries the evidence it rests on, and there are three tier
 
 | Tier | What it means | Example |
 | --- | --- | --- |
-| **provider** | An **exact ASIN or ISBN match**, and nothing weaker | Audnexus knows this exact audio edition's narrator |
+| **provider** | An **exact ASIN or ISBN match**, and nothing weaker | Audible knows this exact audio edition's narrator |
 | **consensus** | The library disagreeing with itself, resolved toward the majority | four books say "The Stormlight Archive", one says "Stormlight Archive" |
 | **local** | A deterministic repair of how the text is written | "Hobbit, The" → "The Hobbit"; "King, Stephen" → "Stephen King" |
 
@@ -276,8 +296,34 @@ A fuzzy title match can **never** rename a book — the scoring caps it below th
 requires, by construction. So a library AudiobookShelf has never matched still gets its consensus
 and local repairs, with no provider consulted and no network call made at all.
 
-Higher tiers win when two disagree. `--fields` narrows what is touched and `--no-consensus` turns
-off the library-agreement tier.
+Higher tiers win when two disagree, so an outside source **outranks the library's own habit**: if
+every provider says "The Mistborn Saga" and the shelf says "Mistborn Saga", the shelf is what gets
+corrected. Consensus only decides what no provider could — it never invents a name, it only picks
+between spellings the library already holds, and only where the library contradicts itself.
+`--fields` narrows what is touched and `--no-consensus` turns off the library-agreement tier.
+
+### Sources vote, field by field
+
+Within the provider tier, **every** source that identified the exact edition gets a say, and each
+field is settled on its own. The most-agreed value wins; a tie goes to the most trusted source that
+offered it, in the order listed under [Where the data comes from](#where-the-data-comes-from).
+
+Two things follow, and both are visible in a dry run, which names the sources behind every change:
+
+- A source that has nothing to say about a field **abstains** rather than winning it. AudioSilo
+  carries no subtitles, so it cannot blank one that Audible and Audnexus both supply.
+- Where sources genuinely disagree — "The Mistborn Saga" against "Mistborn" — the answer is decided
+  by how many say it, not by which one happens to be listed first.
+
+```
+-> subtitle  "" => "Mistborn Book 1"      [provider: audible + audnexus]
+-> narrator  "Wrong Narrator" => "Michael Kramer"   [provider: audible + audiosilo + audnexus]
+-> series    "Mistborn Saga" => "The Mistborn Saga" [provider: audible + audnexus]
+```
+
+Counting sources does not lower the bar: only matches that already cleared the rewrite threshold
+are allowed to vote, so this changes *which* identified answer is chosen, never whether an
+unidentified one may be used.
 
 **Allow metadata rewrite** gates *replacing* a value, not supplying a missing one. With it off,
 `--apply` still fills what was blank — a subtitle, a series a book never had, a work identity — and
