@@ -12,8 +12,41 @@ on:
     tags: ['v*']
 
 jobs:
+  # The tag names the version and nothing checked that claim, which made one
+  # silent mistake possible and self-perpetuating: tag v0.5.2 while the tree
+  # still says 0.5.1 and everything succeeds. The image is labelled 0.5.2, the
+  # program reports itself as 0.5.1, and every install is told an update is
+  # available forever, because the version it compares never catches up.
+  #
+  # Both files are checked, not just package.json, since the number the running
+  # program reports is the one in src/version.ts. version.test.ts already keeps
+  # them equal, but it runs against a branch; this runs against the tag, which
+  # is the thing being published.
+  version:
+    name: Tag matches the version in the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          declared=$(node -p "require('./package.json').version")
+          compiled=$(node -p "require('node:fs').readFileSync('src/version.ts','utf8').match(/VERSION = '([^']+)'/)[1]")
+
+          if [ "$TAG" != "v$declared" ]; then
+            echo "::error::Tag $TAG does not match package.json version $declared."
+            exit 1
+          fi
+          if [ "$declared" != "$compiled" ]; then
+            echo "::error::package.json says $declared but src/version.ts says $compiled."
+            exit 1
+          fi
+          echo "$TAG matches package.json and src/version.ts."
+
   docker:
     name: Publish multi-arch image
+    needs: [version]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,6 +123,7 @@ jobs:
 
   snap:
     name: Build and publish the snap
+    needs: [version]
     runs-on: ${{ matrix.runner }}
     # Declared at job level so the publish step's `if` can read it: a step's own
     # env block is not in scope when its condition is evaluated.
