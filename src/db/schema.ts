@@ -210,4 +210,5 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_findings_run ON findings(run_id, id);
   `,
+
 ];

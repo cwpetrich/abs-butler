@@ -1,4 +1,5 @@
 import { log } from '../logger.js';
+import { AppleBooksProvider } from './applebooks.js';
 import { AudibleProvider } from './audible.js';
 import { AudioSiloProvider } from './audiosilo.js';
 import { AudnexusProvider } from './audnexus.js';
@@ -31,6 +32,13 @@ export interface ProviderConfig {
  * not redundant: crowd shelving and BISAC categories are the richest audience
  * signals available, and neither audiobook source carries anything like them.
  *
+ * Apple Books is last and is a category source, not a metadata one. It
+ * publishes no identifier to match on, so it can never rewrite a field — but it
+ * needs no account of any kind, which makes it the one source that works on a
+ * fresh install, and its ebook categories are specific in the way age banding
+ * wants. It is also the only source here that describes ebooks as well as
+ * audiobooks.
+ *
  * Sources agreeing does not inflate a rating. Each provider's signals are
  * scored independently and a rule counts at most once within one — so two of
  * them saying the same thing raises both the winning band and the runner-up,
@@ -47,6 +55,7 @@ export function buildProviders(config: ProviderConfig, only?: string[]): Metadat
     new AudnexusProvider(config.audibleRegion),
     new OpenLibraryProvider(),
     new GoogleBooksProvider(config.googleBooksApiKey),
+    new AppleBooksProvider(),
   ];
 
   const enabled = all.filter((p) => p.isAvailable());
@@ -78,9 +87,11 @@ export const PROVIDER_NAMES = [
   'audnexus',
   'openlibrary',
   'googlebooks',
+  'applebooks',
 ] as const;
 
 export {
+  AppleBooksProvider,
   AudibleProvider,
   AudioSiloProvider,
   AudnexusProvider,
