@@ -8,7 +8,7 @@ import { closeDb, openDb, type Db } from '../db/index.js';
 import { countFindings, listFindings } from '../db/findings.js';
 import { createRun } from '../db/runs.js';
 import { DEFAULT_SETTINGS } from '../db/settings.js';
-import { auditItems, runAuditTask } from './audit.js';
+import { auditItems, findDuplicates, runAuditTask } from './audit.js';
 
 /**
  * An audit that only counts is not actionable: "37 books have no narrator"
@@ -235,6 +235,31 @@ describe('runAuditTask', () => {
     ] as unknown as Parameters<typeof auditItems>[0];
 
     expect(auditItems(both)[0]!.issues).toContain('missing-narrator');
+  });
+
+  /**
+   * One book in two formats is not a mistake, and `duplicate` is a warning
+   * someone acts on — sometimes by deleting something.
+   */
+  it('does not call an ebook and an audiobook of the same book duplicates', () => {
+    const pair = [
+      { id: 'a', relPath: 'x', media: { id: 'ma', coverPath: null, tags: [], numTracks: 5, metadata: { title: 'Dune', authorName: 'Frank Herbert' } } },
+      { id: 'b', relPath: 'y', media: { id: 'mb', coverPath: null, tags: [], ebookFormat: 'epub', metadata: { title: 'Dune', authorName: 'Frank Herbert' } } },
+    ] as unknown as Parameters<typeof findDuplicates>[0];
+
+    expect(findDuplicates(pair)).toEqual([]);
+    // Unless asked for.
+    expect(findDuplicates(pair, { crossFormat: true })).toHaveLength(1);
+  });
+
+  it('still reports two copies of the same format', () => {
+    const twice = [
+      { id: 'a', relPath: 'Dune', media: { id: 'ma', coverPath: null, tags: [], ebookFormat: 'epub', metadata: { title: 'Dune', authorName: 'Frank Herbert' } } },
+      { id: 'b', relPath: 'Dune (1)', media: { id: 'mb', coverPath: null, tags: [], ebookFormat: 'epub', metadata: { title: 'Dune', authorName: 'Frank Herbert' } } },
+    ] as unknown as Parameters<typeof findDuplicates>[0];
+
+    // The case actually worth catching: the same book imported twice.
+    expect(findDuplicates(twice)).toHaveLength(1);
   });
 
   it('records nothing when no run owns the work', async () => {

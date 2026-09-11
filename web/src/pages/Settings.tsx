@@ -119,6 +119,25 @@ export function SettingsPage() {
         </div>
 
         <div className="card">
+          <h2>Auditing</h2>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={form.crossFormatDuplicates}
+              onChange={(e) => set('crossFormatDuplicates', e.target.checked)}
+            />
+            Count an ebook and an audiobook as duplicates
+          </label>
+
+          <p className="hint">
+            Off by default: the EPUB and the audiobook of the same book are one book in two formats,
+            not a mistake, and a duplicate warning is something people act on. Two copies of the
+            same format are always reported, whatever this says.
+          </p>
+        </div>
+
+        <div className="card">
           <h2>Metadata providers</h2>
 
           <label>
