@@ -289,17 +289,35 @@ describe('settings migration', () => {
     const PROVIDER_ENROLMENT = 7;
     const enrol = () => db.exec(MIGRATIONS[PROVIDER_ENROLMENT - 1]!);
 
-    // Apple Books is implemented but not in the default set — it is opt-in,
-    // because it costs a request per item to supply a description and a year
-    // that two sources already give.
-    it('defaults to the five sources that earn their request', () => {
+    it('defaults to every provider on a fresh install', () => {
       expect(getSettings(db).providers).toEqual([
         'audible',
         'audiosilo',
         'audnexus',
         'openlibrary',
         'googlebooks',
+        'applebooks',
       ]);
+    });
+
+    // Migration 9 does the same for Apple Books, and must also catch an install
+    // that migration 7 enrolled and nobody has touched since.
+    const APPLE_ENROLMENT = 9;
+    const enrolApple = () => db.exec(MIGRATIONS[APPLE_ENROLMENT - 1]!);
+
+    it('adds Apple Books to a list left at the five-provider default', () => {
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(
+        'providers',
+        JSON.stringify(['audible', 'audiosilo', 'audnexus', 'openlibrary', 'googlebooks']),
+      );
+      enrolApple();
+      expect(getSettings(db).providers).toContain('applebooks');
+    });
+
+    it('leaves an edited list alone when Apple Books arrives', () => {
+      updateSettings(db, { providers: ['audible', 'openlibrary'] });
+      enrolApple();
+      expect(getSettings(db).providers).toEqual(['audible', 'openlibrary']);
     });
 
     it('adds the new sources to an install still carrying the old default', () => {

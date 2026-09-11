@@ -10,7 +10,7 @@ export const SettingsSchema = z.object({
   /** Providers consulted for ratings and metadata, in order of trust. */
   providers: z
     .array(z.string())
-    .default(['audible', 'audiosilo', 'audnexus', 'openlibrary', 'googlebooks']),
+    .default(['audible', 'audiosilo', 'audnexus', 'openlibrary', 'googlebooks', 'applebooks']),
   googleBooksApiKey: z.string().default(''),
   /**
    * Whether an audiobook and an ebook of the same book count as duplicates.

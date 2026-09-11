@@ -153,7 +153,7 @@ covers exactly that much. A stopped run is recorded as `cancelled`, not failed.
 | **Audnexus** | No | Audible's catalogue by way of a maintained community proxy, keyed on ASIN. Kept alongside the other two rather than behind them: when one stops answering, the others are already configured. |
 | **Open Library** | No | Crowd-sourced subjects, the richest audience signal for `rate`. |
 | **Google Books** | Optional | Publisher-assigned BISAC categories and an explicit maturity rating. |
-| **Apple Books** | No | **Off by default.** Free and keyless, and the only source that covers ebooks as well as audiobooks. Fills descriptions and years; it publishes no ISBN or ASIN, so it can never rewrite a field, and it deliberately casts no vote on age bands — see below. Enable it in Settings when the other sources leave gaps. |
+| **Apple Books** | No | Free and keyless, and the only source that covers ebooks as well as audiobooks. Its categories are the only ones that separate a picture book from a chapter book. It publishes no ISBN or ASIN, so it fills blanks and rates but can never rewrite a field. |
 
 The first three describe an audio **edition** — they are the only sources that know a narrator
 exists. The last two describe the **work**, and carry the shelving that `rate` reads. Letting
@@ -164,14 +164,11 @@ exact edition, but it is no longer the difference between an answer and nothing.
 counts at most once within one, so two of them saying the same thing raises the winning band and
 the runner-up together — leaving the margin, and therefore the confidence, where it was.
 
-**Apple Books is opt-in for two measured reasons.** It costs a request per item to supply a
-description and a year that Open Library and Google Books already give, and its categories — which
-looked like the best audience data on offer — made age banding *worse*: 3 of 8 books banded
-correctly against Open Library's 4 of 8, with *The Very Hungry Caterpillar* and *Goodnight Moon*
-pushed to middle-grade. Apple files everything from board books to age twelve under "Kids", so its
-labels cannot separate picture-book from middle-grade. It therefore emits no rating signals at all.
-Where it earns its place is an ebook-heavy library, where the three audiobook sources have nothing
-to say.
+**One provider, one vote.** A rule counts at most once per *source*, however many editions that
+source returned. This is worth stating because it was not true until recently: the deduplication
+was per result, and a source answering with eight editions of one book — Apple does exactly that
+for *The Very Hungry Caterpillar*, mostly spin-offs — got eight votes. The chattiest source was
+quietly the loudest.
 
 **A provider that stops answering is dropped for the rest of the run.** Google Books without an API
 key shares an anonymous quota with everyone else on your address, and that quota is usually already

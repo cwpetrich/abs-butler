@@ -196,3 +196,40 @@ describe('isButlerTag', () => {
     expect(isButlerTag('kids')).toBe(false);
   });
 });
+
+describe('one provider, one vote', () => {
+  /**
+   * The comment on assessContent always claimed a rule scores at most once per
+   * provider. The loop was per *result*, which is a different thing the moment
+   * a source answers with several editions — and they all do. Apple returns
+   * eight usable hits for The Very Hungry Caterpillar, mostly spin-offs, each
+   * carrying "Fiction for Kids"; counted eight times it buried the "Basic
+   * Concepts for Kids" that made the book a picture book.
+   */
+  it('does not let a chatty provider outvote a specific signal', () => {
+    const vague = (value: string) => ({ source: 'test:genre', value, weight: 0.8 });
+
+    // One source, eight editions, all shelved as children's fiction; one of
+    // them also says the thing that actually pins the age.
+    const chatty = Array.from({ length: 8 }, (_, i) => ({
+      provider: 'chatty',
+      title: `Edition ${i}`,
+      signals: [vague('Fiction for Kids')],
+      ...(i === 0 ? { signals: [vague('Fiction for Kids'), vague('Basic Concepts for Kids')] } : {}),
+    })) as unknown as Parameters<typeof assessContent>[0];
+
+    expect(assessContent(chatty).band).toBe('early-reader');
+  });
+
+  it('still lets two independent providers each have their say', () => {
+    const results = [
+      { provider: 'a', signals: [{ source: 'a:genre', value: 'Young Adult', weight: 1 }] },
+      { provider: 'b', signals: [{ source: 'b:genre', value: 'Young Adult', weight: 1 }] },
+    ] as unknown as Parameters<typeof assessContent>[0];
+
+    // Two sources agreeing is two contributions — the deduplication is within a
+    // provider, not across them.
+    const one = assessContent([results[0]!]);
+    expect(assessContent(results).evidence.length).toBeGreaterThan(one.evidence.length);
+  });
+});

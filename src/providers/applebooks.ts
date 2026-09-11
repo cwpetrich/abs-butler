@@ -1,5 +1,5 @@
 import { getJson } from './http.js';
-import type { BookQuery, MetadataProvider, ProviderResult } from './types.js';
+import type { BookQuery, ContentSignal, MetadataProvider, ProviderResult } from './types.js';
 
 const SEARCH_URL = 'https://itunes.apple.com/search';
 
@@ -20,12 +20,44 @@ const DEFAULT_COUNTRY = 'us';
 const MAX_RESULTS = 10;
 
 /**
+ * How much Apple's own filing is worth, per label.
+ *
+ * Apple double-files: Charlotte's Web and Holes are both "Kids" *and* "Young
+ * Adult", while genuine young-adult books carry no children's label at all. So
+ * a young-adult label from Apple means "sold to teenagers or younger", which is
+ * much weaker than what the same words mean from a cataloguer — and the rule it
+ * matches is the strongest in the table. Discounting it here is the fix: the
+ * rules stay right for everyone else, and Apple's own uncertainty is expressed
+ * where it is known.
+ *
+ * Everything else is trusted at 0.8, a shade under a cataloguing standard,
+ * because these are still merchandising categories.
+ */
+const YOUNG_ADULT_LABEL = /young adult/i;
+const DEFAULT_WEIGHT = 0.8;
+const YOUNG_ADULT_WEIGHT = 0.35;
+
+/**
  * Apple applies "Books" to every book and a handful of others to whole
  * storefront sections. They are true of everything, so they say nothing, and
  * feeding them to the age rules is noise that dilutes the specific labels
  * beside them.
  */
-const USELESS_GENRES = new Set(['books', 'audiobooks', 'fiction & literature', 'nonfiction']);
+const USELESS_GENRES = new Set([
+  'books',
+  'audiobooks',
+  'fiction & literature',
+  'nonfiction',
+  // Apple's top-level storefront sections, which sit alongside the specific
+  // labels rather than adding to them: every book tagged "Fiction for Kids" is
+  // also tagged "Kids". Dropping them is not cosmetic. Rules sum within a
+  // provider — only the *same* rule dedupes — so the vague "Kids" rule was
+  // stacking 0.24 onto the 0.64 from "Fiction for Kids" and out-voting the
+  // 0.72 that "Basic Concepts for Kids" contributes to early-reader. A picture
+  // book came back middle-grade because its shelf was counted twice.
+  'kids',
+  'young adult',
+]);
 
 interface AppleResult {
   trackId?: number;
@@ -60,22 +92,27 @@ interface AppleResult {
  * match is fuzzy, and a fuzzy match is capped below the rewrite threshold by
  * design. Apple fills blanks; it never renames a book.
  *
- * **It emits no content signals, and that is a measured decision rather than an
- * oversight.** Apple's categories looked like the best audience data available
- * — "Dystopian Fiction for Young Adults", "Counting & Numbers for Kids" — and
- * feeding them to the age rules made banding *worse*: across eight books it
- * scored 3/8 against Open Library's 4/8, moving The Very Hungry Caterpillar and
- * Goodnight Moon to middle-grade. The cause is vocabulary, not weighting.
- * Apple files everything from board books to age twelve under "Kids", so its
- * labels cannot separate picture-book from middle-grade, which is exactly the
- * boundary that was already hardest. Dropping the "Kids" family and keeping the
- * precise "for Young Adults" one was measured too and scored 3/8 again, this
- * time by pushing Charlotte's Web to young-adult.
+ * Its categories took two measured corrections before they were worth having,
+ * and the first attempt made age banding *worse* — 3 of 8 books correct against
+ * Open Library's 4 of 8. Both causes are recorded here because both are easy to
+ * reintroduce:
  *
- * The genres still travel on the result for display and for anything that wants
- * them; they simply do not vote on an age band. Making them useful means rules
- * written for Apple's vocabulary, measured against the table in
- * docs/content-ratings.md — worth doing, and not worth guessing at.
+ * Apple double-files. Charlotte's Web and Holes are "Kids" *and* "Young Adult",
+ * while genuine young-adult books carry no children's label at all — so a
+ * young-adult label from Apple means "sold to teenagers or younger", far weaker
+ * than the same words from a cataloguer, and it was matching the strongest rule
+ * in the table. Hence the discount below rather than a change to the rule,
+ * which is right for everyone else.
+ *
+ * Apple's storefront sections duplicate its specific labels: everything tagged
+ * "Fiction for Kids" is also tagged "Kids". Rules sum within a provider, so the
+ * vague one stacked on the specific one and outvoted the early-reader signal.
+ * They are dropped in USELESS_GENRES.
+ *
+ * With both corrections, and with age rules taught Apple's pre-reader
+ * vocabulary, Apple and Open Library together score 8 of 11 where Open Library
+ * alone scores 7 — and Apple alone gets Holes and Green Eggs right where Open
+ * Library does not.
  */
 export class AppleBooksProvider implements MetadataProvider {
   readonly name = 'applebooks';
@@ -114,15 +151,13 @@ function toResult(provider: string, result: AppleResult): ProviderResult {
     ...(result.artistName ? { authors: [result.artistName] } : {}),
     ...(plainText(result.description) ? { description: plainText(result.description) } : {}),
     ...(year(result.releaseDate) ? { publishedYear: year(result.releaseDate) } : {}),
-    // `genres`, deliberately not `subjects`: subjects is the age rules' raw
-    // material, and these are measured not to belong there.
-    ...(genres.length > 0 ? { genres } : {}),
+    ...(genres.length > 0 ? { genres, subjects: genres } : {}),
     ...(typeof result.averageUserRating === 'number'
       ? { averageRating: result.averageUserRating }
       : {}),
     ...(typeof result.userRatingCount === 'number' ? { ratingsCount: result.userRatingCount } : {}),
     ...(result.trackViewUrl ? { url: result.trackViewUrl } : {}),
-    signals: [],
+    signals: buildSignals(genres),
   };
 }
 
@@ -142,6 +177,14 @@ function usefulGenres(result: AppleResult): string[] {
     kept.push(genre.trim());
   }
   return kept;
+}
+
+function buildSignals(genres: string[]): ContentSignal[] {
+  return genres.map((genre) => ({
+    source: 'applebooks:genre',
+    value: genre,
+    weight: YOUNG_ADULT_LABEL.test(genre) ? YOUNG_ADULT_WEIGHT : DEFAULT_WEIGHT,
+  }));
 }
 
 function year(releaseDate: string | undefined): string | undefined {
