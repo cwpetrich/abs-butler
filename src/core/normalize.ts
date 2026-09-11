@@ -1,5 +1,6 @@
 import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
+import { isEbookOnly } from '../abs/media.js';
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
 import {
@@ -547,7 +548,12 @@ export function planNormalize(
     }
   }
 
-  if (wanted.has('narrator')) {
+  // A reading copy has no narrator, so there is none to correct and none to
+  // supply. Left unguarded this was not merely useless: an ISBN match scores
+  // 0.97, above the rewrite bar, and a source that carries narrators for a
+  // recording would have written an audiobook's cast onto an EPUB — plausible
+  // enough that nobody would question it.
+  if (wanted.has('narrator') && !isEbookOnly(item)) {
     const current = itemNarrators(item);
     const currentText = current.join(', ');
     const tidied = current.map((name) => normalizePersonName(name) ?? name);

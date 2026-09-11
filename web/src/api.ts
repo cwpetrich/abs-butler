@@ -128,6 +128,7 @@ export interface Settings {
   logRetentionDays: number;
   allowFileChanges: boolean;
   allowMetadataRewrite: boolean;
+  crossFormatDuplicates: boolean;
   googleBooksApiKeySet: boolean;
 }
 

@@ -282,6 +282,15 @@ no audio by its nature. `no-audio` is raised only when an item has neither audio
 was never going to have. An item holding both an audiobook and an ebook is still audited as an
 audiobook.
 
+The same goes for duplicates: the EPUB and the audiobook of one book are two formats, not a
+mistake, so they are not reported against each other. Two copies of the *same* format still are —
+that is the case worth catching. Settings → Auditing turns the cross-format pairs back on if you
+want to see them.
+
+`normalize` will not write a narrator onto a reading copy either. That one mattered: an ISBN match
+scores 0.97, above the rewrite threshold, so a source carrying narrators for a recording could have
+written an audiobook's cast onto an EPUB — plausible enough that nobody would question it.
+
 **A first audit flags everything, and that is not a fault.** `unrated` is true of every book until
 `rate` has run once, so a fresh library reports 100% affected. Read the breakdown, not the total.
 

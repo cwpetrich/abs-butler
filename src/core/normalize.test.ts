@@ -313,6 +313,33 @@ describe('planNormalize', () => {
     expect(plan.proposals[0]).toMatchObject({ field: 'narrator', to: 'Jim Dale', source: 'provider' });
   });
 
+  /**
+   * The failure this prevents is quiet and convincing: an ISBN match scores
+   * 0.97, above the rewrite bar, and a source carrying narrators for a
+   * recording would have written an audiobook's cast onto an EPUB. Nobody
+   * inspecting the library afterwards would think to question it.
+   */
+  it('never offers a narrator to a reading copy', () => {
+    const epub = book({ narratorName: null });
+    (epub.media as { ebookFormat?: string }).ebookFormat = 'epub';
+
+    const plan = planNormalize(epub, [trusted({ narrators: ['Jim Dale'] })], noConsensus, {
+      fields: ['narrator'],
+    });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('still offers one to an audiobook that has an ebook beside it', () => {
+    const both = book({ narratorName: 'Dale, Jim' });
+    (both.media as { ebookFormat?: string; numTracks?: number }).ebookFormat = 'epub';
+    (both.media as { numTracks?: number }).numTracks = 7;
+
+    const plan = planNormalize(both, [trusted({ narrators: ['Jim Dale'] })], noConsensus, {
+      fields: ['narrator'],
+    });
+    expect(plan.proposals[0]).toMatchObject({ field: 'narrator', to: 'Jim Dale' });
+  });
+
   it('proposes nothing for a book that is already consistent', () => {
     const plan = planNormalize(book({ title: 'The Hobbit', authorName: 'J.R.R. Tolkien' }), [], noConsensus, {
       fields: [...(['title', 'author', 'narrator', 'series'] as const)],

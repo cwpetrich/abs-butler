@@ -1,4 +1,5 @@
 import type { AbsLibraryItem } from '../abs/types.js';
+import { hasAudio, hasEbook, isEbookOnly } from '../abs/media.js';
 import { TAG_PREFIX } from '../content/ageRating.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { recordFindings } from '../db/findings.js';
@@ -25,24 +26,6 @@ export interface IssueSpec {
   label: string;
   /** Per-item test. Duplicates are detected separately, across the whole set. */
   test?: (item: AbsLibraryItem) => boolean;
-}
-
-/**
- * A book library is not only audiobooks. AudiobookShelf holds EPUBs and PDFs
- * in the same libraries, and one of those has no audio by its nature — which
- * is a description of the book, not a fault in it.
- */
-export function hasAudio(item: AbsLibraryItem): boolean {
-  return (item.media?.numTracks ?? item.media?.numAudioFiles ?? 0) > 0;
-}
-
-export function hasEbook(item: AbsLibraryItem): boolean {
-  return Boolean(item.media?.ebookFormat || item.media?.ebookFile);
-}
-
-/** Reading copy only. An item carrying both is an audiobook with an ebook beside it. */
-export function isEbookOnly(item: AbsLibraryItem): boolean {
-  return !hasAudio(item) && hasEbook(item);
 }
 
 export const ISSUES: IssueSpec[] = [
@@ -88,7 +71,11 @@ export interface AuditFinding {
  * Sorted worst-first, so the items wanting attention lead and the clean ones
  * trail.
  */
-export function auditItems(items: AbsLibraryItem[], only?: string[]): AuditFinding[] {
+export function auditItems(
+  items: AbsLibraryItem[],
+  only?: string[],
+  crossFormat?: boolean,
+): AuditFinding[] {
   const wanted = only && only.length > 0 ? new Set(only) : null;
   const active = (wanted ? ISSUES.filter((spec) => wanted.has(spec.code)) : ISSUES).filter((s) => s.test);
 
@@ -115,7 +102,7 @@ export function auditItems(items: AbsLibraryItem[], only?: string[]): AuditFindi
   }
 
   if (!wanted || wanted.has('duplicate')) {
-    for (const group of findDuplicates(items)) {
+    for (const group of findDuplicates(items, { crossFormat })) {
       for (const item of group) record(item, 'duplicate');
     }
   }
@@ -123,13 +110,31 @@ export function auditItems(items: AbsLibraryItem[], only?: string[]): AuditFindi
   return [...findings.values()].sort((a, b) => b.issues.length - a.issues.length);
 }
 
-/** Groups items sharing a normalized title+author. Only groups of 2+ are returned. */
-export function findDuplicates(items: AbsLibraryItem[]): AbsLibraryItem[][] {
+/**
+ * Groups items sharing a normalized title+author. Only groups of 2+ are
+ * returned.
+ *
+ * Format is part of the key by default, so the audiobook and the EPUB of the
+ * same book are not reported against each other. They are not duplicates —
+ * they are one book in two formats, and a great many libraries deliberately
+ * hold both. `duplicate` is a warning someone acts on, sometimes by deleting
+ * something, so a pair that is obviously fine should not be in a list of
+ * things to review at all.
+ *
+ * `crossFormat` puts them back for anyone who does want to see them. Two copies
+ * of the *same* format are reported either way, which is the case worth
+ * catching: the same EPUB imported twice under different folder names.
+ */
+export function findDuplicates(
+  items: AbsLibraryItem[],
+  options: { crossFormat?: boolean } = {},
+): AbsLibraryItem[][] {
   const buckets = new Map<string, AbsLibraryItem[]>();
   for (const item of items) {
     const title = normalizeTitle(item.media?.metadata?.title);
     if (!title) continue;
-    const key = `${title}::${normalizeAuthor(itemAuthor(item))}`;
+    const format = options.crossFormat ? '' : `::${isEbookOnly(item) ? 'ebook' : 'audio'}`;
+    const key = `${title}::${normalizeAuthor(itemAuthor(item))}${format}`;
     const bucket = buckets.get(key);
     if (bucket) bucket.push(item);
     else buckets.set(key, [item]);
@@ -149,6 +154,11 @@ export interface AuditTaskOptions {
   library?: string;
   only?: string[];
   limit?: number;
+  /**
+   * Report an audiobook and an ebook of the same book as possible duplicates.
+   * Off unless asked for; see findDuplicates.
+   */
+  crossFormatDuplicates?: boolean;
 }
 
 export interface AuditTaskResult {
@@ -165,7 +175,11 @@ export async function runAuditTask(
 ): Promise<AuditTaskResult> {
   const libraries = await resolveLibraries(ctx, options.library);
   const items = await collectItems(ctx, libraries, { limit: options.limit });
-  const findings = auditItems(items, options.only);
+  const findings = auditItems(
+    items,
+    options.only,
+    options.crossFormatDuplicates ?? ctx.settings.crossFormatDuplicates,
+  );
   const affected = findings.filter((finding) => finding.issues.length > 0);
 
   const issueCounts = summarizeFindings(findings);

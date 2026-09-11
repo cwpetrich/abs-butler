@@ -13,6 +13,14 @@ export const SettingsSchema = z.object({
     .default(['audible', 'audiosilo', 'audnexus', 'openlibrary', 'googlebooks']),
   googleBooksApiKey: z.string().default(''),
   /**
+   * Whether an audiobook and an ebook of the same book count as duplicates.
+   *
+   * Off, because they are one book in two formats rather than a mistake, and
+   * `duplicate` is a warning people act on — sometimes by deleting something.
+   * Two copies of the same format are always reported, whatever this says.
+   */
+  crossFormatDuplicates: z.boolean().default(false),
+  /**
    * Ask GitHub, once every few hours, whether a newer version has been tagged.
    * On by default: an instance that quietly runs an old build is the more
    * likely harm. It is the only request abs-butler makes that is not about
