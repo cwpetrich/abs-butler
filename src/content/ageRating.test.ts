@@ -233,3 +233,73 @@ describe('one provider, one vote', () => {
     expect(assessContent(results).evidence.length).toBeGreaterThan(one.evidence.length);
   });
 });
+
+describe('adult by absence', () => {
+  const described = (provider: string, ...values: string[]) => ({
+    provider,
+    signals: values.map((value) => ({ source: `${provider}:genre`, value, weight: 0.8 })),
+  });
+
+  /**
+   * Nobody shelves a thriller as "adult fiction", so an adult novel matches no
+   * rule and used to score zero across every band — and `--max-age`, which
+   * lists the books too old for a reader, drops `unknown`. The books the
+   * feature exists to surface were the ones it could not see.
+   */
+  it('calls a book adult when enough sources described it and none mentioned an audience', () => {
+    const results = [
+      described('openlibrary', 'Science fiction', 'Space flight'),
+      described('audible', 'Sci-Fi & Fantasy'),
+    ] as unknown as Parameters<typeof assessContent>[0];
+
+    const assessment = assessContent(results);
+    expect(assessment.band).toBe('adult');
+    expect(assessment.evidence.join(' ')).toMatch(/no audience label/);
+  });
+
+  it('will not guess from a single source', () => {
+    const results = [described('openlibrary', 'Science fiction')] as unknown as Parameters<
+      typeof assessContent
+    >[0];
+    // One sparse answer is as likely to mean a thin catalogue entry as a
+    // grown-up book.
+    expect(assessContent(results).band).toBe('unknown');
+  });
+
+  it('stays unknown when nobody described the book at all', () => {
+    const results = [
+      { provider: 'openlibrary', signals: [] },
+      { provider: 'audible', signals: [] },
+    ] as unknown as Parameters<typeof assessContent>[0];
+    expect(assessContent(results).band).toBe('unknown');
+  });
+
+  it('never outranks a stated label', () => {
+    const results = [
+      described('openlibrary', 'Juvenile fiction'),
+      described('audible', 'Science fiction'),
+    ] as unknown as Parameters<typeof assessContent>[0];
+    // One source saying "juvenile" beats the other saying nothing.
+    expect(assessContent(results).band).toBe('middle-grade');
+  });
+
+  it('is less certain than a stated label ever gets', () => {
+    const many = ['a', 'b', 'c', 'd', 'e'].map((p) => described(p, 'Thrillers'));
+    const assessment = assessContent(many as unknown as Parameters<typeof assessContent>[0]);
+    expect(assessment.band).toBe('adult');
+    // Absence is evidence, not proof: capped well below what a label reaches.
+    expect(assessment.confidence).toBeLessThanOrEqual(0.6);
+    expect(assessment.confidence).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('is more certain the more catalogues stayed silent', () => {
+    const two = assessContent([described('a', 'Thrillers'), described('b', 'Thrillers')] as never);
+    const four = assessContent([
+      described('a', 'Thrillers'),
+      described('b', 'Thrillers'),
+      described('c', 'Thrillers'),
+      described('d', 'Thrillers'),
+    ] as never);
+    expect(four.confidence).toBeGreaterThan(two.confidence);
+  });
+});

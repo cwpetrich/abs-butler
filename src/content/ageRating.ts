@@ -139,6 +139,22 @@ export const TAG_PREFIX = {
   marker: 'abs-butler:rated',
 } as const;
 
+/**
+ * How many sources must have described a book before their silence on audience
+ * counts as evidence that it is an adult one. Two, because one sparse answer is
+ * as likely to mean a thin catalogue entry as a grown-up book.
+ */
+const MIN_SOURCES_FOR_ADULT_BY_ABSENCE = 2;
+
+/**
+ * Never as certain as a stated label, and more certain the more catalogues
+ * declined to call the book a children's book. Capped well below what positive
+ * evidence can reach.
+ */
+function absenceConfidence(sources: number): number {
+  return round(Math.min(0.6, 0.4 + 0.1 * (sources - MIN_SOURCES_FOR_ADULT_BY_ABSENCE)));
+}
+
 export function assessContent(results: ProviderResult[]): ContentAssessment {
   const scores: Record<AgeBand, number> = {
     'early-reader': 0,
@@ -199,6 +215,35 @@ export function assessContent(results: ProviderResult[]): ContentAssessment {
   const [topBand, topScore] = ranked[0]!;
   const runnerUp = ranked[1]?.[1] ?? 0;
 
+  // Silence, from enough sources that looked, is evidence.
+  //
+  // Every band here is inferred from a *positive* juvenile or teenage label,
+  // because that is what catalogues state outright. Nobody shelves a thriller
+  // as "adult fiction" — so an adult novel matched no rule, scored zero across
+  // the board, and came back `unknown`. That is not a cosmetic gap: `--max-age`
+  // lists the books too old for a reader and drops `unknown`, so the books the
+  // feature exists to surface were the ones it could not see.
+  //
+  // The inference is only made when several sources described the book and none
+  // of them said anything about audience. Children's books are labelled heavily
+  // and consistently — which is why the positive rules work at all — so two or
+  // more catalogues staying silent is meaningful rather than merely empty.
+  //
+  // It stays deliberately modest, and the direction of the error is chosen: a
+  // children's book called adult by mistake shows up in a list of books that
+  // are too old, which is a nuisance. An adult book left `unknown` is absent
+  // from that list, which is the failure that matters.
+  const describedBy = [...byProvider.values()].filter((group) =>
+    group.some((result) => (result.signals?.length ?? 0) > 0),
+  ).length;
+  const adultByAbsence = topScore === 0 && describedBy >= MIN_SOURCES_FOR_ADULT_BY_ABSENCE;
+
+  if (adultByAbsence) {
+    evidence.add(
+      `no audience label from ${describedBy} source(s), which is how an adult book looks`,
+    );
+  }
+
   // Confidence combines how strong the winning evidence is (volume) with how
   // clearly it beat the runner-up (margin). A book scoring 0.9 YA against 0.85
   // middle-grade is genuinely ambiguous and should say so.
@@ -223,8 +268,8 @@ export function assessContent(results: ProviderResult[]): ContentAssessment {
   const rated = results.filter((r) => typeof r.averageRating === 'number');
 
   return {
-    band: topScore === 0 ? 'unknown' : topBand,
-    confidence: Math.min(1, confidence),
+    band: adultByAbsence ? 'adult' : topScore === 0 ? 'unknown' : topBand,
+    confidence: Math.min(1, adultByAbsence ? absenceConfidence(describedBy) : confidence),
     flags,
     scores,
     evidence: [...evidence].slice(0, 20),
