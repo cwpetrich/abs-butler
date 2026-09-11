@@ -46,6 +46,12 @@ const RULES: Rule[] = [
   { pattern: /\b(board books?|picture books?|beginner readers?|early readers?)\b/i, band: 'early-reader', strength: 1 },
   { pattern: /\bages?\s*(0|1|2|3|4|5|6|7)\s*[-–]\s*(6|7|8)\b/i, band: 'early-reader', strength: 1 },
   { pattern: /\breaders? (for|level) (beginner|1|2)\b/i, band: 'early-reader', strength: 0.8 },
+  // Storefront categories for books a child cannot yet read alone: concept
+  // books, counting books, first words, learn-to-read. Apple's phrasing, and
+  // the only labels it has that separate a picture book from a chapter book —
+  // it files both under "Kids". Nothing else in the set says "Basic Concepts",
+  // so this does not collide with Open Library or BISAC vocabulary.
+  { pattern: /\b(basic concepts|counting & numbers|learning to read|early reading|words for kids|bedtime & dreams)\b/i, band: 'early-reader', strength: 0.9 },
 
   // A whole-catalogue kids shelf, in the two spellings the audiobook sources
   // use: Audible's ladder root "Children's Audiobooks", and AudioSilo's bare
@@ -71,6 +77,11 @@ const RULES: Rule[] = [
   { pattern: /\b(juvenile fiction|juvenile nonfiction|juvenile literature|children'?s (fiction|stories|literature))\b/i, band: 'middle-grade', strength: 0.9 },
   { pattern: /\bages?\s*(8|9|10)\s*[-–]\s*(11|12|13)\b/i, band: 'middle-grade', strength: 1 },
   { pattern: /\bchapter books?\b/i, band: 'middle-grade', strength: 0.7 },
+  // Apple's own phrasing for children's fiction, and stronger than the bare
+  // "Kids" above because it is a statement about the book rather than the shelf
+  // it sells from. It has to outweigh Apple's young-adult labels, which appear
+  // on middle-grade books too — see the weighting in providers/applebooks.ts.
+  { pattern: /\b(fiction for kids|kids fiction)\b/i, band: 'middle-grade', strength: 0.8 },
 
   { pattern: /\b(young adult|ya fiction|teen fiction|teenage fiction)\b/i, band: 'young-adult', strength: 1 },
   { pattern: /\bages?\s*(12|13|14)\s*(\+|up|and up|[-–]\s*(17|18))\b/i, band: 'young-adult', strength: 1 },
@@ -138,7 +149,22 @@ export function assessContent(results: ProviderResult[]): ContentAssessment {
   const flagScores = new Map<ContentFlag, { score: number; evidence: Set<string> }>();
   const evidence = new Set<string>();
 
+  // Grouped by provider, because the rule below is per provider and this loop
+  // used to be per *result* — which is not the same thing whenever a source
+  // answers with several editions of one book, and they all do. Apple returns
+  // eight usable hits for The Very Hungry Caterpillar, mostly spin-offs, each
+  // carrying "Fiction for Kids"; that one label was counted eight times and
+  // buried the "Basic Concepts for Kids" that made it a picture book. The
+  // effect is general — Audible returns up to ten — and it silently made
+  // whichever source was chattiest the loudest.
+  const byProvider = new Map<string, ProviderResult[]>();
   for (const result of results) {
+    const group = byProvider.get(result.provider);
+    if (group) group.push(result);
+    else byProvider.set(result.provider, [result]);
+  }
+
+  for (const group of byProvider.values()) {
     // A rule scores at most once per provider, taking its strongest match.
     // Crowd-sourced subject lists repeat themselves — Open Library shelves The
     // Very Hungry Caterpillar under "Children's fiction", "Juvenile fiction",
@@ -146,7 +172,7 @@ export function assessContent(results: ProviderResult[]): ContentAssessment {
     // would let one restated idea outvote a genuinely different signal.
     const best = new Map<Rule, { contribution: number; signal: ContentSignal }>();
 
-    for (const signal of result.signals ?? []) {
+    for (const signal of group.flatMap((result) => result.signals ?? [])) {
       for (const rule of RULES) {
         if (!rule.pattern.test(signal.value)) continue;
         const contribution = rule.strength * signal.weight;

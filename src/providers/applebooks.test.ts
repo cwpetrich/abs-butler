@@ -74,19 +74,34 @@ describe('AppleBooksProvider', () => {
   });
 
   /**
-   * Measured, not assumed. Apple's categories looked like the best audience
-   * data going and made age banding worse: 3/8 against Open Library's 4/8,
-   * with The Very Hungry Caterpillar and Goodnight Moon pushed to middle-grade,
-   * because Apple files everything from board books to age twelve under "Kids".
+   * Apple double-files: Charlotte's Web and Holes are both "Kids" and "Young
+   * Adult", while a genuine young-adult book carries no children's label at
+   * all. The young-adult rule is the strongest in the table, so at full weight
+   * Apple's filing pushed middle-grade books to young-adult.
    */
-  it('emits no content signals, so it cannot move an age band', async () => {
-    stub({ resultCount: 1, results: [HIT] });
+  it('discounts its own young-adult labels, which appear on middle-grade books', async () => {
+    stub({
+      resultCount: 1,
+      results: [{ trackName: 'x', genres: ['Fiction for Kids', 'Fiction for Young Adults'] }],
+    });
     const [result] = await new AppleBooksProvider().search({ title: 'x' });
-    expect(result!.signals).toEqual([]);
-    // The genres still travel for display; they are just not `subjects`, which
-    // is what the age rules read.
-    expect(result!.genres).not.toHaveLength(0);
-    expect(result!.subjects).toBeUndefined();
+    const weight = (v: string) => result!.signals.find((s) => s.value === v)?.weight;
+
+    expect(weight('Fiction for Young Adults')).toBeLessThan(weight('Fiction for Kids')!);
+  });
+
+  /**
+   * Not cosmetic. Rules sum within a provider — only the *same* rule dedupes —
+   * so the vague "Kids" rule stacked on top of "Fiction for Kids" and outvoted
+   * the early-reader signal that made the book a picture book.
+   */
+  it('drops the storefront sections that duplicate the specific labels', async () => {
+    stub({
+      resultCount: 1,
+      results: [{ trackName: 'x', genres: ['Kids', 'Young Adult', 'Fiction for Kids'] }],
+    });
+    const [result] = await new AppleBooksProvider().search({ title: 'x' });
+    expect(result!.genres).toEqual(['Fiction for Kids']);
   });
 
   it('falls back to the single genre an audiobook record carries', async () => {
