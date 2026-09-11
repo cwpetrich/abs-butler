@@ -211,4 +211,20 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_findings_run ON findings(run_id, id);
   `,
 
+  // 9 — enrol existing installs in Apple Books
+  //
+  // Same reasoning as migration 7: updateSettings writes every key, so anyone
+  // who has saved Settings carries an explicit provider list that a changed
+  // default never reaches. Rewritten only where the stored list is exactly a
+  // previous default — someone who never chose — and left alone wherever it has
+  // been edited, including a list that deliberately drops a provider.
+  `
+  UPDATE settings
+     SET value = '["audible","audiosilo","audnexus","openlibrary","googlebooks","applebooks"]'
+   WHERE key = 'providers'
+     AND value IN (
+       '["audible","audiosilo","audnexus","openlibrary","googlebooks"]',
+       '["audnexus","openlibrary","googlebooks"]'
+     );
+  `,
 ];
