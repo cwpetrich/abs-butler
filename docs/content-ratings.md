@@ -57,6 +57,29 @@ Adding one means implementing `MetadataProvider` in `src/providers/` and registe
 `src/providers/index.ts`. Anything that emits `ContentSignal`s feeds the existing scoring with no
 other changes.
 
+### Why silence counts as evidence for adult
+
+The bands are built from labels catalogues actually apply, and those are all juvenile or teenage:
+"Juvenile fiction", "Young Adult", "Fiction for Kids". There is no corresponding label for a book
+written for grown-ups — nobody shelves a thriller as "adult fiction" — so an adult novel matches no
+rule at all and scores zero in every band.
+
+That produced a specific, quiet failure. `--max-age` reports the books banded above a reader's age
+and drops `unknown`, so *Project Hail Mary*, *Gone Girl*, *Dune* and *The Silent Patient* were all
+absent from the one report meant to find them.
+
+When two or more sources describe a book and none mentions an audience, the book is now banded
+adult. The reasoning is that children's books are labelled heavily and consistently — which is the
+reason the positive rules work at all — so several catalogues staying silent is a fact rather than
+an absence of facts. It is capped at 0.6 confidence, below what a stated label reaches, and it never
+applies when any band scored above zero.
+
+The direction of the error is deliberate. A children's book wrongly called adult appears in a list
+of books that are too old, which is a nuisance. An adult book left `unknown` is missing from that
+list, which is the failure that matters. Measured across fourteen titles spanning all four bands the
+result was 14/14, and across eight deliberately obscure children's and YA titles there were no false
+adults.
+
 ### A note on hierarchical categories
 
 A source that returns category *paths* rather than a flat list needs care. Audible nests specific

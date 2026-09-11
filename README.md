@@ -164,6 +164,15 @@ exact edition, but it is no longer the difference between an answer and nothing.
 counts at most once within one, so two of them saying the same thing raises the winning band and
 the runner-up together — leaving the margin, and therefore the confidence, where it was.
 
+**An adult book is recognized by what nobody says about it.** Every band is inferred from a
+*positive* juvenile or teenage label, because that is what catalogues state outright — nobody
+shelves a thriller as "adult fiction". So adult novels matched no rule, scored zero, and came back
+`unknown`, which mattered more than it sounds: `--max-age` lists the books too old for a reader and
+skips `unknown`, so the books it exists to surface were the ones it could not see. When two or more
+sources describe a book and none of them mentions an audience, it is banded adult — at a lower
+confidence than any stated label reaches, and never over one. A book nobody described stays
+`unknown`; no data, no guess.
+
 **One provider, one vote.** A rule counts at most once per *source*, however many editions that
 source returned. This is worth stating because it was not true until recently: the deduplication
 was per result, and a source answering with eight editions of one book — Apple does exactly that
