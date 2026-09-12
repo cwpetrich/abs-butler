@@ -48,8 +48,12 @@ beforeEach(() => {
   router = buildApiRouter({ db, runner, auth: {}, isSecure: () => true } as unknown as ApiDeps);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Awaited before the database closes: a run still winding up writes its last
+  // log lines on a timer, and closing underneath it fails the whole file with
+  // "database is not open" long after every test has passed.
   runner.stop();
+  await runner.drained(1000);
   closeDb();
   delete process.env.BUTLER_DATA_DIR;
   rmSync(dir, { recursive: true, force: true });
@@ -186,6 +190,12 @@ describe('GET /api/runs/:id/items', () => {
 });
 
 describe('POST /api/runs/:id/apply', () => {
+  // What is under test is that the endpoint queues the right work, not the
+  // runner carrying it out — and carrying it out here would have it reach for
+  // an AudiobookShelf that is not there. A stopped runner accepts the queue and
+  // leaves it alone.
+  beforeEach(() => runner.stop());
+
   /** A finished dry run with one book still waiting to be written. */
   function planned(): number {
     saveConnection(db, { url: 'http://localhost:13378', apiKey: 'k' });
