@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type Finding, type Run, type RevertResult } from '../api';
+import { api, type RunItem, type RunItemStatus, type Run, type RevertResult } from '../api';
 import { Banner, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 import { LogStream } from '../components/LogStream';
 
@@ -76,7 +76,7 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
         <Banner tone={data.status === 'cancelled' ? 'warn' : 'err'}>{data.error}</Banner>
       )}
 
-      {data.command === 'audit' && <FindingsPanel run={data} />}
+      <RunItemsPanel run={data} />
 
       <RevertPanel run={data} onReverted={run.reload} />
 
@@ -103,71 +103,99 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
 }
 
 /**
- * Every book the audit looked at, and what was wrong with each — if anything.
+ * Every book the run looked at, and what it had to say about each.
  *
- * Passes are listed, not omitted. A book absent from the report is
- * indistinguishable from one that was never scanned, and "which of my books
- * are fine" is as much a question as "which are broken". The counts double as
- * filters, so picking one narrows the table to the items behind it.
+ * Items it had nothing to do to are listed, not omitted. A book absent from the
+ * report is indistinguishable from one that was never reached, and "which of my
+ * books are fine" is as much a question as "which are not". The counts double
+ * as filters, so picking one narrows the table to the items behind it.
  *
- * The summary answers "how many", which on its own reads as an alarm and gives
- * nobody anything to do: every book is `unrated` until `rate` has run once, so
- * a first audit legitimately flags the whole library.
+ * One panel for every command. The statuses are shared — something to do,
+ * nothing to do, passed over — and only the wording differs, which the server
+ * sends along with the vocabulary of codes so the browser keeps no copy of
+ * either to drift out of date.
  */
-function FindingsPanel({ run }: { run: Run }) {
-  const [filter, setFilter] = useState<{ issue?: string; status?: 'issues' | 'clean' }>({});
+function RunItemsPanel({ run }: { run: Run }) {
+  const [filter, setFilter] = useState<{ code?: string; status?: RunItemStatus }>({});
   const [limit, setLimit] = useState(100);
   const meta = useAsync(() => api.meta(), []);
   const page = useAsync(
-    () => api.findings(run.id, { ...filter, limit }),
-    [run.id, filter.issue, filter.status, limit],
+    () => api.runItems(run.id, { ...filter, limit }),
+    [run.id, filter.code, filter.status, limit],
   );
-
-  const counts = (run.summary?.issueCounts ?? {}) as Record<string, number>;
-  const scanned = (run.summary?.scanned as number) ?? 0;
-  const affected = (run.summary?.itemsWithIssues as number) ?? 0;
-  const labels = new Map((meta.data?.auditIssues ?? []).map((i) => [i.code, i]));
-  // Ordered by the server's own list, so the most serious issues lead rather
-  // than whichever happened to be counted first.
-  const present = (meta.data?.auditIssues ?? []).filter((i) => (counts[i.code] ?? 0) > 0);
 
   if (run.status === 'running' || run.status === 'queued') return null;
 
+  const totals = page.data?.totals;
+  const labels = meta.data?.runItemLabels?.[run.command];
+  // Audit codes carry a severity and a human label; every other command's are
+  // bare words from its own vocabulary, humanized on the way out.
+  const issues = new Map((meta.data?.auditIssues ?? []).map((i) => [i.code, i]));
+  const codeLabel = (code: string) => issues.get(code)?.label ?? humanize(code);
   const tone = (code: string) =>
-    labels.get(code)?.severity === 'error' ? 'err' : labels.get(code)?.severity === 'warn' ? 'warn' : '';
+    issues.get(code)?.severity === 'error' ? 'err' : issues.get(code)?.severity === 'warn' ? 'warn' : '';
+
+  // In the server's order where it has one — worst issue first — and by how
+  // many items carry it otherwise, so the common case leads.
+  const codes = Object.entries(totals?.byCode ?? {}).sort((a, b) => {
+    const ranked = [...issues.keys()];
+    const ia = ranked.indexOf(a[0]);
+    const ib = ranked.indexOf(b[0]);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    return b[1] - a[1];
+  });
+
   const chip = (active: boolean) => (active ? 'small primary' : 'small');
-  const selected = filter.issue ?? filter.status ?? 'all';
+  const selected = filter.code ?? filter.status ?? 'all';
+  const statuses: RunItemStatus[] = ['action', 'clean', 'skipped'];
+
+  if (totals && totals.total === 0) {
+    return (
+      <div className="card">
+        <h2>What this run did</h2>
+        <p className="hint">
+          Nothing recorded for this run. Detail is kept for the ten most recent runs, and runs from
+          before this version kept only the counts.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="card">
-      <h2>What the audit found</h2>
+      <h2>What this run did</h2>
 
-      <p className="hint">
-        {affected} of {scanned} item(s) have at least one issue; {scanned - affected} passed every
-        check.
-      </p>
+      {totals && labels && (
+        <p className="hint">
+          {totals.total} item(s) looked at — {totals.byStatus.action} with something to do,{' '}
+          {totals.byStatus.clean} with nothing to do, {totals.byStatus.skipped} passed over.
+        </p>
+      )}
 
       <div className="actions" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
         <button className={chip(selected === 'all')} onClick={() => setFilter({})}>
-          Everything ({scanned})
+          Everything ({totals?.total ?? 0})
         </button>
-        <button
-          className={chip(selected === 'issues')}
-          onClick={() => setFilter({ status: 'issues' })}
-        >
-          With issues ({affected})
-        </button>
-        <button className={chip(selected === 'clean')} onClick={() => setFilter({ status: 'clean' })}>
-          Passed ({scanned - affected})
-        </button>
-        {present.map((spec) => (
+        {labels &&
+          statuses
+            .filter((status) => (totals?.byStatus[status] ?? 0) > 0)
+            .map((status) => (
+              <button
+                key={status}
+                className={chip(selected === status)}
+                onClick={() => setFilter({ status })}
+              >
+                {labels[status]} ({totals?.byStatus[status]})
+              </button>
+            ))}
+        {codes.map(([code, count]) => (
           <button
-            key={spec.code}
-            className={chip(selected === spec.code)}
-            title={spec.code}
-            onClick={() => setFilter({ issue: spec.code })}
+            key={code}
+            className={chip(selected === code)}
+            title={code}
+            onClick={() => setFilter({ code })}
           >
-            {spec.label} ({counts[spec.code]})
+            {codeLabel(code)} ({count})
           </button>
         ))}
       </div>
@@ -175,40 +203,31 @@ function FindingsPanel({ run }: { run: Run }) {
       {page.loading && !page.data && <Spinner />}
       {page.error && <Banner tone="err">{page.error}</Banner>}
 
-      {page.data && page.data.findings.length === 0 && (
-        <p className="hint">
-          {selected === 'all'
-            ? 'Nothing recorded for this run. Audits from before this version kept only the counts.'
-            : 'No items match that filter.'}
-        </p>
+      {page.data && page.data.items.length === 0 && (
+        <p className="hint">No items match that filter.</p>
       )}
 
-      {page.data && page.data.findings.length > 0 && (
+      {page.data && page.data.items.length > 0 && (
         <>
           <table>
             <thead>
               <tr>
                 <th>Title</th>
                 <th>Author</th>
-                <th>Issues</th>
+                <th>What happened</th>
               </tr>
             </thead>
             <tbody>
-              {page.data.findings.map((finding) => (
-                <FindingRow
-                  key={finding.id}
-                  finding={finding}
-                  tone={tone}
-                  label={(c) => labels.get(c)?.label ?? c}
-                />
+              {page.data.items.map((item) => (
+                <ItemRow key={item.id} item={item} tone={tone} label={codeLabel} />
               ))}
             </tbody>
           </table>
 
-          {page.data.total > page.data.findings.length && (
+          {page.data.total > page.data.items.length && (
             <div className="actions">
               <button onClick={() => setLimit((n) => n + 200)}>
-                Showing {page.data.findings.length} of {page.data.total} — show more
+                Showing {page.data.items.length} of {page.data.total} — show more
               </button>
             </div>
           )}
@@ -218,12 +237,18 @@ function FindingsPanel({ run }: { run: Run }) {
   );
 }
 
-function FindingRow({
-  finding,
+/**
+ * The codes say what kind of thing happened and the detail lines say what
+ * actually happened to this book — "description: — → The story of… (from
+ * googlebooks)". Both, because the chip is what you filter by and the line is
+ * what you judge the change on.
+ */
+function ItemRow({
+  item,
   tone,
   label,
 }: {
-  finding: Finding;
+  item: RunItem;
   tone: (code: string) => string;
   label: (code: string) => string;
 }) {
@@ -231,18 +256,27 @@ function FindingRow({
     <tr>
       {/* The path is what someone needs to go and look at the book, and it is
           too long for a column of its own on most libraries. */}
-      <td title={finding.path}>{finding.title}</td>
-      <td className="dim">{finding.author ?? '—'}</td>
+      <td title={item.path}>{item.title}</td>
+      <td className="dim">{item.author ?? '—'}</td>
       <td>
-        {finding.issues.length === 0 ? (
-          <span className="badge ok">No issues</span>
-        ) : (
-          finding.issues.map((code) => (
-            <span key={code} className={`badge ${tone(code)}`} style={{ marginRight: 4 }} title={code}>
-              {label(code)}
+        <div>
+          {item.codes.length === 0 ? (
+            <span className={`badge ${item.status === 'clean' ? 'ok' : ''}`}>
+              {item.status === 'clean' ? 'Nothing to do' : 'Passed over'}
             </span>
-          ))
-        )}
+          ) : (
+            item.codes.map((code) => (
+              <span key={code} className={`badge ${tone(code)}`} style={{ marginRight: 4 }} title={code}>
+                {label(code)}
+              </span>
+            ))
+          )}
+        </div>
+        {item.detail.map((line, i) => (
+          <div key={i} className="dim mono" style={{ fontSize: 12, marginTop: 2 }}>
+            {line}
+          </div>
+        ))}
       </td>
     </tr>
   );

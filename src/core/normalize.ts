@@ -13,6 +13,8 @@ import {
 import { lookupItem, lookupDepsFor } from './lookup.js';
 import { MATCH_MIN_IDENTITY, MATCH_MIN_REWRITE, type Candidate } from './matching.js';
 import { itemQuery } from './query.js';
+import type { RunItemInput } from '../db/runItems.js';
+import { breakdown, brief, itemPath, plural, reportItems } from './report.js';
 import { applyPatch } from './revisions.js';
 
 /**
@@ -714,11 +716,38 @@ export interface NormalizeTaskResult {
   fieldsToChange: number;
   /** Replacements refused because "Allow metadata rewrite" is off. */
   heldBack: number;
+  /** Items whose every proposal was held back, so nothing was written to them. */
+  itemsHeldBack: number;
   updated: number;
   applied: boolean;
   fields: Normalizable[];
   bySource: Record<ProposalSource, number>;
+  /** How many changes each field accounts for. */
+  byField: Record<string, number>;
   plans: NormalizePlan[];
+  /**
+   * Exactly what was recorded against the run, one row per book — including the
+   * ones that already agree. Returned as well as stored so `--details` and the
+   * run's page in the web UI say the same thing.
+   */
+  report: RunItemInput[];
+}
+
+/**
+ * One line per proposal: the old spelling, the new one, and which of the three
+ * evidence tiers backs it. The tier is the thing to scan for in a dry run —
+ * `provider` is an exact identifier match, `consensus` is the rest of the
+ * library already spelling it the other way, `local` is only a rearrangement of
+ * the wording that is already there.
+ */
+function normalizeDetail(plan: NormalizePlan, mayReplace: boolean): string[] {
+  return plan.proposals.map((proposal) => {
+    const held = !mayReplace && !isAdditive(proposal) ? ' [held back]' : '';
+    return (
+      `${proposal.field}: ${brief(proposal.from)} → ${brief(proposal.to, 70)} ` +
+      `(${proposal.source}: ${proposal.detail})${held}`
+    );
+  });
 }
 
 export async function runNormalizeTask(
@@ -752,7 +781,7 @@ export async function runNormalizeTask(
     );
   }
 
-  log.info(`checking ${items.length} item(s) for ${requested.join(', ')} inconsistencies…`);
+  log.info(`checking ${plural(items.length, 'item')} for ${requested.join(', ')} inconsistencies…`);
 
   const plans = await mapLimit(
     items,
@@ -783,8 +812,12 @@ export async function runNormalizeTask(
   const fieldsToChange = actionable.reduce((sum, p) => sum + p.proposals.length, 0);
 
   const bySource: Record<ProposalSource, number> = { provider: 0, consensus: 0, local: 0 };
+  const byField: Record<string, number> = {};
   for (const plan of actionable) {
-    for (const proposal of plan.proposals) bySource[proposal.source] += 1;
+    for (const proposal of plan.proposals) {
+      bySource[proposal.source] += 1;
+      byField[proposal.field] = (byField[proposal.field] ?? 0) + 1;
+    }
   }
 
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -799,9 +832,19 @@ export async function runNormalizeTask(
         .map((plan) => ({ ...plan, proposals: plan.proposals.filter(isAdditive) }))
         .filter((plan) => plan.proposals.length > 0);
   const heldBack = fieldsToChange - applicable.reduce((sum, p) => sum + p.proposals.length, 0);
+  const writable = new Set(applicable.map((plan) => plan.itemId));
+  // Items where *everything* proposed was a replacement: the run has nothing
+  // left to write to them, which is a different outcome from a partial hold.
+  const itemsHeldBack = actionable.filter((plan) => !writable.has(plan.itemId)).length;
 
-  if (options.apply && heldBack > 0) {
-    log.warn(`${heldBack} change(s) replace an existing value and were held back. ${REWRITE_DISABLED}`);
+  // Warned in a dry run too. Held-back changes are the ones most likely to be
+  // read as "it did not find anything", and finding out only on apply — after
+  // reading the whole library — is late.
+  if (heldBack > 0) {
+    log.warn(
+      `${plural(heldBack, 'change')} across ${plural(itemsHeldBack, 'item')} ` +
+        `${options.apply ? 'were' : 'would be'} held back — they replace an existing value. ${REWRITE_DISABLED}`,
+    );
   }
 
   let updated = 0;
@@ -813,22 +856,80 @@ export async function runNormalizeTask(
       updated += 1;
       if (updated % 25 === 0) log.info(`  wrote ${updated}/${applicable.length}`);
     }
-    log.success(`Normalized ${updated} item(s).`);
-  } else if (actionable.length === 0) {
-    log.success('Everything already agrees.');
-  } else {
-    log.info(`${actionable.length} item(s) would change. Apply to write.`);
   }
+
+  // What kind of disagreement this library has, and on what evidence. A bare
+  // "412 item(s) would change" says nothing about whether that is one series
+  // spelled two ways or every narrator in the library.
+  if (fieldsToChange > 0) {
+    log.info(
+      `${plural(fieldsToChange, 'change')} across ${plural(actionable.length, 'item')} — ` +
+        `${breakdown(byField, requested)}`,
+    );
+    log.info(
+      `evidence — ${bySource.provider} from providers, ${bySource.consensus} from library ` +
+        `consensus, ${bySource.local} local`,
+    );
+  }
+
+  if (options.apply) {
+    log.success(
+      `Normalized ${plural(updated, 'item')} of ${items.length} checked` +
+        `; ${items.length - actionable.length} already agreed.`,
+    );
+  } else if (actionable.length === 0) {
+    log.success(`Everything already agrees — all ${plural(items.length, 'item')} checked.`);
+  } else {
+    log.info(
+      `${plural(actionable.length, 'item')} would change` +
+        `${itemsHeldBack > 0 ? ` (${itemsHeldBack} of them held back entirely)` : ''}` +
+        `; ${items.length - actionable.length} already agree. Apply to write.`,
+    );
+  }
+
+  // Every book checked, with what it disagreed with the library about — and
+  // which of those the rewrite switch stopped from being written.
+  const report: RunItemInput[] = plans.map((plan) => {
+      const held = !mayReplace && plan.proposals.some((proposal) => !isAdditive(proposal));
+      const nothingWritable = plan.proposals.length > 0 && !writable.has(plan.itemId);
+      return {
+        itemId: plan.itemId,
+        title: plan.title,
+        author: plan.author,
+        path: itemPath(byId.get(plan.itemId)!),
+        status:
+          plan.proposals.length === 0
+            ? ('clean' as const)
+            : nothingWritable
+              ? ('skipped' as const)
+              : ('action' as const),
+        codes: [
+          ...new Set([
+            ...plan.proposals.map((proposal) => proposal.field),
+            ...plan.proposals.map((proposal) => proposal.source),
+            ...(held ? ['held-back'] : []),
+          ]),
+        ],
+        detail:
+          plan.proposals.length === 0
+            ? ['Already agrees with the rest of the library']
+            : normalizeDetail(plan, mayReplace),
+    };
+  });
+  reportItems(ctx, report);
 
   return {
     scanned: items.length,
     itemsToChange: actionable.length,
     fieldsToChange,
     heldBack,
+    itemsHeldBack,
     updated,
     applied: Boolean(options.apply),
     fields: requested,
     bySource,
+    byField,
     plans: actionable,
+    report,
   };
 }

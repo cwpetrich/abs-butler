@@ -343,6 +343,45 @@ describe('settings migration', () => {
     });
   });
 
+  /**
+   * The upgrade path for an install that has already audited something. Audit
+   * findings become run items, which every command writes — so the rows must
+   * survive the rename and come out with a status they never had.
+   */
+  describe('findings becoming run items', () => {
+    const RUN_ITEMS = 10;
+    const FINDINGS = 8;
+
+    it('keeps what old audits found, and says which of them passed', () => {
+      // Wind the table back to its pre-migration shape and run the migration
+      // over it, which is the only way to observe its effect on rows written
+      // before it existed.
+      db.exec('DROP TABLE run_items');
+      db.exec(MIGRATIONS[FINDINGS - 1]!);
+
+      const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
+      const insert = db.prepare(
+        'INSERT INTO findings (run_id, item_id, title, author, path, issues) VALUES (?, ?, ?, ?, ?, ?)',
+      );
+      insert.run(runId, 'a', 'Dune', 'Frank Herbert', '/b/dune', ',unrated,');
+      insert.run(runId, 'b', 'Persuasion', 'Jane Austen', '/b/p', ',,');
+
+      db.exec(MIGRATIONS[RUN_ITEMS - 1]!);
+
+      const rows = db
+        .prepare('SELECT item_id, status, codes, detail FROM run_items ORDER BY id')
+        .all() as unknown as Array<{ item_id: string; status: string; codes: string; detail: string }>;
+
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ item_id: 'a', status: 'action', codes: ',unrated,' });
+      // No codes meant the audit found nothing against it — which is now said
+      // rather than inferred from an empty list.
+      expect(rows[1]).toMatchObject({ item_id: 'b', status: 'clean' });
+      // Nothing to say about a book audited before the detail existed.
+      expect(rows[0]!.detail).toBe('');
+    });
+  });
+
   it('keeps allowFileChanges off unless it is explicitly turned on', () => {
     expect(getSettings(db).allowFileChanges).toBe(false);
     expect(updateSettings(db, { allowFileChanges: true }).allowFileChanges).toBe(true);

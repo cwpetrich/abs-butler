@@ -5,6 +5,8 @@ import { mapLimit } from '../providers/http.js';
 import type { ProviderResult } from '../providers/types.js';
 import { isBlank } from '../util/text.js';
 import { lookupItem, lookupDepsFor, type LookupDeps } from './lookup.js';
+import type { RunItemInput } from '../db/runItems.js';
+import { breakdown, brief, itemPath, plural, reportItems } from './report.js';
 import { applyPatch } from './revisions.js';
 import { itemQuery } from './query.js';
 
@@ -100,7 +102,29 @@ export interface MetadataTaskResult {
   updated: number;
   applied: boolean;
   fields: Fillable[];
+  /** How many books each field would be filled in on. */
+  fieldCounts: Record<string, number>;
+  /** How many values each provider supplied — which ones are earning their keep. */
+  sourceCounts: Record<string, number>;
   plans: MetadataPlan[];
+  /**
+   * Exactly what was recorded against the run, one row per book — including the
+   * ones with nothing missing. Returned as well as stored so `--details` and
+   * the run's page in the web UI say the same thing.
+   */
+  report: RunItemInput[];
+}
+
+/**
+ * One line per field the run would write, saying what it is replacing and who
+ * said so. The value is shown, not just named: "description from googlebooks"
+ * is not something anyone can approve or object to without reading it.
+ */
+function metadataDetail(plan: MetadataPlan): string[] {
+  return plan.changes.map(
+    (change) =>
+      `${change.field}: ${brief(change.from)} → ${brief(change.to, 90)} (from ${change.source})`,
+  );
 }
 
 export async function runMetadataTask(
@@ -117,7 +141,7 @@ export async function runMetadataTask(
 
   const libraries = await resolveLibraries(ctx, options.library);
   const items = await collectItems(ctx, libraries, { limit: options.limit });
-  log.info(`checking ${items.length} item(s) for missing ${requested.join(', ')}…`);
+  log.info(`checking ${plural(items.length, 'item')} for missing ${requested.join(', ')}…`);
 
   const plans = await mapLimit(
     items,
@@ -127,6 +151,15 @@ export async function runMetadataTask(
   );
   const actionable = plans.filter((p) => p.changes.length > 0);
   const fieldsToFill = actionable.reduce((sum, p) => sum + p.changes.length, 0);
+
+  const fieldCounts: Record<string, number> = {};
+  const sourceCounts: Record<string, number> = {};
+  for (const plan of actionable) {
+    for (const change of plan.changes) {
+      fieldCounts[change.field] = (fieldCounts[change.field] ?? 0) + 1;
+      sourceCounts[change.source] = (sourceCounts[change.source] ?? 0) + 1;
+    }
+  }
 
   const byId = new Map(items.map((item) => [item.id, item]));
 
@@ -140,13 +173,48 @@ export async function runMetadataTask(
       }
       await applyPatch(ctx, byId.get(plan.itemId)!, patch);
       updated += 1;
+      if (updated % 25 === 0) log.info(`  wrote ${updated}/${actionable.length}`);
     }
-    log.success(`Updated ${updated} item(s).`);
-  } else if (actionable.length === 0) {
-    log.success('Nothing to fill in.');
-  } else {
-    log.info(`${actionable.length} item(s) would be updated. Apply to write.`);
   }
+
+  // Which fields were short, and who answered for them. The counts on their own
+  // say how much work there is without saying what kind: "38 item(s) would be
+  // updated" reads the same whether it is 38 missing descriptions or one field
+  // missing everywhere.
+  if (fieldsToFill > 0) {
+    log.info(
+      `${plural(fieldsToFill, 'gap')} to fill across ${plural(actionable.length, 'item')} — ` +
+        `${breakdown(fieldCounts, requested)}`,
+    );
+    log.info(`answered by — ${breakdown(sourceCounts)}`);
+  }
+
+  if (options.apply) {
+    log.success(
+      `Updated ${plural(updated, 'item')} of ${items.length} checked` +
+        `; ${items.length - actionable.length} had nothing missing.`,
+    );
+  } else if (actionable.length === 0) {
+    log.success(`Nothing to fill in — all ${plural(items.length, 'item')} already have ${requested.join(', ')}.`);
+  } else {
+    log.info(
+      `${plural(actionable.length, 'item')} would be updated` +
+        `; ${items.length - actionable.length} had nothing missing. Apply to write.`,
+    );
+  }
+
+  // Every book checked, including the ones with nothing missing — which is the
+  // answer to "did it look at this one and find it complete, or not look at all".
+  const report: RunItemInput[] = plans.map((plan) => ({
+    itemId: plan.itemId,
+    title: plan.title,
+    author: plan.author,
+    path: itemPath(byId.get(plan.itemId)!),
+    status: plan.changes.length > 0 ? ('action' as const) : ('clean' as const),
+    codes: plan.changes.map((change) => change.field),
+    detail: plan.changes.length > 0 ? metadataDetail(plan) : ['Nothing missing'],
+  }));
+  reportItems(ctx, report);
 
   return {
     scanned: items.length,
@@ -155,6 +223,9 @@ export async function runMetadataTask(
     updated,
     applied: Boolean(options.apply),
     fields: requested,
+    fieldCounts,
+    sourceCounts,
     plans: actionable,
+    report,
   };
 }

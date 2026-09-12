@@ -4,7 +4,9 @@ import { dirname, extname, join, resolve, sep } from 'node:path';
 import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import type { ConnectionRecord } from '../db/connection.js';
+import type { RunItemInput } from '../db/runItems.js';
 import { assessCapability, toLocalPath, type Capability } from './capability.js';
+import { itemIdentity, plural, reportItems } from './report.js';
 import { log } from '../logger.js';
 import { padSequence, sanitizePathSegment } from '../util/text.js';
 
@@ -101,44 +103,103 @@ function fileTarget(item: AbsLibraryItem, folderPath: string): string | null {
   return `${folderPath}/${vars.title}${extension}`;
 }
 
+/**
+ * Why an item is not moving.
+ *
+ * `in-place` is the good outcome and the common one — the book is already where
+ * the template says it belongs. The rest are the run declining, and each one
+ * used to be an indistinguishable `null`: a library where every item failed to
+ * render a path reported exactly the same "0 items to move" as one that was
+ * already perfectly organized.
+ */
+export type NoMoveCode =
+  | 'in-place'
+  | 'unknown-folder'
+  | 'template-empty'
+  | 'no-extension'
+  | 'outside-root';
+
+export interface NoMove {
+  code: NoMoveCode;
+  reason: string;
+}
+
+export type MoveOutcome = { plan: MovePlan } | { plan: null } & NoMove;
+
+/**
+ * Where an item belongs under the template, or why that question has no answer
+ * for it.
+ *
+ * `planMove` is the same decision with the reason thrown away; it stays because
+ * most callers only want the plan.
+ */
+export function planMoveOutcome(
+  item: AbsLibraryItem,
+  library: AbsLibrary,
+  template: string,
+  config: Pick<ConnectionRecord, 'libraryRoot' | 'pathPrefix'>,
+): MoveOutcome {
+  const folder = library.folders.find((f) => f.id === item.folderId) ?? library.folders[0];
+  if (!folder) {
+    return { plan: null, code: 'unknown-folder', reason: 'its library folder is not one this server reports' };
+  }
+
+  const rendered = renderTemplate(template, templateVars(item));
+  if (!rendered) {
+    return {
+      plan: null,
+      code: 'template-empty',
+      reason: `the template rendered empty — ${template} needs fields this item does not have`,
+    };
+  }
+
+  // A file with no extension is left alone: it cannot be named on the far side
+  // without inventing one, and guessing at a media type is not this tool's job.
+  const target = item.isFile ? fileTarget(item, rendered) : rendered;
+  if (!target) {
+    return { plan: null, code: 'no-extension', reason: 'it is a loose file with no extension to move under' };
+  }
+
+  const currentRel = (item.relPath ?? '').replace(/^\/+/, '');
+  if (currentRel === target) return { plan: null, code: 'in-place', reason: 'it already matches the template' };
+
+  const fromLocal = toLocalPath(item.path, config);
+  const folderLocal = toLocalPath(folder.fullPath, config);
+  if (!fromLocal || !folderLocal) {
+    return {
+      plan: null,
+      code: 'outside-root',
+      reason: `its path (${item.path}) is not under the configured library root`,
+    };
+  }
+
+  const toLocal = join(folderLocal, target);
+  if (resolve(fromLocal) === resolve(toLocal)) {
+    return { plan: null, code: 'in-place', reason: 'it already matches the template' };
+  }
+
+  return {
+    plan: {
+      itemId: item.id,
+      title: itemTitle(item),
+      ...(item.isFile ? { fromFile: true } : {}),
+      rootLocal: folderLocal,
+      from: currentRel || item.path,
+      to: target,
+      fromLocal,
+      toLocal,
+      libraryId: item.libraryId,
+    },
+  };
+}
+
 export function planMove(
   item: AbsLibraryItem,
   library: AbsLibrary,
   template: string,
   config: Pick<ConnectionRecord, 'libraryRoot' | 'pathPrefix'>,
 ): MovePlan | null {
-  const folder = library.folders.find((f) => f.id === item.folderId) ?? library.folders[0];
-  if (!folder) return null;
-
-  const rendered = renderTemplate(template, templateVars(item));
-  if (!rendered) return null;
-
-  // A file with no extension is left alone: it cannot be named on the far side
-  // without inventing one, and guessing at a media type is not this tool's job.
-  const target = item.isFile ? fileTarget(item, rendered) : rendered;
-  if (!target) return null;
-
-  const currentRel = (item.relPath ?? '').replace(/^\/+/, '');
-  if (currentRel === target) return null;
-
-  const fromLocal = toLocalPath(item.path, config);
-  const folderLocal = toLocalPath(folder.fullPath, config);
-  if (!fromLocal || !folderLocal) return null;
-
-  const toLocal = join(folderLocal, target);
-  if (resolve(fromLocal) === resolve(toLocal)) return null;
-
-  return {
-    itemId: item.id,
-    title: itemTitle(item),
-    ...(item.isFile ? { fromFile: true } : {}),
-    rootLocal: folderLocal,
-    from: currentRel || item.path,
-    to: target,
-    fromLocal,
-    toLocal,
-    libraryId: item.libraryId,
-  };
+  return planMoveOutcome(item, library, template, config).plan;
 }
 
 /**
@@ -276,13 +337,25 @@ export interface OrganizeTaskOptions {
 
 export interface OrganizeTaskResult {
   template: string;
+  /** Every item read, whether or not the template had anything to say about it. */
+  scanned: number;
   planned: number;
   moved: number;
+  /** Already where the template says they belong. */
+  inPlace: number;
   skipped: Array<{ title: string; reason: string }>;
+  /** Why the items with no plan have none, counted by reason. */
+  declined: Partial<Record<NoMoveCode, number>>;
   applied: boolean;
   rescanned: boolean;
   capability: Capability;
   plans: MovePlan[];
+  /**
+   * Exactly what was recorded against the run, one row per item — moved,
+   * already in place, or left alone with the reason why. Returned as well as
+   * stored so `--details` and the run's page in the web UI say the same thing.
+   */
+  report: RunItemInput[];
 }
 
 /**
@@ -323,6 +396,12 @@ export async function runOrganizeTask(
   const plans: MovePlan[] = [];
   /** Single-file items passed over, so a dry run can say so out loud. */
   const loose: Array<{ title: string; reason: string }> = [];
+  const declined: Partial<Record<NoMoveCode, number>> = {};
+  // One row per item read, keyed so the apply loop below can say what actually
+  // became of the ones it planned to move.
+  const rows = new Map<string, RunItemInput>();
+  let scanned = 0;
+
   for (const library of libraries) {
     // Expanded, because the path template renders {series} and {sequence} from
     // the structured series field. A minified item has neither, so every book
@@ -330,35 +409,97 @@ export async function runOrganizeTask(
     // of its series folder on apply.
     const items = await collectItems(ctx, [library], { limit: options.limit, expand: true });
     for (const item of items) {
+      scanned += 1;
       if (item.isFile && !options.singleFiles) {
         // Reported rather than hidden at debug. A library that is mostly loose
         // m4b files would otherwise see "0 items to move" and conclude the tool
         // had nothing to offer it, when in fact it had declined to look.
         loose.push({ title: itemTitle(item), reason: 'single file — pass --single-files to include it' });
+        rows.set(item.id, {
+          ...itemIdentity(item),
+          status: 'skipped',
+          codes: ['single-file'],
+          detail: ['A loose file rather than a book folder — pass --single-files to file it away'],
+        });
         continue;
       }
-      const plan = planMove(item, library, template, ctx.connection);
-      if (plan) plans.push(plan);
+
+      const outcome = planMoveOutcome(item, library, template, ctx.connection);
+      if (outcome.plan) {
+        plans.push(outcome.plan);
+        rows.set(item.id, {
+          ...itemIdentity(item),
+          status: 'action',
+          codes: ['planned'],
+          detail: [`${outcome.plan.from} → ${outcome.plan.to}`],
+        });
+        continue;
+      }
+
+      declined[outcome.code] = (declined[outcome.code] ?? 0) + 1;
+      rows.set(item.id, {
+        ...itemIdentity(item),
+        // Already in the right place is the library being correct, not the run
+        // refusing; the other reasons are the run unable to answer.
+        status: outcome.code === 'in-place' ? 'clean' : 'skipped',
+        codes: [outcome.code],
+        detail: [`Not moving: ${outcome.reason}`],
+      });
     }
   }
 
   if (loose.length > 0) {
     log.info(
-      `${loose.length} single-file item(s) left alone. --single-files files them into ` +
+      `${plural(loose.length, 'single-file item')} left alone. --single-files files them into ` +
         'the folder the template describes.',
     );
+  }
+
+  // What the template made of the library, rather than only the part of it that
+  // is going to move. An item with no plan had a reason for having none, and
+  // until now every one of those reasons was reported as silence.
+  const inPlace = declined['in-place'] ?? 0;
+  log.info(
+    `${scanned} item(s) read — ${plans.length} to move, ${inPlace} already in place` +
+      `${loose.length > 0 ? `, ${loose.length} loose file(s)` : ''}`,
+  );
+  const unanswerable = Object.entries(declined).filter(([code]) => code !== 'in-place');
+  for (const [code, count] of unanswerable) {
+    const example = [...rows.values()].find((row) => row.codes.includes(code));
+    log.warn(`${plural(count, 'item')} could not be placed (${code}) — e.g. ${example?.detail[0] ?? code}`);
   }
 
   const skipped: Array<{ title: string; reason: string }> = [...loose];
   let moved = 0;
   let rescanned = false;
 
+  const finish = (applied: boolean): OrganizeTaskResult => {
+    const report = [...rows.values()];
+    reportItems(ctx, report);
+    return {
+      template,
+      scanned,
+      planned: plans.length,
+      moved,
+      inPlace,
+      skipped,
+      declined,
+      applied,
+      rescanned,
+      capability,
+      plans,
+      report,
+    };
+  };
+
   if (!options.apply) {
-    log.info(`${plans.length} item(s) would move. Apply to move files on disk.`);
-    return { template, planned: plans.length, moved, skipped, applied: false, rescanned, capability, plans };
+    log.info(`${plural(plans.length, 'item')} would move. Apply to move files on disk.`);
+    return finish(false);
   }
 
   const touchedLibraries = new Set<string>();
+  let blocked = 0;
+  let unreached = 0;
   for (const plan of plans) {
     // Between whole items only. A stopped run leaves the moves it already made
     // in place — they are on disk and correct — and the rescan below still
@@ -366,20 +507,46 @@ export async function runOrganizeTask(
     // pointing at paths that moved out from under it.
     if (ctx.signal?.aborted) {
       log.warn(`stopped after ${moved} move(s) — the rest were left where they are.`);
+      // Marked individually, so the report distinguishes a book the run never
+      // got to from one it looked at and refused to move.
+      for (const rest of plans.slice(plans.indexOf(plan))) {
+        unreached += 1;
+        const row = rows.get(rest.itemId);
+        if (row) {
+          row.status = 'skipped';
+          row.codes = ['not-reached'];
+          row.detail = [`${rest.from} → ${rest.to}`, 'The run was stopped before reaching this one'];
+        }
+      }
       break;
     }
     const reason = await moveBlockedReason(plan);
     if (reason) {
       log.warn(`skipping "${plan.title}" — ${reason}`);
       skipped.push({ title: plan.title, reason });
+      blocked += 1;
+      const row = rows.get(plan.itemId);
+      if (row) {
+        row.status = 'skipped';
+        row.codes = ['blocked'];
+        row.detail = [`${plan.from} → ${plan.to}`, `Not moved: ${reason}`];
+      }
       continue;
     }
     await movePath(plan.fromLocal, plan.toLocal, plan.rootLocal);
     touchedLibraries.add(plan.libraryId);
     moved += 1;
+    const row = rows.get(plan.itemId);
+    if (row) {
+      row.codes = ['moved'];
+      row.detail = [`${plan.from} → ${plan.to}`, 'Moved on disk'];
+    }
     log.debug(`moved ${plan.from} -> ${plan.to}`);
   }
-  log.success(`Moved ${moved} item(s).`);
+  log.success(
+    `Moved ${plural(moved, 'item')} of ${plans.length} planned` +
+      `${blocked > 0 ? `; ${blocked} blocked` : ''}${unreached > 0 ? `; ${unreached} not reached` : ''}.`,
+  );
 
   if (moved > 0 && !options.noScan) {
     for (const libraryId of touchedLibraries) await ctx.client.scanLibrary(libraryId);
@@ -387,7 +554,7 @@ export async function runOrganizeTask(
     log.success('Triggered a rescan so AudiobookShelf picks up the new paths.');
   }
 
-  return { template, planned: plans.length, moved, skipped, applied: true, rescanned, capability, plans };
+  return finish(true);
 }
 
 /**

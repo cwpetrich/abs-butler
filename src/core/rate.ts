@@ -3,6 +3,8 @@ import {
   assessContent,
   assessmentToTags,
   isButlerTag,
+  AGE_BANDS,
+  TAG_PREFIX,
   BAND_MIN_AGE,
   type AgeBand,
   type ContentAssessment,
@@ -11,6 +13,8 @@ import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext
 import { log } from '../logger.js';
 import { mapLimit } from '../providers/http.js';
 import { lookupItem, lookupDepsFor, type LookupDeps } from './lookup.js';
+import type { RunItemInput } from '../db/runItems.js';
+import { breakdown, itemIdentity, itemPath, plural, reportItems } from './report.js';
 import { itemQuery } from './query.js';
 import { applyPatch } from './revisions.js';
 
@@ -76,10 +80,86 @@ export interface RateTaskResult {
   skippedAlreadyRated: number;
   tagged: number;
   wouldTag: number;
+  /** Rated, and the tags it already carries say the same thing. */
+  unchanged: number;
   applied: boolean;
   bandCounts: Record<string, number>;
+  /** How many books each content flag was raised on. */
+  flagCounts: Record<string, number>;
   unknownBand: number;
+  /**
+   * Books where a band was worked out but nothing was confident enough to tag.
+   * Worth naming: the run reads as having done nothing to them, when what it
+   * did was decline to guess.
+   */
+  belowConfidence: number;
   results: RatingResult[];
+  /**
+   * Exactly what was recorded against the run, one row per book. Returned as
+   * well as stored so that `--details` on the CLI and the run's page in the web
+   * UI show the same words rather than two renderings that drift apart.
+   */
+  report: RunItemInput[];
+}
+
+/**
+ * What the run has to say about one book, in the order someone reads it: the
+ * verdict, the flags behind it, what that does to the tags, and who said so.
+ *
+ * The evidence is the part that matters and the part that used to be thrown
+ * away — "adult, confidence 0.82" invites the question "says who", and the
+ * answer was only ever visible by re-running the command by hand.
+ */
+function ratingDetail(result: RatingResult): string[] {
+  const { assessment } = result;
+  const lines = [
+    assessment.band === 'unknown'
+      ? 'No usable audience signal'
+      : `${assessment.band} — confidence ${assessment.confidence.toFixed(2)}`,
+  ];
+
+  if (assessment.flags.length > 0) {
+    lines.push(
+      `Flags: ${assessment.flags.map((f) => `${f.flag} (${f.confidence.toFixed(2)})`).join(', ')}`,
+    );
+  }
+
+  const added = result.proposedTags.filter((tag) => !result.currentTags.includes(tag));
+  const removed = result.currentTags.filter((tag) => !result.proposedTags.includes(tag));
+  if (added.length > 0) lines.push(`Tags added: ${added.join(', ')}`);
+  if (removed.length > 0) lines.push(`Tags removed: ${removed.join(', ')}`);
+  if (added.length === 0 && removed.length === 0) lines.push('Tags already say exactly this');
+
+  if (assessment.sources.length > 0) {
+    lines.push(`Asked: ${[...new Set(assessment.sources)].join(', ')}`);
+  }
+  // Truncated, not dropped: the first few signals are the ones that decided it,
+  // and twenty lines of evidence per book would bury the table it sits in.
+  for (const line of assessment.evidence.slice(0, 3)) lines.push(line);
+  if (assessment.evidence.length > 3) {
+    lines.push(`…and ${assessment.evidence.length - 3} more signal(s)`);
+  }
+  return lines;
+}
+
+/** True when a band was worked out but no `age:` tag cleared `minConfidence`. */
+function isBelowConfidence(result: RatingResult): boolean {
+  return (
+    result.assessment.band !== 'unknown' &&
+    !result.proposedTags.some((tag) => tag.startsWith(TAG_PREFIX.age))
+  );
+}
+
+/**
+ * Filterable facets, in the vocabulary of the tags themselves: the age band,
+ * every content flag raised, and the two states someone goes looking for —
+ * a book nothing could be said about, and one where the answer was known but
+ * not confidently enough to write down.
+ */
+function ratingCodes(result: RatingResult): string[] {
+  const codes: string[] = [result.assessment.band, ...result.assessment.flags.map((f) => f.flag)];
+  if (isBelowConfidence(result)) codes.push('below-confidence');
+  return codes;
 }
 
 export async function runRateTask(
@@ -91,23 +171,63 @@ export async function runRateTask(
   const libraries = await resolveLibraries(ctx, options.library);
   const all = await collectItems(ctx, libraries, { limit: options.limit });
   const items = options.force ? all : all.filter((i) => !(i.media?.tags ?? []).some(isButlerTag));
-  const skipped = all.length - items.length;
+  // By id rather than by identity: a library is thousands of items, and a
+  // linear scan per item would make the skip list cost more than the ratings.
+  const rating = new Set(items.map((item) => item.id));
+  const passedOver = options.force ? [] : all.filter((item) => !rating.has(item.id));
+  const skipped = passedOver.length;
+
+  // Recorded even though nothing was done to them, and saying which rating they
+  // already carry. A book left out of the report is indistinguishable from one
+  // the run never reached, and "why was this one left alone" is the question a
+  // skip creates.
+  const skippedRows: RunItemInput[] = passedOver.map((item) => {
+    const existing = (item.media?.tags ?? []).filter(isButlerTag);
+    return {
+      ...itemIdentity(item),
+      status: 'skipped' as const,
+      codes: ['already-rated'],
+      detail: [
+        'Already carries an abs-butler rating — re-run with force to rate it again',
+        existing.length > 0 ? `Current tags: ${existing.join(', ')}` : 'Current tags: the marker only',
+      ],
+    };
+  });
 
   if (items.length === 0) {
-    log.success('Every item already has an abs-butler rating. Use force to re-rate.');
+    // Told apart, because "there is nothing here" and "there is nothing left to
+    // do here" are different answers and the second one used to cover both.
+    if (all.length === 0) log.warn('No items to rate — the library came back empty.');
+    else {
+      log.success(
+        `Every item already has an abs-butler rating (${plural(skipped, 'item')}). Use force to re-rate.`,
+      );
+    }
+    reportItems(ctx, skippedRows);
     return {
       rated: 0,
       skippedAlreadyRated: skipped,
       tagged: 0,
       wouldTag: 0,
+      unchanged: 0,
       applied: Boolean(options.apply),
       bandCounts: {},
+      flagCounts: {},
       unknownBand: 0,
+      belowConfidence: 0,
       results: [],
+      report: skippedRows,
     };
   }
 
-  log.info(`rating ${items.length} item(s)${options.force ? '' : ' without an existing rating'}…`);
+  log.info(
+    `rating ${plural(items.length, 'item')}${options.force ? '' : ' without an existing rating'}` +
+      `${skipped > 0 ? `, skipping ${skipped} already rated` : ''}…`,
+  );
+
+  // A rating carries no path — it is about the book, not the files — and the
+  // report wants one, so it is taken from the item it came from.
+  const byPath = new Map(all.map((item) => [item.id, itemPath(item)]));
 
   const minConfidence = options.minConfidence ?? ctx.settings.minConfidence;
   let done = 0;
@@ -124,14 +244,36 @@ export async function runRateTask(
   );
 
   const bandCounts: Record<string, number> = {};
+  const flagCounts: Record<string, number> = {};
   for (const result of results) {
     const band = result.assessment.band;
     bandCounts[band] = (bandCounts[band] ?? 0) + 1;
+    for (const flag of result.assessment.flags) {
+      flagCounts[flag.flag] = (flagCounts[flag.flag] ?? 0) + 1;
+    }
   }
   const unknownBand = bandCounts.unknown ?? 0;
-  if (unknownBand > 0) log.warn(`${unknownBand} item(s) had no usable audience signal`);
+  const belowConfidence = results.filter(isBelowConfidence).length;
+
+  // What the run decided, on one line each. Without them the log says only how
+  // many books were tagged, which is the least interesting thing about a
+  // command whose entire job is to reach a verdict on each one.
+  log.info(`bands — ${breakdown(bandCounts, [...AGE_BANDS, 'unknown'])}`);
+  if (Object.keys(flagCounts).length > 0) {
+    log.info(`content flags — ${breakdown(flagCounts)}`);
+  }
+  if (unknownBand > 0) {
+    log.warn(`${plural(unknownBand, 'item')} had no usable audience signal and were left untagged`);
+  }
+  if (belowConfidence > 0) {
+    log.warn(
+      `${plural(belowConfidence, 'item')} had a band below the ${minConfidence.toFixed(2)} ` +
+        'confidence floor — tagged as rated, but with no age tag',
+    );
+  }
 
   const changes = results.filter((r) => r.changed);
+  const unchanged = results.length - changes.length;
   let tagged = 0;
   if (options.apply) {
     const byId = new Map(all.map((item) => [item.id, item]));
@@ -141,10 +283,32 @@ export async function runRateTask(
       tagged += 1;
       if (tagged % 25 === 0) log.info(`  wrote ${tagged}/${changes.length}`);
     }
-    log.success(`Tagged ${tagged} item(s).`);
+    log.success(
+      `Tagged ${plural(tagged, 'item')} of ${results.length} rated` +
+        `; ${unchanged} already said the same thing${skipped > 0 ? `, ${skipped} skipped as already rated` : ''}.`,
+    );
   } else {
-    log.info(`${changes.length} item(s) would be tagged. Apply to write to AudiobookShelf.`);
+    log.info(
+      `${plural(changes.length, 'item')} would be tagged` +
+        `; ${unchanged} already say the same thing${skipped > 0 ? `, ${skipped} skipped as already rated` : ''}. ` +
+        'Apply to write to AudiobookShelf.',
+    );
   }
+
+  // Every book the run looked at, with the verdict and the evidence for it.
+  const report: RunItemInput[] = [
+    ...results.map((result) => ({
+      itemId: result.itemId,
+      title: result.title,
+      author: result.author,
+      path: byPath.get(result.itemId) ?? '',
+      status: result.changed ? ('action' as const) : ('clean' as const),
+      codes: ratingCodes(result),
+      detail: ratingDetail(result),
+    })),
+    ...skippedRows,
+  ];
+  reportItems(ctx, report);
 
   const filtered =
     options.maxAge === undefined
@@ -158,10 +322,14 @@ export async function runRateTask(
     skippedAlreadyRated: skipped,
     tagged,
     wouldTag: changes.length,
+    unchanged,
     applied: Boolean(options.apply),
     bandCounts,
+    flagCounts,
     unknownBand,
+    belowConfidence,
     results: filtered,
+    report,
   };
 }
 

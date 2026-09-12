@@ -227,4 +227,33 @@ export const MIGRATIONS: string[] = [
        '["audnexus","openlibrary","googlebooks"]'
      );
   `,
+
+  // 10 — say what every run did, not only what an audit found
+  //
+  // Migration 8 gave audits a row per book. Every other command still reported
+  // a handful of numbers and threw the rest away: `rate` said "tagged 300" and
+  // could not say which 300, or what band each landed in; `normalize` said
+  // "held back 12 change(s)" and could not say which books they were; and an
+  // item a run passed over silently was indistinguishable from one it never
+  // reached.
+  //
+  // So `findings` becomes `run_items`, which any command can write. `issues`
+  // becomes `codes` — the same comma-wrapped facets, in whatever vocabulary the
+  // command uses: issue codes for audit, age bands and content flags for rate,
+  // field names for metadata and normalize. `status` is the one thing shared
+  // across commands, so a report can be narrowed to the items worth looking at
+  // without knowing which command produced it, and `detail` carries the lines
+  // that say what actually happened to that book.
+  //
+  // Existing audit rows are kept and given a status: anything with no codes
+  // passed, everything else wanted attention.
+  `
+  ALTER TABLE findings RENAME TO run_items;
+  ALTER TABLE run_items RENAME COLUMN issues TO codes;
+  ALTER TABLE run_items ADD COLUMN status TEXT NOT NULL DEFAULT 'action';
+  ALTER TABLE run_items ADD COLUMN detail TEXT NOT NULL DEFAULT '';
+  UPDATE run_items SET status = CASE WHEN codes = ',,' THEN 'clean' ELSE 'action' END;
+  DROP INDEX IF EXISTS idx_findings_run;
+  CREATE INDEX idx_run_items_run ON run_items(run_id, id);
+  `,
 ];

@@ -2,7 +2,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_TEMPLATE, movePath, planMove, renderTemplate, runOrganizeTask } from './organize.js';
+import {
+  DEFAULT_TEMPLATE,
+  movePath,
+  planMove,
+  planMoveOutcome,
+  renderTemplate,
+  runOrganizeTask,
+} from './organize.js';
 import type { TaskContext } from '../context.js';
 import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
 
@@ -142,6 +149,44 @@ describe('planMove', () => {
   // An API-only server has no local path, so there is nothing to move.
   it('returns null when no library root is configured', () => {
     expect(planMove(item(), library, DEFAULT_TEMPLATE, { libraryRoot: null, pathPrefix: null })).toBeNull();
+  });
+});
+
+/**
+ * The same decision, with the reason kept. Every one of these used to be an
+ * indistinguishable null, so a library where nothing could be placed reported
+ * exactly what one that was already tidy reported: "0 items to move".
+ */
+describe('planMoveOutcome', () => {
+  it('says an item is already where the template puts it', () => {
+    const inPlace = item({ relPath: 'Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings' });
+    const outcome = planMoveOutcome(inPlace, library, DEFAULT_TEMPLATE, localServer);
+
+    expect(outcome.plan).toBeNull();
+    expect(outcome).toMatchObject({ code: 'in-place' });
+  });
+
+  it('says an extensionless file has nothing to be named with', () => {
+    const odd = item({ relPath: 'kings', path: '/audiobooks/kings', isFile: true });
+    expect(planMoveOutcome(odd, library, DEFAULT_TEMPLATE, localServer)).toMatchObject({
+      code: 'no-extension',
+    });
+  });
+
+  it('distinguishes a path outside the library root from a book already in place', () => {
+    const outcome = planMoveOutcome(item(), library, DEFAULT_TEMPLATE, {
+      libraryRoot: null,
+      pathPrefix: null,
+    });
+    expect(outcome).toMatchObject({ code: 'outside-root' });
+    // The path is named, because the answer to "why not" is usually in it.
+    expect((outcome as { reason: string }).reason).toContain('/audiobooks/misc/kings');
+  });
+
+  it('says when the template rendered nothing for this item', () => {
+    const outcome = planMoveOutcome(item(), library, '{narrator}', localServer);
+    expect(outcome).toMatchObject({ code: 'template-empty' });
+    expect((outcome as { reason: string }).reason).toContain('{narrator}');
   });
 });
 

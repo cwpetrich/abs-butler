@@ -2,7 +2,7 @@ import type { AbsLibraryItem } from '../abs/types.js';
 import { hasAudio, hasEbook, isEbookOnly } from '../abs/media.js';
 import { TAG_PREFIX } from '../content/ageRating.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
-import { recordFindings } from '../db/findings.js';
+import { itemPath, reportItems } from './report.js';
 import { log } from '../logger.js';
 import { isBlank, normalizeAuthor, normalizeTitle } from '../util/text.js';
 
@@ -50,6 +50,8 @@ export const ISSUES: IssueSpec[] = [
 
 export const AUDIT_CODES = ISSUES.map((i) => i.code);
 
+const LABELS = new Map(ISSUES.map((spec) => [spec.code, spec.label]));
+
 export interface AuditFinding {
   itemId: string;
   title: string;
@@ -86,7 +88,7 @@ export function auditItems(
         itemId: item.id,
         title: itemTitle(item),
         author: itemAuthor(item),
-        path: item.relPath ?? item.path,
+        path: itemPath(item),
         issues: [] as IssueCode[],
       },
     ]),
@@ -202,10 +204,21 @@ export async function runAuditTask(
   }
 
   // Kept for the run, so the web UI can show which books and why rather than
-  // only how many. Absent on a context with no run — nothing owns the rows.
-  if (ctx.runId !== undefined) {
-    recordFindings(ctx.db, ctx.runId, findings);
-  }
+  // only how many.
+  reportItems(
+    ctx,
+    findings.map((finding) => ({
+      itemId: finding.itemId,
+      title: finding.title,
+      author: finding.author,
+      path: finding.path,
+      status: finding.issues.length > 0 ? 'action' : 'clean',
+      codes: finding.issues,
+      // The labels rather than the codes: "No cover art" is what the issue
+      // means, and the code is on the chip beside it for anyone filtering.
+      detail: finding.issues.map((code) => LABELS.get(code) ?? code),
+    })),
+  );
 
   return {
     scanned: items.length,

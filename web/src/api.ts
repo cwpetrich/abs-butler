@@ -69,15 +69,34 @@ export interface Run {
   error: string | null;
 }
 
-/** One audited item and every issue found on it. */
-export interface Finding {
+/**
+ * What a run had to say about one item.
+ *
+ * `action` is something to do or something done, `clean` is looked at with
+ * nothing to do, `skipped` is passed over on purpose — with the reason in
+ * `detail`. What each means in words differs per command; the server sends the
+ * wording in `Meta.runItemLabels`.
+ */
+export type RunItemStatus = 'action' | 'clean' | 'skipped';
+
+export interface RunItem {
   id: number;
   runId: number;
   itemId: string;
   title: string;
   author: string | null;
   path: string;
-  issues: string[];
+  status: RunItemStatus;
+  /** Facets to filter by, in the command's own vocabulary. */
+  codes: string[];
+  /** What the run has to say about it, one line per thing. */
+  detail: string[];
+}
+
+export interface RunItemTotals {
+  total: number;
+  byStatus: Record<RunItemStatus, number>;
+  byCode: Record<string, number>;
 }
 
 export interface LogEntry {
@@ -152,6 +171,8 @@ export interface Meta {
   ageBands: string[];
   contentFlags: string[];
   defaultTemplate: string;
+  /** What each command calls the three per-item statuses. */
+  runItemLabels: Record<RunCommand, Record<RunItemStatus, string>>;
 }
 
 export class ApiError extends Error {
@@ -220,16 +241,18 @@ export const api = {
     );
   },
   run: (id: number) => request<Run>(`/api/runs/${id}`),
-  /** Audit detail: every audited item, and what was wrong with each — if anything. */
-  findings: (
+  /** Run detail: every item the run looked at, and what it had to say about each. */
+  runItems: (
     id: number,
-    params: { issue?: string; status?: 'issues' | 'clean'; limit?: number; offset?: number } = {},
+    params: { code?: string; status?: RunItemStatus; limit?: number; offset?: number } = {},
   ) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== '') query.set(key, String(value));
     }
-    return request<{ findings: Finding[]; total: number }>(`/api/runs/${id}/findings?${query}`);
+    return request<{ items: RunItem[]; total: number; totals: RunItemTotals }>(
+      `/api/runs/${id}/items?${query}`,
+    );
   },
   startRun: (input: { command: RunCommand; options: Record<string, unknown> }) =>
     request<Run>('/api/runs', { method: 'POST', body: body(input) }),

@@ -55,8 +55,14 @@ export async function runTask(
 
 /**
  * A compact, JSON-safe digest for the history list. The full result can be
- * large — an audit of 5,000 books carries 5,000 findings — so runs store the
- * headline numbers and the detail is re-derivable by running again.
+ * large — a run over 5,000 books carries a row per book — so runs store the
+ * headline numbers here and the per-item detail goes to `run_items`, which is
+ * read only when someone opens the run that produced it.
+ *
+ * The breakdowns travel with the numbers. "38 item(s) would be updated" is the
+ * same sentence whether it is 38 missing descriptions or one field missing
+ * everywhere, and the counts are what make the difference legible from the
+ * history list without opening anything.
  */
 export function summarizeResult(command: RunCommand, result: TaskResult): Record<string, unknown> {
   switch (command) {
@@ -75,9 +81,12 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         rated: r.rated,
         tagged: r.tagged,
         wouldTag: r.wouldTag,
+        unchanged: r.unchanged,
         applied: r.applied,
         bandCounts: r.bandCounts,
+        flagCounts: r.flagCounts,
         unknownBand: r.unknownBand,
+        belowConfidence: r.belowConfidence,
         skippedAlreadyRated: r.skippedAlreadyRated,
       };
     }
@@ -90,6 +99,8 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         updated: r.updated,
         applied: r.applied,
         fields: r.fields,
+        fieldCounts: r.fieldCounts,
+        sourceCounts: r.sourceCounts,
       };
     }
     case 'normalize': {
@@ -99,19 +110,24 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         itemsToChange: r.itemsToChange,
         fieldsToChange: r.fieldsToChange,
         heldBack: r.heldBack,
+        itemsHeldBack: r.itemsHeldBack,
         updated: r.updated,
         applied: r.applied,
         fields: r.fields,
         bySource: r.bySource,
+        byField: r.byField,
       };
     }
     case 'organize': {
       const r = result as OrganizeTaskResult;
       return {
         template: r.template,
+        scanned: r.scanned,
         planned: r.planned,
         moved: r.moved,
+        inPlace: r.inPlace,
         skipped: r.skipped.length,
+        declined: r.declined,
         applied: r.applied,
         rescanned: r.rescanned,
         canManageFiles: r.capability.canManageFiles,

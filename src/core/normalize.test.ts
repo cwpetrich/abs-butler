@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import type { AbsLibraryItem } from '../abs/types.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
+import type { TaskContext } from '../context.js';
+import { closeDb, openDb, type Db } from '../db/index.js';
+import { listRunItems } from '../db/runItems.js';
+import { createRun } from '../db/runs.js';
+import { DEFAULT_SETTINGS } from '../db/settings.js';
 import {
   buildConsensus,
   itemAuthors,
@@ -8,6 +16,7 @@ import {
   normalizeTitleText,
   pickConsensus,
   planNormalize,
+  runNormalizeTask,
   planToPatch,
   splitPeople,
   isAdditive,
@@ -769,3 +778,92 @@ describe('findNarratorsByTrade', () => {
     expect(findNarratorsByTrade(items).has('michael greger')).toBe(false)
   })
 })
+
+/**
+ * What the run says it did, book by book.
+ *
+ * `title` alone needs no provider and no consensus — "Hobbit, The" is "The
+ * Hobbit" by inspection — which keeps this a test of the reporting rather than
+ * of the lookup stack underneath it.
+ */
+describe('runNormalizeTask reporting', () => {
+  const library: AbsLibrary = {
+    id: 'lib',
+    name: 'Books',
+    folders: [],
+    mediaType: 'book',
+    provider: 'audible',
+  };
+
+  let dir: string;
+  let db: Db;
+
+  function context(items: AbsLibraryItem[], allowMetadataRewrite: boolean): TaskContext {
+    return {
+      db,
+      connection: { url: 'http://localhost:13378' } as TaskContext['connection'],
+      client: {
+        async listLibraries() {
+          return [library];
+        },
+        async *iterateLibraryItems() {
+          for (const item of items) yield item;
+        },
+      } as unknown as TaskContext['client'],
+      settings: { ...DEFAULT_SETTINGS, allowMetadataRewrite },
+      runId: createRun(db, { command: 'normalize', options: {}, dryRun: true, trigger: 'manual' }).id,
+    };
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'butler-normalize-'));
+    process.env.BUTLER_DATA_DIR = dir;
+    db = openDb();
+  });
+
+  afterEach(() => {
+    closeDb();
+    delete process.env.BUTLER_DATA_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const items = () => [
+    book({ id: 'bent', title: 'Hobbit, The' }),
+    book({ id: 'fine', title: 'The Silmarillion' }),
+  ];
+
+  it('records the books it would change and the ones it would not', async () => {
+    const ctx = context(items(), true);
+    const result = await runNormalizeTask(ctx, { fields: ['title'] });
+
+    expect(result.itemsToChange).toBe(1);
+    const rows = listRunItems(db, { runId: ctx.runId! });
+    expect(rows).toHaveLength(2);
+
+    const bent = rows.find((row) => row.itemId === 'bent')!;
+    expect(bent.status).toBe('action');
+    expect(bent.codes).toEqual(['title', 'local']);
+    // The old spelling and the new one, so the change can be judged rather
+    // than merely counted.
+    expect(bent.detail[0]).toContain('Hobbit, The → The Hobbit');
+
+    const fine = rows.find((row) => row.itemId === 'fine')!;
+    expect(fine.status).toBe('clean');
+    expect(fine.detail).toEqual(['Already agrees with the rest of the library']);
+  });
+
+  // The switch being off is the most misreadable outcome there is: the run
+  // found something, and did nothing, and used to say so only in a count.
+  it('names the books whose changes the rewrite switch held back', async () => {
+    const ctx = context(items(), false);
+    const result = await runNormalizeTask(ctx, { fields: ['title'] });
+
+    expect(result.heldBack).toBe(1);
+    expect(result.itemsHeldBack).toBe(1);
+
+    const bent = listRunItems(db, { runId: ctx.runId! }).find((row) => row.itemId === 'bent')!;
+    expect(bent.status).toBe('skipped');
+    expect(bent.codes).toContain('held-back');
+    expect(bent.detail[0]).toContain('[held back]');
+  });
+});
