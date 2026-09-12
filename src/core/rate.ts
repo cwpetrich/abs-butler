@@ -11,7 +11,7 @@ import {
 } from '../content/ageRating.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
-import { mapLimit } from '../providers/http.js';
+import { mapLimitPartial } from '../providers/http.js';
 import { lookupItem, lookupDepsFor, type LookupDeps } from './lookup.js';
 import type { RunItemInput } from '../db/runItems.js';
 import { breakdown, itemIdentity, itemPath, plural, reportItems } from './report.js';
@@ -87,6 +87,10 @@ export interface RateTaskResult {
   /** How many books each content flag was raised on. */
   flagCounts: Record<string, number>;
   unknownBand: number;
+  /** True when the run was stopped before it reached every item. */
+  stopped: boolean;
+  /** Items it never got to, because it was stopped. */
+  notReached: number;
   /**
    * Books where a band was worked out but nothing was confident enough to tag.
    * Worth naming: the run reads as having done nothing to them, when what it
@@ -232,6 +236,8 @@ export async function runRateTask(
       flagCounts: {},
       unknownBand: 0,
       belowConfidence: 0,
+      stopped: false,
+      notReached: 0,
       results: [],
       report: skippedRows,
     };
@@ -248,7 +254,9 @@ export async function runRateTask(
 
   const minConfidence = options.minConfidence ?? ctx.settings.minConfidence;
   let done = 0;
-  const results = await mapLimit(
+  // Partial on purpose: a run stopped at book 300 has reached a verdict on 300
+  // books, and those verdicts are worth keeping even though the rest never ran.
+  const ratings = await mapLimitPartial(
     items,
     ctx.settings.providerConcurrency,
     async (item) => {
@@ -259,6 +267,13 @@ export async function runRateTask(
     },
     { signal: ctx.signal },
   );
+  const results = ratings.results;
+  if (ratings.stopped) {
+    log.warn(
+      `stopped after rating ${results.length} of ${items.length} item(s) — ` +
+        `${ratings.unreached} were not reached.`,
+    );
+  }
 
   const bandCounts: Record<string, number> = {};
   const flagCounts: Record<string, number> = {};
@@ -291,12 +306,22 @@ export async function runRateTask(
 
   const changes = results.filter((r) => r.changed);
   const unchanged = results.length - changes.length;
+  // Which books were actually written to, so the report can tell a tag that was
+  // applied from one that was only ever going to be.
+  const written = new Set<string>();
   let tagged = 0;
   if (options.apply) {
     const byId = new Map(all.map((item) => [item.id, item]));
     for (const change of changes) {
-      ctx.signal?.throwIfAborted();
+      // Between whole items, and an ending rather than a failure: the books
+      // already tagged stay tagged, this run's undo record covers exactly them,
+      // and the report below says which ones never got their turn.
+      if (ctx.signal?.aborted) {
+        log.warn(`stopped after writing ${tagged} of ${changes.length} — the rest were left alone.`);
+        break;
+      }
       await applyPatch(ctx, byId.get(change.itemId)!, { tags: change.proposedTags });
+      written.add(change.itemId);
       tagged += 1;
       if (tagged % 25 === 0) log.info(`  wrote ${tagged}/${changes.length}`);
     }
@@ -320,8 +345,18 @@ export async function runRateTask(
       author: result.author,
       path: byPath.get(result.itemId) ?? '',
       status: result.changed ? ('action' as const) : ('clean' as const),
-      codes: ratingCodes(result),
-      detail: ratingDetail(result, Boolean(options.apply)),
+      codes: [
+        ...ratingCodes(result),
+        // Named so it can be filtered on: after a stopped apply, "which books
+        // did it decide on but never get to write?" is the first question.
+        ...(options.apply && result.changed && !written.has(result.itemId) ? ['not-written'] : []),
+      ],
+      detail: [
+        ...ratingDetail(result, written.has(result.itemId)),
+        ...(options.apply && result.changed && !written.has(result.itemId)
+          ? ['The run was stopped before this was written']
+          : []),
+      ],
     })),
     ...skippedRows,
   ];
@@ -345,6 +380,8 @@ export async function runRateTask(
     flagCounts,
     unknownBand,
     belowConfidence,
+    stopped: ratings.stopped || Boolean(ctx.signal?.aborted),
+    notReached: ratings.unreached,
     results: filtered,
     report,
   };

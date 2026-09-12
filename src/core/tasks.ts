@@ -88,6 +88,8 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         unknownBand: r.unknownBand,
         belowConfidence: r.belowConfidence,
         skippedAlreadyRated: r.skippedAlreadyRated,
+        stopped: r.stopped,
+        notReached: r.notReached,
       };
     }
     case 'metadata': {
@@ -101,6 +103,8 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         fields: r.fields,
         fieldCounts: r.fieldCounts,
         sourceCounts: r.sourceCounts,
+        stopped: r.stopped,
+        notReached: r.notReached,
       };
     }
     case 'normalize': {
@@ -116,6 +120,8 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         fields: r.fields,
         bySource: r.bySource,
         byField: r.byField,
+        stopped: r.stopped,
+        notReached: r.notReached,
       };
     }
     case 'organize': {
@@ -128,6 +134,8 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         inPlace: r.inPlace,
         skipped: r.skipped.length,
         declined: r.declined,
+        stopped: r.stopped,
+        notReached: r.notReached,
         applied: r.applied,
         rescanned: r.rescanned,
         canManageFiles: r.capability.canManageFiles,

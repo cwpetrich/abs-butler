@@ -176,6 +176,16 @@ function RunItemsPanel({ run }: { run: Run }) {
         </p>
       )}
 
+      {/* A stopped run reports what it got through, and the rest are absent
+          rather than fine. Saying so is the difference between a short report
+          and a clean library. */}
+      {run.status === 'cancelled' && Number(run.summary?.notReached ?? 0) > 0 && (
+        <p className="hint">
+          Stopped before the end: {String(run.summary?.notReached)} more item(s) were never reached,
+          so they are not listed here.
+        </p>
+      )}
+
       <div className="actions" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
         <button className={chip(selected === 'all')} onClick={() => setFilter({})}>
           Everything ({totals?.total ?? 0})

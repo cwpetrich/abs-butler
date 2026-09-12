@@ -105,7 +105,16 @@ describe('runRateTask', () => {
       return new Response(JSON.stringify({ docs: [] }), { status: 200 });
     });
 
-    await expect(runRateTask(ctx)).rejects.toThrow('Stopped');
+    const result = await runRateTask(ctx);
+
+    // It ends rather than throws, and says so. A stop is the run finishing
+    // early, not the run failing — and what it decided before the stop is the
+    // work it did, which used to be thrown away on the way out.
+    expect(result.stopped).toBe(true);
+    expect(result.rated).toBeGreaterThan(0);
+    expect(result.rated).toBeLessThan(200);
+    expect(result.notReached).toBe(200 - result.rated);
+    expect(result.report).toHaveLength(result.rated);
     expect(calls.length).toBeLessThan(200);
   });
 
@@ -139,6 +148,31 @@ describe('runRateTask', () => {
     const result = await runRateTask(context(books(1)), { apply: true });
     expect(result.tagged).toBe(1);
     expect(result.report[0]!.detail[0]).toBe('Added: abs-butler:rated');
+  });
+
+  // The books it had decided on but was stopped before writing. Their tags are
+  // unchanged in AudiobookShelf, and the report has to agree with the server
+  // rather than with what the run intended.
+  it('does not claim to have written tags a stop prevented', async () => {
+    const controller = new AbortController();
+    const ctx = context(books(6), controller.signal);
+    // Stopped after the ratings are in, before any of them can be written.
+    const original = ctx.client.patchItemMedia.bind(ctx.client);
+    let writes = 0;
+    ctx.client.patchItemMedia = async (id: string, patch) => {
+      if (++writes === 2) controller.abort(new Error('Stopped'));
+      return original(id, patch);
+    };
+
+    const result = await runRateTask(ctx, { apply: true });
+
+    expect(result.tagged).toBe(2);
+    const written = result.report.filter((row) => row.detail[0]?.startsWith('Added:'));
+    const pending = result.report.filter((row) => row.codes.includes('not-written'));
+    expect(written).toHaveLength(2);
+    expect(pending).toHaveLength(result.rated - 2);
+    expect(pending[0]!.detail[0]).toMatch(/^Would add:/);
+    expect(pending[0]!.detail).toContain('The run was stopped before this was written');
   });
 
   it('says which books it passed over, and what they already carry', async () => {

@@ -310,6 +310,12 @@ Each run's log carries the same information in one line per kind: which bands a 
 on, which fields a `metadata` run filled and who answered for them, which of the three evidence
 tiers a `normalize` run relied on.
 
+**A stopped run reports what it got through.** Stopping is an ending, not a failure: the books it
+had already decided on are recorded with the rest, the summary says how many it never reached, and
+anything already written stays written with this run's undo record covering exactly that much. A
+book it had decided on but was stopped before writing says so — `not-written`, and its line stays in
+the conditional, because the server does not have that change.
+
 Detail is kept for the ten most recent runs and pruned after that — one row per book per run is the
 bulky part. The counts in each run's summary survive for as long as the run is in history.
 

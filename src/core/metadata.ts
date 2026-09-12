@@ -1,7 +1,7 @@
 import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { log } from '../logger.js';
-import { mapLimit } from '../providers/http.js';
+import { mapLimitPartial } from '../providers/http.js';
 import type { ProviderResult } from '../providers/types.js';
 import { isBlank } from '../util/text.js';
 import { lookupItem, lookupDepsFor, type LookupDeps } from './lookup.js';
@@ -106,6 +106,10 @@ export interface MetadataTaskResult {
   fieldCounts: Record<string, number>;
   /** How many values each provider supplied — which ones are earning their keep. */
   sourceCounts: Record<string, number>;
+  /** True when the run was stopped before it reached every item. */
+  stopped: boolean;
+  /** Items it never got to, because it was stopped. */
+  notReached: number;
   plans: MetadataPlan[];
   /**
    * Exactly what was recorded against the run, one row per book — including the
@@ -146,12 +150,21 @@ export async function runMetadataTask(
   const items = await collectItems(ctx, libraries, { limit: options.limit });
   log.info(`checking ${plural(items.length, 'item')} for missing ${requested.join(', ')}…`);
 
-  const plans = await mapLimit(
+  // Partial on purpose: a run stopped partway has still checked everything up to
+  // that point, and those answers are worth keeping.
+  const planned = await mapLimitPartial(
     items,
     ctx.settings.providerConcurrency,
     (item) => planMetadata(item, deps, { fields: requested, overwrite: options.overwrite }),
     { signal: ctx.signal },
   );
+  const plans = planned.results;
+  if (planned.stopped) {
+    log.warn(
+      `stopped after checking ${plans.length} of ${items.length} item(s) — ` +
+        `${planned.unreached} were not reached.`,
+    );
+  }
   const actionable = plans.filter((p) => p.changes.length > 0);
   const fieldsToFill = actionable.reduce((sum, p) => sum + p.changes.length, 0);
 
@@ -166,15 +179,24 @@ export async function runMetadataTask(
 
   const byId = new Map(items.map((item) => [item.id, item]));
 
+  // Which books were actually written to, so the report can tell a value that
+  // was written from one that was only ever going to be.
+  const written = new Set<string>();
   let updated = 0;
   if (options.apply) {
     for (const plan of actionable) {
-      ctx.signal?.throwIfAborted();
+      // Between whole items, and an ending rather than a failure: what was
+      // written stays written, and the report says which books never got there.
+      if (ctx.signal?.aborted) {
+        log.warn(`stopped after writing ${updated} of ${actionable.length} — the rest were left alone.`);
+        break;
+      }
       const patch: AbsMediaPatch = { metadata: {} };
       for (const change of plan.changes) {
         (patch.metadata as Record<string, string>)[change.field] = change.to;
       }
       await applyPatch(ctx, byId.get(plan.itemId)!, patch);
+      written.add(plan.itemId);
       updated += 1;
       if (updated % 25 === 0) log.info(`  wrote ${updated}/${actionable.length}`);
     }
@@ -194,15 +216,15 @@ export async function runMetadataTask(
 
   if (options.apply) {
     log.success(
-      `Updated ${plural(updated, 'item')} of ${items.length} checked` +
-        `; ${items.length - actionable.length} had nothing missing.`,
+      `Updated ${plural(updated, 'item')} of ${plans.length} checked` +
+        `; ${plans.length - actionable.length} had nothing missing.`,
     );
   } else if (actionable.length === 0) {
-    log.success(`Nothing to fill in — all ${plural(items.length, 'item')} already have ${requested.join(', ')}.`);
+    log.success(`Nothing to fill in — all ${plural(plans.length, 'item')} already have ${requested.join(', ')}.`);
   } else {
     log.info(
       `${plural(actionable.length, 'item')} would be updated` +
-        `; ${items.length - actionable.length} had nothing missing. Apply to write.`,
+        `; ${plans.length - actionable.length} had nothing missing. Apply to write.`,
     );
   }
 
@@ -214,14 +236,29 @@ export async function runMetadataTask(
     author: plan.author,
     path: itemPath(byId.get(plan.itemId)!),
     status: plan.changes.length > 0 ? ('action' as const) : ('clean' as const),
-    codes: plan.changes.map((change) => change.field),
+    codes: [
+      ...plan.changes.map((change) => change.field),
+      ...(options.apply && plan.changes.length > 0 && !written.has(plan.itemId)
+        ? ['not-written']
+        : []),
+    ],
     detail:
-      plan.changes.length > 0 ? metadataDetail(plan, Boolean(options.apply)) : ['Nothing missing'],
+      plan.changes.length > 0
+        ? [
+            ...metadataDetail(plan, written.has(plan.itemId)),
+            ...(options.apply && !written.has(plan.itemId)
+              ? ['The run was stopped before this was written']
+              : []),
+          ]
+        : ['Nothing missing'],
   }));
   reportItems(ctx, report);
 
   return {
-    scanned: items.length,
+    // What it actually checked. A stopped run read the whole library listing and
+    // then got through part of it; the part it got through is the honest number,
+    // and `notReached` is the rest.
+    scanned: plans.length,
     itemsToUpdate: actionable.length,
     fieldsToFill,
     updated,
@@ -229,6 +266,8 @@ export async function runMetadataTask(
     fields: requested,
     fieldCounts,
     sourceCounts,
+    stopped: planned.stopped || Boolean(ctx.signal?.aborted),
+    notReached: planned.unreached,
     plans: actionable,
     report,
   };
