@@ -251,6 +251,13 @@ export async function runMetadataTask(
               : []),
           ]
         : ['Nothing missing'],
+    // Kept so the report can be acted on as it stands, rather than by running
+    // the whole lookup again and hoping the providers answer the same way.
+    // Nothing is kept for a value this run has already written.
+    plan:
+      plan.changes.length > 0 && !written.has(plan.itemId)
+        ? { kind: 'metadata' as const, changes: plan.changes }
+        : null,
   }));
   reportItems(ctx, report);
 

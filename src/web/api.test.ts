@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { saveConnection } from '../db/connection.js';
 import { closeDb, openDb, type Db } from '../db/index.js';
 import { recordRunItems } from '../db/runItems.js';
 import { createRun } from '../db/runs.js';
@@ -28,6 +29,17 @@ function get(path: string): Promise<unknown> {
   return Promise.resolve(matched.route.handler(ctx));
 }
 
+// Async so that a handler which refuses outright — every guard here throws
+// rather than returning — comes back as a rejection to assert on, the same way
+// the server's error middleware sees it.
+async function post(path: string, body: unknown): Promise<unknown> {
+  const url = new URL(path, 'http://localhost:13380');
+  const matched = router.match('POST', url.pathname);
+  if (!matched) throw new Error(`no route for ${url.pathname}`);
+  const ctx = { url, params: matched.params, body, cookies: {} } as unknown as RequestContext;
+  return matched.route.handler(ctx);
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'butler-api-'));
   process.env.BUTLER_DATA_DIR = dir;
@@ -36,8 +48,12 @@ beforeEach(() => {
   router = buildApiRouter({ db, runner, auth: {}, isSecure: () => true } as unknown as ApiDeps);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Awaited before the database closes: a run still winding up writes its last
+  // log lines on a timer, and closing underneath it fails the whole file with
+  // "database is not open" long after every test has passed.
   runner.stop();
+  await runner.drained(1000);
   closeDb();
   delete process.env.BUTLER_DATA_DIR;
   rmSync(dir, { recursive: true, force: true });
@@ -161,7 +177,7 @@ describe('GET /api/runs/:id/items', () => {
     expect(result).toEqual({
       items: [],
       total: 0,
-      totals: { total: 0, byStatus: { action: 0, clean: 0, skipped: 0 }, byCode: {} },
+      totals: { total: 0, byStatus: { action: 0, clean: 0, skipped: 0 }, byCode: {}, appliable: 0 },
     });
   });
 
@@ -170,5 +186,108 @@ describe('GET /api/runs/:id/items', () => {
     // so the longer one is not swallowed by the shorter.
     expect(router.match('GET', '/api/runs/7')!.route.segments).toHaveLength(3);
     expect(router.match('GET', '/api/runs/7/items')!.route.segments).toHaveLength(4);
+  });
+});
+
+describe('POST /api/runs/:id/apply', () => {
+  // What is under test is that the endpoint queues the right work, not the
+  // runner carrying it out — and carrying it out here would have it reach for
+  // an AudiobookShelf that is not there. A stopped runner accepts the queue and
+  // leaves it alone.
+  beforeEach(() => runner.stop());
+
+  /** A finished dry run with one book still waiting to be written. */
+  function planned(): number {
+    saveConnection(db, { url: 'http://localhost:13378', apiKey: 'k' });
+    const runId = createRun(db, {
+      command: 'metadata',
+      options: {},
+      dryRun: true,
+      trigger: 'manual',
+    }).id;
+    recordRunItems(db, runId, [
+      {
+        itemId: 'a',
+        title: 'Dune',
+        author: 'Frank Herbert',
+        path: '/b/dune',
+        status: 'action',
+        codes: ['description'],
+        detail: ['Would set description'],
+        plan: { kind: 'metadata', changes: [{ field: 'description', from: null, to: 'Spice.', source: 'googlebooks' }] },
+      },
+      {
+        itemId: 'b',
+        title: 'Emma',
+        author: 'Jane Austen',
+        path: '/b/emma',
+        status: 'clean',
+        codes: [],
+        detail: ['Nothing missing'],
+      },
+    ]);
+    return runId;
+  }
+
+  // Queued as a run of the same command, so it waits its turn behind other
+  // work, appears in history, and carries its own log and undo record.
+  it('queues a run that carries out what the source run decided', async () => {
+    const source = planned();
+    const created = (await post(`/api/runs/${source}/apply`, { apply: true })) as {
+      command: string;
+      options: Record<string, unknown>;
+      dryRun: boolean;
+    };
+
+    expect(created.command).toBe('metadata');
+    expect(created.options).toEqual({ applyFrom: source, apply: true });
+    expect(created.dryRun).toBe(false);
+  });
+
+  it('carries a selection of books through to the run', async () => {
+    const source = planned();
+    const created = (await post(`/api/runs/${source}/apply`, { items: ['a'], apply: true })) as {
+      options: Record<string, unknown>;
+    };
+    expect(created.options).toEqual({ applyFrom: source, items: ['a'], apply: true });
+  });
+
+  // Dry by default, like everything else here that writes.
+  it('is a dry run unless asked to apply', async () => {
+    const source = planned();
+    const created = (await post(`/api/runs/${source}/apply`, {})) as { dryRun: boolean };
+    expect(created.dryRun).toBe(true);
+  });
+
+  it('refuses a run with nothing left to carry out', async () => {
+    saveConnection(db, { url: 'http://localhost:13378', apiKey: 'k' });
+    const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
+    await expect(post(`/api/runs/${runId}/apply`, { apply: true })).rejects.toThrow(
+      /nothing left to carry out/,
+    );
+  });
+
+  it('404s for a run that does not exist', async () => {
+    await expect(post('/api/runs/999/apply', {})).rejects.toThrow(/No such run/);
+  });
+
+  // The page needs to know which rows it may offer, and how much is waiting in
+  // the run as a whole — the plans themselves stay on the server.
+  it('says which rows are still waiting, and how many', async () => {
+    const source = planned();
+    const items = (await get(`/api/runs/${source}/items`)) as {
+      items: Array<{ itemId: string; canApply: boolean; plan?: unknown }>;
+      totals: { appliable: number };
+    };
+
+    expect(items.items.map((i) => [i.itemId, i.canApply])).toEqual([
+      ['a', true],
+      ['b', false],
+    ]);
+    expect(items.items[0]).not.toHaveProperty('plan');
+    expect(items.totals.appliable).toBe(1);
+
+    const run = (await get(`/api/runs/${source}`)) as { appliable: number };
+    expect(run.appliable).toBe(1);
   });
 });

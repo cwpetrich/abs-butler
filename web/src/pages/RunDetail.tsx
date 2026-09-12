@@ -76,7 +76,7 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
         <Banner tone={data.status === 'cancelled' ? 'warn' : 'err'}>{data.error}</Banner>
       )}
 
-      <RunItemsPanel run={data} />
+      <RunItemsPanel run={data} navigate={navigate} />
 
       <RevertPanel run={data} onReverted={run.reload} />
 
@@ -114,10 +114,23 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
  * nothing to do, passed over — and only the wording differs, which the server
  * sends along with the vocabulary of codes so the browser keeps no copy of
  * either to drift out of date.
+ *
+ * It is also where a report gets acted on. A dry run worked out exactly what it
+ * would write to each book and, until now, the only way to say yes to it was to
+ * run the whole thing again and hope for the same answers. Every row that still
+ * has something waiting can be ticked, and the whole report can be applied at
+ * once — the same operation either way, with a shorter list.
  */
-function RunItemsPanel({ run }: { run: Run }) {
+function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) => void }) {
   const [filter, setFilter] = useState<{ code?: string; status?: RunItemStatus }>({});
   const [limit, setLimit] = useState(100);
+  // Books picked out of the report by hand. Kept by item id rather than by row,
+  // so a selection survives changing the filter underneath it — picking three
+  // books out of *Adult* and two out of *Held back* is one apply, not two.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [confirming, setConfirming] = useState<{ items?: string[]; count: number } | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const meta = useAsync(() => api.meta(), []);
   // `run.status` is a dependency, not decoration. A run's rows are written as it
   // finishes, so a page opened while it was still going fetched nothing — and
@@ -152,6 +165,55 @@ function RunItemsPanel({ run }: { run: Run }) {
   const chip = (active: boolean) => (active ? 'small primary' : 'small');
   const selected = filter.code ?? filter.status ?? 'all';
   const statuses: RunItemStatus[] = ['action', 'clean', 'skipped'];
+
+  // How much of what this run decided is still waiting to be carried out. Zero
+  // for an audit, which decides nothing to write, and zero for a run that has
+  // already written everything it planned.
+  const appliable = totals?.appliable ?? 0;
+  const rows = page.data?.items ?? [];
+  const selectable = rows.filter((item) => item.canApply);
+  const allPicked = selectable.length > 0 && selectable.every((item) => picked.has(item.itemId));
+
+  const toggle = (itemId: string) =>
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+
+  // Select-all covers what is on screen, not the whole report — the report has
+  // its own button, and a tick box that silently reached past the filter would
+  // be the easiest way to apply something nobody had looked at.
+  const toggleAll = () =>
+    setPicked((current) => {
+      const next = new Set(current);
+      for (const item of selectable) {
+        if (allPicked) next.delete(item.itemId);
+        else next.add(item.itemId);
+      }
+      return next;
+    });
+
+  const apply = async () => {
+    if (!confirming) return;
+    setApplying(true);
+    setApplyError(null);
+    try {
+      // A run of its own, queued behind whatever else is running: it writes to
+      // AudiobookShelf, which is exactly the work the runner serializes. The
+      // new run's page is where its log and its undo record live.
+      const created = await api.applyRun(run.id, {
+        ...(confirming.items ? { items: confirming.items } : {}),
+        apply: true,
+      });
+      navigate(`/runs/${created.id}`);
+    } catch (err) {
+      setApplyError((err as Error).message);
+      setApplying(false);
+      setConfirming(null);
+    }
+  };
 
   if (totals && totals.total === 0) {
     return (
@@ -214,6 +276,20 @@ function RunItemsPanel({ run }: { run: Run }) {
         ))}
       </div>
 
+      {appliable > 0 && (
+        <ApplyBar
+          run={run}
+          appliable={appliable}
+          picked={picked}
+          confirming={confirming}
+          applying={applying}
+          error={applyError}
+          onConfirm={setConfirming}
+          onClear={() => setPicked(new Set())}
+          onApply={() => void apply()}
+        />
+      )}
+
       {page.loading && !page.data && <Spinner />}
       {page.error && <Banner tone="err">{page.error}</Banner>}
 
@@ -226,6 +302,18 @@ function RunItemsPanel({ run }: { run: Run }) {
           <table>
             <thead>
               <tr>
+                {appliable > 0 && (
+                  <th style={{ width: 28 }}>
+                    <input
+                      type="checkbox"
+                      checked={allPicked}
+                      disabled={selectable.length === 0}
+                      onChange={toggleAll}
+                      title={allPicked ? 'Clear these' : 'Pick every book shown'}
+                      aria-label="Pick every book shown"
+                    />
+                  </th>
+                )}
                 <th>Title</th>
                 <th>Author</th>
                 <th>What happened</th>
@@ -233,7 +321,15 @@ function RunItemsPanel({ run }: { run: Run }) {
             </thead>
             <tbody>
               {page.data.items.map((item) => (
-                <ItemRow key={item.id} item={item} tone={tone} label={codeLabel} />
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  tone={tone}
+                  label={codeLabel}
+                  {...(appliable > 0
+                    ? { picked: picked.has(item.itemId), onToggle: () => toggle(item.itemId) }
+                    : {})}
+                />
               ))}
             </tbody>
           </table>
@@ -252,6 +348,104 @@ function RunItemsPanel({ run }: { run: Run }) {
 }
 
 /**
+ * Saying yes to a report.
+ *
+ * Two buttons for one operation: the whole report, or the books that have been
+ * ticked. They are the same request with a different list, so there is no way
+ * for "apply everything" and "apply these three" to disagree about what a
+ * change was.
+ *
+ * Nothing is written on the first click. What follows is a plain sentence about
+ * what is about to happen to the library and whether it can be taken back —
+ * which differs sharply between rewriting metadata and moving files, so it is
+ * worded per command rather than in one line that has to cover both.
+ */
+function ApplyBar({
+  run,
+  appliable,
+  picked,
+  confirming,
+  applying,
+  error,
+  onConfirm,
+  onClear,
+  onApply,
+}: {
+  run: Run;
+  appliable: number;
+  picked: Set<string>;
+  confirming: { items?: string[]; count: number } | null;
+  applying: boolean;
+  error: string | null;
+  onConfirm: (value: { items?: string[]; count: number } | null) => void;
+  onClear: () => void;
+  onApply: () => void;
+}) {
+  const moves = run.command === 'organize';
+
+  return (
+    <>
+      {error && <Banner tone="err">{error}</Banner>}
+
+      <p className="hint">
+        {run.dryRun
+          ? `This was a dry run, and what it decided is still here — ${appliable} book(s) waiting.`
+          : `${appliable} book(s) from this run were never written.`}{' '}
+        Apply them as they are, or tick the ones you want. Nothing is looked up again: this carries
+        out exactly the changes listed below, and skips any book that has changed since.
+      </p>
+
+      {confirming ? (
+        <div className="banner" style={{ borderColor: 'var(--warn)' }}>
+          <div>
+            {confirming.items
+              ? `Apply the ${confirming.count} book(s) you picked?`
+              : `Apply all ${confirming.count} recorded change(s)?`}{' '}
+            {moves
+              ? 'This moves folders on disk and triggers a rescan. Moves are not undoable — ' +
+                'abs-butler records no way back from a file move.'
+              : 'This writes to AudiobookShelf as a new run, which records how to put every ' +
+                'change back.'}
+          </div>
+          <div className="actions" style={{ marginTop: 10 }}>
+            <button className="primary" type="button" disabled={applying} onClick={onApply}>
+              {applying ? 'Starting…' : `Apply ${confirming.count} book(s)`}
+            </button>
+            <button type="button" disabled={applying} onClick={() => onConfirm(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="actions" style={{ flexWrap: 'wrap', marginBottom: 12 }}>
+          <button
+            className={picked.size > 0 ? '' : 'primary'}
+            type="button"
+            onClick={() => onConfirm({ count: appliable })}
+          >
+            Apply all {appliable} change(s)
+          </button>
+          {picked.size > 0 && (
+            <>
+              <button
+                className="primary"
+                type="button"
+                onClick={() => onConfirm({ items: [...picked], count: picked.size })}
+              >
+                Apply {picked.size} selected
+              </button>
+              <button className="small" type="button" onClick={onClear}>
+                Clear selection
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
  * The codes say what kind of thing happened and the detail lines say what
  * actually happened to this book — "description: — → The story of… (from
  * googlebooks)". Both, because the chip is what you filter by and the line is
@@ -261,13 +455,33 @@ function ItemRow({
   item,
   tone,
   label,
+  picked,
+  onToggle,
 }: {
   item: RunItem;
   tone: (code: string) => string;
   label: (code: string) => string;
+  /** Absent where this run has nothing left to apply, and the column with it. */
+  picked?: boolean;
+  onToggle?: () => void;
 }) {
   return (
     <tr>
+      {onToggle && (
+        // Empty rather than disabled where there is nothing waiting: a box that
+        // cannot be ticked invites working out why, and the answer — this book
+        // is already done, or was never going to change — is in the row itself.
+        <td>
+          {item.canApply && (
+            <input
+              type="checkbox"
+              checked={Boolean(picked)}
+              onChange={onToggle}
+              aria-label={`Apply the change to ${item.title}`}
+            />
+          )}
+        </td>
+      )}
       {/* The path is what someone needs to go and look at the book, and it is
           too long for a column of its own on most libraries. */}
       <td title={item.path}>{item.title}</td>

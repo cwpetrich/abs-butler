@@ -107,6 +107,15 @@ export function RunsPage({
                     <span className={`badge ${run.dryRun ? 'dim' : 'warn'}`}>
                       {run.dryRun ? 'dry run' : 'applied'}
                     </span>
+                    {/* A report nobody has acted on yet. Saying so here is what
+                        makes it findable a day later — the alternative is
+                        opening runs one at a time to see which still has
+                        something in it. */}
+                    {(run.appliable ?? 0) > 0 && (
+                      <span className="badge accent" style={{ marginLeft: 4 }}>
+                        {run.appliable} waiting
+                      </span>
+                    )}
                   </td>
                   <td>
                     <StatusBadge status={run.status} />

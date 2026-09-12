@@ -56,6 +56,11 @@ export interface RevertResult {
 export interface Run {
   /** Present on the single-run route; absent from the list. */
   revisions?: { total: number; reverted: number }
+  /**
+   * How many of this run's decisions are still waiting to be carried out.
+   * Present on the single-run route; absent from the list.
+   */
+  appliable?: number
   id: number;
   command: RunCommand;
   options: Record<string, unknown>;
@@ -91,12 +96,20 @@ export interface RunItem {
   codes: string[];
   /** What the run has to say about it, one line per thing. */
   detail: string[];
+  /**
+   * Whether this book's change is still waiting to be carried out — what makes
+   * the row one the page may offer to apply. The change itself stays on the
+   * server; a library's worth of them would dwarf the report.
+   */
+  canApply: boolean;
 }
 
 export interface RunItemTotals {
   total: number;
   byStatus: Record<RunItemStatus, number>;
   byCode: Record<string, number>;
+  /** How many of the run's rows still carry a change that could be applied. */
+  appliable: number;
 }
 
 export interface LogEntry {
@@ -258,6 +271,12 @@ export const api = {
     request<Run>('/api/runs', { method: 'POST', body: body(input) }),
   revertRun: (id: number, input: { apply?: boolean; force?: boolean }) =>
     request<RevertResult>(`/api/runs/${id}/revert`, { method: 'POST', body: body(input) }),
+  /**
+   * Carries out what a run decided, as a new run of the same command. Without
+   * `items` that is the whole report; with it, only the books named.
+   */
+  applyRun: (id: number, input: { items?: string[]; apply?: boolean } = {}) =>
+    request<Run>(`/api/runs/${id}/apply`, { method: 'POST', body: body(input) }),
   /** `stopping` means the run was executing: it was asked to stop, not stopped. */
   cancelRun: (id: number) =>
     request<{ ok: true; stopping: boolean }>(`/api/runs/${id}/cancel`, { method: 'POST' }),

@@ -128,7 +128,7 @@ On a home network that is the right trade. If you expose this port beyond your o
 | Page | What it does |
 | --- | --- |
 | **Runs** | Start a job and watch it. Full history of every run — manual, scheduled, or from the CLI — with the result summary. |
-| **Run detail** | Live-tailing log, options used, and a breakdown of what the run found or changed. |
+| **Run detail** | Live-tailing log, options used, and a breakdown of what the run found or changed — with tick boxes to apply a dry run's findings, per book or all at once. |
 | **Schedules** | Recurring jobs, at an interval you choose. |
 | **Logs** | Every line from every run, filterable by level and searchable. |
 | **Connection** | The server URL, API token, and library paths. Test shows exactly which paths were probed. |
@@ -250,7 +250,8 @@ abs-butler normalize --fields work      # stamp Open Library work identities onl
 abs-butler rate                         # age bands and content flags
 abs-butler organize                     # plan a folder reorganization
 
-abs-butler runs                         # recent runs, and what can still be undone
+abs-butler runs                         # recent runs, what is waiting, and what can be undone
+abs-butler apply <runId>                # carry out what a run decided, or part of it
 abs-butler revert <runId>               # put back what a run changed
 
 abs-butler serve                        # the web UI and scheduler
@@ -283,6 +284,10 @@ values match better.
 Every command is a dry run until `--apply`. `organize` is the one `revert` cannot undo — it moves
 files and records no revisions — so its dry run is the only preview you get.
 
+A dry run is not throwaway: what it decided is kept, and `abs-butler apply <runId>` carries it out
+without asking the providers anything again. See [Saying yes to a dry
+run](#saying-yes-to-a-dry-run).
+
 ### What a run says it did
 
 Every run records a row per book — what it did to that book, or why it did not — and keeps it with
@@ -304,7 +309,8 @@ that was never reached, and "which of my books are fine" is as much a question a
 
 The same report is on the run's page in the web UI, under **What this run did**. Every count doubles
 as a filter — click *Adult* to see exactly those books, *Held back* to see the changes the rewrite
-switch refused, or *Already in place* to see what `organize` looked at and left alone.
+switch refused, or *Already in place* to see what `organize` looked at and left alone. It is also
+where you say yes to it, book by book or all at once.
 
 Each run's log carries the same information in one line per kind: which bands a `rate` run landed
 on, which fields a `metadata` run filled and who answered for them, which of the three evidence
@@ -317,7 +323,51 @@ book it had decided on but was stopped before writing says so — `not-written`,
 the conditional, because the server does not have that change.
 
 Detail is kept for the ten most recent runs and pruned after that — one row per book per run is the
-bulky part. The counts in each run's summary survive for as long as the run is in history.
+bulky part. The counts in each run's summary survive for as long as the run is in history, and a
+pruned run has nothing left to apply.
+
+### Saying yes to a dry run
+
+A dry run works out exactly what it would write to each book. That is the thing you read and agree
+with — so it is kept, and applying it carries out those decisions rather than making new ones:
+
+```
+abs-butler runs                         # WAITING says how much each run has left to carry out
+abs-butler apply 12                     # what is still current, and what has moved on since
+abs-butler apply 12 --apply             # carry out all of it
+abs-butler apply 12 --items li_abc --apply   # or just this book
+```
+
+In the web UI it is the same thing with tick boxes: the run's page offers **Apply all N change(s)**,
+and every row still waiting has a box, so three books out of four hundred is three ticks and a
+click. Selection survives changing the filter, so you can take two books from *Adult* and one from
+*Held back* in one go.
+
+Why it matters more than saving the wait: **it applies what you read**. Running the command again
+with `--apply` asks every provider afresh, and providers revise their answers — so the second run
+can write something the report you approved never mentioned. Applying skips the lookups entirely,
+which on a large library is the difference between an hour and a minute.
+
+What it will not do is write over somebody's work:
+
+- A book **edited since the run** is left alone and named, the same bargain `revert` makes. Its line
+  says what it now reads and what the run expected.
+- A book that **already says what the run proposed** is reported as such, not written to again —
+  applying the same report twice is harmless.
+- A rating is applied as the **tags it adds and removes**, never as the whole list, so a tag you
+  added in between survives.
+- The **switches are re-read**. Turning on *Allow metadata rewrite* and applying the report is the
+  supported way to get the changes a `normalize` held back; until then they stay held and stay
+  waiting.
+- A `normalize` patch is **rebuilt against the book as it stands**, so a series keeps the sequence
+  your library already knows.
+
+An apply is a run like any other: it queues behind other work, keeps its own log, and — for
+everything but `organize` — records how to put every change back. What it carries out stops being
+offered by the run it came from, so `WAITING` only ever counts work that is genuinely outstanding.
+
+A run stopped partway leaves the books it decided on but never wrote — those are waiting too, so
+`apply` is also how you finish a run that was interrupted.
 
 ### Auditing
 
@@ -478,7 +528,7 @@ Every applied change records how to put it back, so an apply is something you
 can reconsider:
 
 ```bash
-abs-butler runs                  # recent runs, and what can still be undone
+abs-butler runs                  # recent runs, what is waiting, and what can be undone
 abs-butler revert 42             # what it would restore
 abs-butler revert 42 --apply
 ```

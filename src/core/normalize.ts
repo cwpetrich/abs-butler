@@ -487,6 +487,33 @@ export function dropNarratorsFromAuthors(
   return written.length <= PLAUSIBLE_AUTHORS ? written : authors;
 }
 
+/**
+ * What the item says for one field right now, written the way a proposal's
+ * `from` is written.
+ *
+ * The two have to agree exactly, because this is what tells a change that is
+ * still current from one the library has moved past since — the check `apply`
+ * makes before replaying a recorded proposal onto a book someone may have
+ * corrected by hand in the meantime.
+ */
+export function currentText(item: AbsLibraryItem, field: Normalizable): string | null {
+  const metadata = item.media?.metadata;
+  switch (field) {
+    case 'title':
+      return metadata?.title ?? null;
+    case 'subtitle':
+      return metadata?.subtitle ?? null;
+    case 'author':
+      return itemAuthors(item).join(', ') || null;
+    case 'narrator':
+      return itemNarrators(item).join(', ') || null;
+    case 'series':
+      return (metadata?.series ?? []).map((s) => s.name).filter(Boolean).join(', ') || null;
+    case 'work':
+      return itemWorkKey(item);
+  }
+}
+
 export function planNormalize(
   item: AbsLibraryItem,
   candidates: Candidate[],
@@ -947,6 +974,15 @@ export async function runNormalizeTask(
                 ...normalizeDetail(plan, mayReplace, written.has(plan.itemId)),
                 ...(unwritten ? ['The run was stopped before this was written'] : []),
               ],
+        // The proposals, not the patch they produce: the patch is rebuilt
+        // against the book as it stands when this is applied, which is what
+        // keeps a series sequence and the tags outside the work namespace.
+        // Held-back replacements are kept too — turning the switch on and
+        // applying the report is exactly the case they exist for.
+        plan:
+          plan.proposals.length > 0 && !written.has(plan.itemId)
+            ? { kind: 'normalize' as const, proposals: plan.proposals }
+            : null,
     };
   });
   reportItems(ctx, report);

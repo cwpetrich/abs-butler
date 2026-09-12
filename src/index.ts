@@ -4,6 +4,7 @@ import './silence-warnings.js';
 import { Command, Option } from 'commander';
 import { VERSION } from './version.js';
 import { AbsApiError } from './abs/client.js';
+import { runApply } from './commands/apply.js';
 import { runAudit } from './commands/audit.js';
 import { runMetadata, METADATA_FIELDS } from './commands/metadata.js';
 import { runNormalize, NORMALIZE_FIELDS } from './commands/normalize.js';
@@ -175,6 +176,15 @@ program
   .option('--json', 'emit JSON instead of a table')
   .option('--limit <n>', 'how many to show (default 20)', Number)
   .action(async (opts) => runRunsList(opts));
+
+program
+  .command('apply <runId>')
+  .description("Carry out what a run decided — all of it, or just the books you name")
+  .option('--apply', 'actually write (default is a dry run of the recorded plan)')
+  .option('--items <itemIds...>', 'only these books, by AudiobookShelf item id')
+  .option('--details', 'also list the books it looked at and left alone, with why')
+  .option('--json', 'emit JSON instead of a table')
+  .action(async (runId, opts) => runApply(runId, { ...globals(), ...opts }));
 
 program
   .command('revert <runId>')

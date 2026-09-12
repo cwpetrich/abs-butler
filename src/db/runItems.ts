@@ -1,3 +1,4 @@
+import { isItemPlan, type ItemPlan } from '../core/plans.js';
 import type { Db } from './index.js';
 
 /**
@@ -29,6 +30,12 @@ export interface RunItemRecord {
   codes: string[];
   /** What the run has to say about it, one line per thing. */
   detail: string[];
+  /**
+   * The change itself, in a form that can still be carried out — null wherever
+   * there is nothing left to do, which includes everything the run already
+   * wrote. See core/plans.ts.
+   */
+  plan: ItemPlan | null;
 }
 
 interface RunItemRow {
@@ -41,6 +48,7 @@ interface RunItemRow {
   status: string;
   codes: string;
   detail: string;
+  plan: string | null;
 }
 
 /**
@@ -54,6 +62,22 @@ function encode(codes: string[]): string {
 
 function decode(value: string): string[] {
   return value.split(',').filter(Boolean);
+}
+
+/**
+ * A plan is replayed, never queried, so it travels as JSON in one column — and
+ * is validated on the way out, since a row can outlive the version that wrote
+ * it. Anything unrecognisable reads back as no plan at all, which leaves the
+ * row exactly as unappliable as one that never had one.
+ */
+function decodePlan(value: string | null): ItemPlan | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isItemPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Detail is display text, never queried, so it travels as JSON in one column. */
@@ -78,6 +102,7 @@ function toRecord(row: RunItemRow): RunItemRecord {
     status: row.status as RunItemStatus,
     codes: decode(row.codes),
     detail: decodeDetail(row.detail),
+    plan: decodePlan(row.plan),
   };
 }
 
@@ -89,6 +114,8 @@ export interface RunItemInput {
   status: RunItemStatus;
   codes: string[];
   detail: string[];
+  /** What is left to do to this book, if anything. See core/plans.ts. */
+  plan?: ItemPlan | null;
 }
 
 /**
@@ -101,8 +128,8 @@ export interface RunItemInput {
  */
 export function recordRunItems(db: Db, runId: number, items: RunItemInput[]): void {
   const insert = db.prepare(
-    `INSERT INTO run_items (run_id, item_id, title, author, path, status, codes, detail)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO run_items (run_id, item_id, title, author, path, status, codes, detail, plan)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   db.exec('BEGIN');
   try {
@@ -117,6 +144,7 @@ export function recordRunItems(db: Db, runId: number, items: RunItemInput[]): vo
         item.status,
         encode(item.codes),
         JSON.stringify(item.detail),
+        item.plan ? JSON.stringify(item.plan) : null,
       );
     }
     db.exec('COMMIT');
@@ -166,11 +194,80 @@ export function countRunItems(db: Db, query: RunItemQuery): number {
   return row.n;
 }
 
+/**
+ * The books this run decided something about that has not been carried out —
+ * every row still carrying a plan, restricted to the ones asked for.
+ *
+ * Ordered by id, which is the task's own order: a report is applied in the
+ * order it was read.
+ */
+export function listRunItemPlans(
+  db: Db,
+  runId: number,
+  itemIds?: string[],
+): Array<RunItemRecord & { plan: ItemPlan }> {
+  const rows = db
+    .prepare(`SELECT * FROM run_items WHERE run_id = ? AND plan IS NOT NULL ORDER BY id`)
+    .all(runId) as unknown as RunItemRow[];
+
+  // Filtered here rather than in SQL: the selection comes from a request body
+  // and can be any length, and a thousand-parameter IN clause is the one shape
+  // SQLite refuses outright.
+  const wanted = itemIds ? new Set(itemIds) : null;
+  return rows
+    .map(toRecord)
+    .filter((row): row is RunItemRecord & { plan: ItemPlan } => row.plan !== null)
+    .filter((row) => !wanted || wanted.has(row.itemId));
+}
+
+/**
+ * Marks these books as no longer waiting — the run that carried them out says
+ * so, and the report they came from should stop offering them.
+ *
+ * Only what was settled: a change held back by a switch, or a move the
+ * filesystem refused, is still waiting on something a person can change, and
+ * keeping its plan is what lets them come back to it.
+ */
+export function clearRunItemPlans(db: Db, runId: number, itemIds: string[]): void {
+  // Chunked because a selection can be a whole library and SQLite binds a
+  // bounded number of parameters per statement.
+  for (let i = 0; i < itemIds.length; i += 200) {
+    const chunk = itemIds.slice(i, i + 200);
+    const holes = chunk.map(() => '?').join(', ');
+    db.prepare(
+      `UPDATE run_items SET plan = NULL WHERE run_id = ? AND item_id IN (${holes})`,
+    ).run(runId, ...chunk);
+  }
+}
+
+/**
+ * How much each run still has waiting, for the runs list — one grouped query
+ * rather than a count per row, since the list is fifty runs at a time.
+ */
+export function countRunItemPlansByRun(db: Db): Map<number, number> {
+  const rows = db
+    .prepare(
+      `SELECT run_id, COUNT(*) AS n FROM run_items WHERE plan IS NOT NULL GROUP BY run_id`,
+    )
+    .all() as unknown as Array<{ run_id: number; n: number }>;
+  return new Map(rows.map((row) => [Number(row.run_id), Number(row.n)]));
+}
+
+/** How much of this run is still waiting to be carried out. */
+export function countRunItemPlans(db: Db, runId: number): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM run_items WHERE run_id = ? AND plan IS NOT NULL')
+    .get(runId) as unknown as { n: number };
+  return Number(row?.n ?? 0);
+}
+
 export interface RunItemTotals {
   total: number;
   byStatus: Record<RunItemStatus, number>;
   /** How many items carry each code, most common first. */
   byCode: Record<string, number>;
+  /** How many still carry a change that could be applied. */
+  appliable: number;
 }
 
 /**
@@ -190,6 +287,7 @@ export function summarizeRunItems(db: Db, runId: number): RunItemTotals {
     total: 0,
     byStatus: { action: 0, clean: 0, skipped: 0 },
     byCode: {},
+    appliable: countRunItemPlans(db, runId),
   };
   for (const row of rows) {
     totals.total += row.n;
