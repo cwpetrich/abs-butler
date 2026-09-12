@@ -357,6 +357,13 @@ export async function runRateTask(
           ? ['The run was stopped before this was written']
           : []),
       ],
+      // The delta rather than the finished tag list, so applying it later adds
+      // and removes exactly what this run decided and leaves a tag somebody
+      // added in the meantime alone.
+      plan:
+        result.changed && !written.has(result.itemId)
+          ? { kind: 'rate' as const, ...tagDelta(result) }
+          : null,
     })),
     ...skippedRows,
   ];

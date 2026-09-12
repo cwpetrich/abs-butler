@@ -1,5 +1,6 @@
 import type { TaskContext } from '../context.js';
 import type { RunCommand } from '../db/runs.js';
+import { runApplyTask, type ApplyTaskResult } from './apply.js';
 import { runAuditTask, type AuditTaskResult } from './audit.js';
 import { runMetadataTask, type MetadataTaskResult } from './metadata.js';
 import { runNormalizeTask, type NormalizeTaskResult } from './normalize.js';
@@ -7,6 +8,7 @@ import { runOrganizeTask, type OrganizeTaskResult } from './organize.js';
 import { runRateTask, type RateTaskResult } from './rate.js';
 
 export type TaskResult =
+  | ApplyTaskResult
   | AuditTaskResult
   | RateTaskResult
   | MetadataTaskResult
@@ -39,6 +41,19 @@ export async function runTask(
   command: RunCommand,
   options: Record<string, unknown> = {},
 ): Promise<TaskResult> {
+  // Carrying out what an earlier run decided, rather than deciding again. It
+  // runs under that run's own command — so it queues behind the same work, is
+  // gated by the same switches, and reads in history as what it is — which is
+  // why it is routed here rather than being a sixth command of its own.
+  if (typeof options.applyFrom === 'number') {
+    return runApplyTask(ctx, {
+      applyFrom: options.applyFrom,
+      command,
+      ...(Array.isArray(options.items) ? { items: options.items.map(String) } : {}),
+      ...(options.apply ? { apply: true } : {}),
+    });
+  }
+
   switch (command) {
     case 'audit':
       return runAuditTask(ctx, options);
@@ -65,6 +80,27 @@ export async function runTask(
  * history list without opening anything.
  */
 export function summarizeResult(command: RunCommand, result: TaskResult): Record<string, unknown> {
+  // An apply reports on the run it carried out, not on the library it read, so
+  // it has a shape of its own rather than a thinner version of the command's.
+  if ('replayOf' in result) {
+    const r = result as ApplyTaskResult;
+    return {
+      replayOf: r.replayOf,
+      selected: r.selected,
+      written: r.written,
+      unchanged: r.unchanged,
+      stale: r.stale,
+      heldBack: r.heldBack,
+      itemsHeldBack: r.itemsHeldBack,
+      missing: r.missing,
+      blocked: r.blocked,
+      applied: r.applied,
+      stopped: r.stopped,
+      notReached: r.notReached,
+      rescanned: r.rescanned,
+    };
+  }
+
   switch (command) {
     case 'audit': {
       const r = result as AuditTaskResult;

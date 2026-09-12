@@ -2,6 +2,7 @@ import { runRevertTask } from '../core/revert.js';
 import { openContext, openStore } from '../context.js';
 import { listRuns } from '../db/runs.js';
 import { countRevisions } from '../db/revisions.js';
+import { countRunItemPlansByRun } from '../db/runItems.js';
 import { color, log } from '../logger.js';
 import { printJson, printTable } from '../util/table.js';
 import { truncate } from '../util/text.js';
@@ -46,14 +47,22 @@ export async function runRevert(runId: string, options: RevertOptions): Promise<
   }
 }
 
-/** Recent runs, so a revert has something to name. */
+/** Recent runs, so a revert — or an apply — has something to name. */
 export async function runRunsList(options: { json?: boolean; limit?: number }): Promise<void> {
   const db = openStore();
   const { runs } = listRuns(db, { limit: options.limit ?? 20 });
-  const rows = runs.map((run) => ({ run, revisions: countRevisions(db, run.id) }));
+  // What each run decided and has not carried out. Shown alongside the undo
+  // count because the two are the same question pointing opposite ways: what
+  // can still be done, and what can still be taken back.
+  const waiting = countRunItemPlansByRun(db);
+  const rows = runs.map((run) => ({
+    run,
+    revisions: countRevisions(db, run.id),
+    appliable: waiting.get(run.id) ?? 0,
+  }));
 
   if (options.json) {
-    printJson(rows.map(({ run, revisions }) => ({ ...run, revisions })));
+    printJson(rows.map(({ run, revisions, appliable }) => ({ ...run, revisions, appliable })));
     return;
   }
 
@@ -69,6 +78,10 @@ export async function runRunsList(options: { json?: boolean; limit?: number }): 
     { header: 'TRIGGER', value: ({ run }) => color.dim(run.trigger) },
     { header: 'MODE', value: ({ run }) => (run.dryRun ? color.dim('dry run') : 'applied') },
     { header: 'STATUS', value: ({ run }) => run.status },
+    {
+      header: 'WAITING',
+      value: ({ appliable }) => (appliable === 0 ? color.dim('—') : `${appliable} item(s)`),
+    },
     {
       header: 'UNDO',
       value: ({ revisions }) => {

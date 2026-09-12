@@ -256,4 +256,25 @@ export const MIGRATIONS: string[] = [
   DROP INDEX IF EXISTS idx_findings_run;
   CREATE INDEX idx_run_items_run ON run_items(run_id, id);
   `,
+
+  // 11 — keep what a run decided, not only what it said
+  //
+  // A dry run worked out exactly what it would write to each book, printed it,
+  // and threw it away: the only way to act on a report anyone had just read was
+  // to run the whole thing again with --apply and hope it decided the same
+  // thing twice. On a library where providers answer slowly that is an hour of
+  // lookups to repeat, and on one where a provider has changed its mind since,
+  // it is not even the same plan.
+  //
+  // So each row now carries the change itself, in the command's own shape — the
+  // tags a rating would add and remove, the fields a metadata run would fill,
+  // the proposals a normalize reached, the move an organize planned. `apply`
+  // replays them against the library as it stands now, which is also what lets
+  // a single book be picked out of a report and applied on its own.
+  //
+  // Null wherever there is nothing to carry out: an audit finding, a book that
+  // was already right, and every change a run has already written.
+  `
+  ALTER TABLE run_items ADD COLUMN plan TEXT;
+  `,
 ];

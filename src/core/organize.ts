@@ -438,6 +438,10 @@ export async function runOrganizeTask(
           // Conditional until it has happened; the apply loop below rewrites
           // this line for the ones it actually moves.
           detail: [`Would move: ${outcome.plan.from} → ${outcome.plan.to}`],
+          // Kept so this move can be carried out later — the whole plan at
+          // once, or this one book on its own. Cleared below for the ones this
+          // run moves itself.
+          plan: { kind: 'organize', move: outcome.plan },
         });
         continue;
       }
@@ -552,6 +556,9 @@ export async function runOrganizeTask(
     if (row) {
       row.codes = ['moved'];
       row.detail = [`Moved: ${plan.from} → ${plan.to}`];
+      // Done, so there is nothing left to apply. The files are where the
+      // template says they belong and replaying the move would find nothing.
+      row.plan = null;
     }
     log.debug(`moved ${plan.from} -> ${plan.to}`);
   }
@@ -582,7 +589,7 @@ export function unavailableMessage(reason: string): string {
   );
 }
 
-async function moveBlockedReason(plan: MovePlan): Promise<string | null> {
+export async function moveBlockedReason(plan: MovePlan): Promise<string | null> {
   if (!existsSync(plan.fromLocal)) return `not found at ${plan.fromLocal}`;
   if (existsSync(plan.toLocal)) return `destination already exists: ${plan.toLocal}`;
   const source = await stat(plan.fromLocal);

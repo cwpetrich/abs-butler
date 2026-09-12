@@ -12,7 +12,14 @@ import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
-import { countRunItems, listRunItems, summarizeRunItems, type RunItemStatus } from '../db/runItems.js';
+import {
+  countRunItemPlans,
+  countRunItemPlansByRun,
+  countRunItems,
+  listRunItems,
+  summarizeRunItems,
+  type RunItemStatus,
+} from '../db/runItems.js';
 import { listLogs } from '../db/logs.js';
 import { getRun, listRuns, type RunCommand, type RunStatus } from '../db/runs.js';
 import { countRevisions } from '../db/revisions.js';
@@ -20,6 +27,7 @@ import { openContext } from '../context.js';
 import { checkForUpdate } from '../core/updates.js';
 import { VERSION } from '../version.js';
 import { runRevertTask } from '../core/revert.js';
+import { NOTHING_TO_APPLY } from '../core/apply.js';
 import {
   createSchedule,
   deleteSchedule,
@@ -153,6 +161,16 @@ const RevertInputSchema = z.object({
   force: z.boolean().optional(),
 });
 
+/**
+ * Which of a run's recorded changes to carry out. An absent `items` means all
+ * of them — the whole report — and a list is the per-book half of the same
+ * thing. A dry run unless asked otherwise, like everything else that writes.
+ */
+const ApplyInputSchema = z.object({
+  items: z.array(z.string().min(1)).min(1).max(10_000).optional(),
+  apply: z.boolean().optional(),
+});
+
 export interface ApiDeps {
   db: Db;
   runner: JobRunner;
@@ -276,14 +294,20 @@ export function buildApiRouter(deps: ApiDeps): Router {
   router.get('/api/runs', (ctx) => {
     const command = ctx.url.searchParams.get('command');
     const status = ctx.url.searchParams.get('status');
+    // What each run still has waiting to be carried out, so the list can say
+    // which reports are worth going back to. One grouped query for the page.
+    const waiting = countRunItemPlansByRun(db);
+
+    const page = listRuns(db, {
+      ...(command && isRunCommand(command) ? { command: command as RunCommand } : {}),
+      ...(status ? { status: status as RunStatus } : {}),
+      limit: Number(ctx.url.searchParams.get('limit') ?? 50),
+      offset: Number(ctx.url.searchParams.get('offset') ?? 0),
+    });
 
     return {
-      ...listRuns(db, {
-        ...(command && isRunCommand(command) ? { command: command as RunCommand } : {}),
-        ...(status ? { status: status as RunStatus } : {}),
-        limit: Number(ctx.url.searchParams.get('limit') ?? 50),
-        offset: Number(ctx.url.searchParams.get('offset') ?? 0),
-      }),
+      ...page,
+      runs: page.runs.map((run) => ({ ...run, appliable: waiting.get(run.id) ?? 0 })),
       activeRunId: runner.activeRunId,
       queued: runner.queuedRunIds,
     };
@@ -317,7 +341,10 @@ export function buildApiRouter(deps: ApiDeps): Router {
       offset: Number(ctx.url.searchParams.get('offset') ?? 0),
     };
     return {
-      items: listRunItems(db, query),
+      // The plan itself stays on the server — it is the command's own shape and
+      // a library's worth of them would dwarf the report. What the page needs
+      // is only whether this row is one it may offer to apply.
+      items: listRunItems(db, query).map(({ plan, ...item }) => ({ ...item, canApply: plan !== null })),
       total: countRunItems(db, query),
       totals: summarizeRunItems(db, runId),
     };
@@ -328,7 +355,13 @@ export function buildApiRouter(deps: ApiDeps): Router {
     if (!run) throw notFound('No such run');
     // The undo count travels with the run, so the page can offer a revert
     // without a second request and without guessing whether one is possible.
-    return { ...run, revisions: countRevisions(db, run.id) };
+    // `appliable` is the same idea pointing forwards: how much of what this run
+    // decided is still waiting to be carried out.
+    return {
+      ...run,
+      revisions: countRevisions(db, run.id),
+      appliable: countRunItemPlans(db, run.id),
+    };
   });
 
   /**
@@ -340,6 +373,35 @@ export function buildApiRouter(deps: ApiDeps): Router {
     const runId = numericParam(ctx, 'id');
     if (!getRun(db, runId)) throw notFound('No such run');
     return runRevertTask({ ...openContext(db), runId }, { runId, ...input });
+  });
+
+  /**
+   * Carries out what a run decided — all of it, or the books named in `items`.
+   *
+   * Queued as a run of the same command rather than done inline: it writes to
+   * AudiobookShelf or moves files, which is exactly the work the serial runner
+   * exists to keep to one at a time, and it means the result is a run in
+   * history with its own log and its own undo record.
+   */
+  router.post('/api/runs/:id/apply', (ctx) => {
+    const runId = numericParam(ctx, 'id');
+    const source = getRun(db, runId);
+    if (!source) throw notFound('No such run');
+
+    const input = parse(ApplyInputSchema, ctx.body ?? {});
+    requireConnection(db);
+    if (countRunItemPlans(db, runId) === 0) throw badRequest(NOTHING_TO_APPLY);
+    assertCommandAllowed(db, source.command, source.options);
+
+    return runner.enqueue({
+      command: source.command,
+      options: {
+        applyFrom: runId,
+        ...(input.items ? { items: input.items } : {}),
+        ...(input.apply ? { apply: true } : {}),
+      },
+      trigger: 'manual',
+    });
   });
 
   router.post('/api/runs', (ctx) => {

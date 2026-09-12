@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openMemoryDb, type Db } from './index.js';
 import { completeRun, createRun } from './runs.js';
 import {
+  clearRunItemPlans,
+  countRunItemPlans,
+  countRunItemPlansByRun,
   countRunItems,
+  listRunItemPlans,
   listRunItems,
   pruneRunItems,
   recordRunItems,
@@ -144,6 +148,7 @@ describe('run items', () => {
       total: 0,
       byStatus: { action: 0, clean: 0, skipped: 0 },
       byCode: {},
+      appliable: 0,
     });
   });
 
@@ -171,5 +176,104 @@ describe('run items', () => {
     // The run itself, and the counts it summarized, are untouched.
     const kept = db.prepare('SELECT summary FROM runs WHERE id = ?').get(runs[0]!) as { summary: string };
     expect(JSON.parse(kept.summary)).toEqual({ itemsWithIssues: 3 });
+  });
+});
+
+/**
+ * A run's decisions, kept so they can be carried out later. The row says what
+ * happened in words; this is the same thing in a form that can be replayed.
+ */
+describe('what a run decided', () => {
+  const waiting: RunItemInput[] = [
+    {
+      itemId: 'a',
+      title: 'Dune',
+      author: 'Frank Herbert',
+      path: '/b/dune',
+      status: 'action',
+      codes: ['description'],
+      detail: ['Would set description'],
+      plan: {
+        kind: 'metadata',
+        changes: [{ field: 'description', from: null, to: 'Spice.', source: 'googlebooks' }],
+      },
+    },
+    {
+      itemId: 'b',
+      title: 'Emma',
+      author: 'Jane Austen',
+      path: '/b/emma',
+      status: 'clean',
+      codes: [],
+      detail: ['Nothing missing'],
+    },
+  ];
+
+  function seeded(): number {
+    const runId = createRun(db, {
+      command: 'metadata',
+      options: {},
+      dryRun: true,
+      trigger: 'manual',
+    }).id;
+    recordRunItems(db, runId, waiting);
+    return runId;
+  }
+
+  it('reads a plan back exactly as it was stored', () => {
+    const runId = seeded();
+    const plans = listRunItemPlans(db, runId);
+
+    expect(plans).toHaveLength(1);
+    expect(plans[0]!.itemId).toBe('a');
+    expect(plans[0]!.plan).toEqual({
+      kind: 'metadata',
+      changes: [{ field: 'description', from: null, to: 'Spice.', source: 'googlebooks' }],
+    });
+  });
+
+  it('leaves a row with nothing to do without one', () => {
+    const runId = seeded();
+    expect(listRunItems(db, { runId })[1]!.plan).toBeNull();
+    expect(countRunItemPlans(db, runId)).toBe(1);
+  });
+
+  it('narrows to the books asked for', () => {
+    const runId = seeded();
+    expect(listRunItemPlans(db, runId, ['b'])).toHaveLength(0);
+    expect(listRunItemPlans(db, runId, ['a', 'b'])).toHaveLength(1);
+  });
+
+  // Carried out is not waiting: the report it came from should stop offering it.
+  it('forgets a plan once it has been carried out', () => {
+    const runId = seeded();
+    clearRunItemPlans(db, runId, ['a']);
+
+    expect(countRunItemPlans(db, runId)).toBe(0);
+    // The row itself stays — it is still the account of what the run did.
+    expect(listRunItems(db, { runId })).toHaveLength(2);
+  });
+
+  it('counts what every run has waiting in one pass', () => {
+    const first = seeded();
+    const second = seeded();
+    clearRunItemPlans(db, second, ['a']);
+
+    const counts = countRunItemPlansByRun(db);
+    expect(counts.get(first)).toBe(1);
+    expect(counts.has(second)).toBe(false);
+  });
+
+  // Rows outlive the code that wrote them. A plan this version cannot read
+  // should leave the row unappliable rather than reach the apply path.
+  it('ignores a plan it cannot make sense of', () => {
+    const runId = seeded();
+    db.prepare("UPDATE run_items SET plan = ? WHERE run_id = ? AND item_id = 'a'").run(
+      '{"kind":"telepathy"}',
+      runId,
+    );
+
+    expect(listRunItems(db, { runId })[0]!.plan).toBeNull();
+    expect(listRunItemPlans(db, runId)).toHaveLength(0);
   });
 });
