@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
 import type { TaskContext } from '../context.js';
 import { closeDb, openDb, type Db } from '../db/index.js';
-import { countFindings, listFindings } from '../db/findings.js';
+import { countRunItems, listRunItems } from '../db/runItems.js';
 import { createRun } from '../db/runs.js';
 import { DEFAULT_SETTINGS } from '../db/settings.js';
 import { auditItems, findDuplicates, runAuditTask } from './audit.js';
@@ -159,12 +159,12 @@ describe('runAuditTask', () => {
       // Every audited item is recorded, including the one with nothing wrong:
       // a book missing from the report is indistinguishable from one that was
       // never scanned.
-      const stored = listFindings(db, { runId });
+      const stored = listRunItems(db, { runId });
       expect(stored).toHaveLength(5);
 
       const mystery = stored.find((f) => f.itemId === 'item-2')!;
       // The second book is missing nearly everything, and each gap is named.
-      expect(mystery.issues).toEqual(
+      expect(mystery.codes).toEqual(
         expect.arrayContaining(['missing-author', 'missing-cover', 'unmatched', 'missing-description']),
       );
       expect(mystery.title).toBe('A Mystery');
@@ -176,23 +176,23 @@ describe('runAuditTask', () => {
     const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
     await runAuditTask(context(runId));
 
-    const dune = listFindings(db, { runId }).find((f) => f.itemId === 'item-1')!;
+    const dune = listRunItems(db, { runId }).find((f) => f.itemId === 'item-1')!;
     // Every book is unrated until `rate` has run once, which is why a first
     // audit legitimately reports the whole library.
-    expect(dune.issues).toEqual(['unrated']);
+    expect(dune.codes).toEqual(['unrated']);
   });
 
   it('records a clean item with no issues rather than leaving it out', async () => {
     const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
     await runAuditTask(context(runId));
 
-    const clean = listFindings(db, { runId, status: 'clean' });
+    const clean = listRunItems(db, { runId, status: 'clean' });
     // item-4 is an EPUB with no audio and no narrator, and both of those are
     // descriptions of a reading copy rather than faults in it.
     expect(clean.map((f) => f.itemId).sort()).toEqual(['item-3', 'item-4']);
-    expect(clean[0]!.issues).toEqual([]);
+    expect(clean[0]!.codes).toEqual([]);
 
-    expect(listFindings(db, { runId, status: 'issues' }).map((f) => f.itemId).sort()).toEqual([
+    expect(listRunItems(db, { runId, status: 'action' }).map((f) => f.itemId).sort()).toEqual([
       'item-1',
       'item-2',
       'item-5',
@@ -205,7 +205,7 @@ describe('runAuditTask', () => {
 
     // item-2 is missing nearly everything, item-1 is only unrated, item-3 is
     // fine — so attention-first ordering is 2, 1, 3.
-    const order = listFindings(db, { runId }).map((f) => f.itemId);
+    const order = listRunItems(db, { runId }).map((f) => f.itemId);
     expect(order[0]).toBe('item-2');
     expect(order.slice(-2).sort()).toEqual(['item-3', 'item-4']);
   });
@@ -216,13 +216,13 @@ describe('runAuditTask', () => {
 
     // The whole point: an EPUB has no audio because it is an EPUB.
     expect(result.issueCounts['no-audio']).toBe(1);
-    const empty = listFindings(db, { runId }).find((f) => f.itemId === 'item-5')!;
-    expect(empty.issues).toContain('no-audio');
+    const empty = listRunItems(db, { runId }).find((f) => f.itemId === 'item-5')!;
+    expect(empty.codes).toContain('no-audio');
 
-    const ebook = listFindings(db, { runId }).find((f) => f.itemId === 'item-4')!;
-    expect(ebook.issues).not.toContain('no-audio');
+    const ebook = listRunItems(db, { runId }).find((f) => f.itemId === 'item-4')!;
+    expect(ebook.codes).not.toContain('no-audio');
     // Nor is it missing a narrator it was never going to have.
-    expect(ebook.issues).not.toContain('missing-narrator');
+    expect(ebook.codes).not.toContain('missing-narrator');
   });
 
   it('still asks an audiobook for its narrator when an ebook sits beside it', () => {
@@ -265,7 +265,7 @@ describe('runAuditTask', () => {
   it('records nothing when no run owns the work', async () => {
     const result = await runAuditTask(context());
     expect(result.findings).toHaveLength(5);
-    expect(countFindings(db, { runId: 0 })).toBe(0);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM findings').get()).toMatchObject({ n: 0 });
+    expect(countRunItems(db, { runId: 0 })).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM run_items').get()).toMatchObject({ n: 0 });
   });
 });

@@ -2,10 +2,15 @@ import { FILLABLE, runMetadataTask } from '../core/metadata.js';
 import { openStore, type GlobalOptions } from '../context.js';
 import { withRun } from '../core/execute.js';
 import { color, log } from '../logger.js';
+import { printDetails } from './details.js';
 import { printJson, printTable } from '../util/table.js';
 import { truncate } from '../util/text.js';
 
 export interface MetadataOptions extends GlobalOptions {
+  /** List every item the run looked at, with what it had to say about each. */
+  details?: boolean;
+  /** With --details, leave out the items the run had nothing to do to. */
+  onlyChanged?: boolean;
   apply?: boolean;
   json?: boolean;
   limit?: number;
@@ -27,7 +32,13 @@ export async function runMetadata(options: MetadataOptions): Promise<void> {
     return;
   }
 
-  if (result.plans.length === 0) return;
+  if (result.plans.length === 0) {
+    // Every item checked, including the ones with nothing to do — "it looked
+    // and found nothing" is a different answer from "it never looked".
+    if (options.details) printDetails('metadata', result.report, { onlyAction: options.onlyChanged });
+    else log.info('re-run with --details to list every item checked');
+    return;
+  }
 
   printTable(
     result.plans.flatMap((plan) => plan.changes.map((change) => ({ plan, change }))),
@@ -38,6 +49,9 @@ export async function runMetadata(options: MetadataOptions): Promise<void> {
       { header: 'SRC', value: ({ change }) => color.dim(change.source) },
     ],
   );
+
+  if (options.details) printDetails('metadata', result.report, { onlyAction: options.onlyChanged });
+  else log.info('re-run with --details to list every item checked, not only the changes');
 
   if (!result.applied) log.info('re-run with --apply to write these changes');
   // Named here because an undo nobody can find is not an undo.

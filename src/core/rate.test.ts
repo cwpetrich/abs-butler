@@ -112,4 +112,39 @@ describe('runRateTask', () => {
     expect(result.rated).toBe(5);
     expect(controller.signal.aborted).toBe(false);
   });
+
+  // "Tagged 300 item(s)" is not an account of anything. The verdict on each
+  // book, and what it was based on, is the part worth keeping.
+  it('reports what it decided about each book, not only how many it tagged', async () => {
+    const result = await runRateTask(context(books(2)));
+
+    expect(result.report).toHaveLength(2);
+    const first = result.report[0]!;
+    expect(first.title).toBe('Book 0');
+    // Nothing answered, so there is no band — said out loud rather than left
+    // as an absence for someone to interpret.
+    expect(first.status).toBe('action');
+    expect(first.codes).toContain('unknown');
+    expect(first.detail[0]).toBe('No usable audience signal');
+    expect(first.detail.some((line) => line.startsWith('Tags added:'))).toBe(true);
+    expect(result.bandCounts).toEqual({ unknown: 2 });
+  });
+
+  it('says which books it passed over, and what they already carry', async () => {
+    const rated = books(1).map((item) => ({
+      ...item,
+      media: { ...item.media, tags: ['abs-butler:rated', 'age:adult'] },
+    })) as AbsLibraryItem[];
+
+    const result = await runRateTask(context(rated));
+
+    expect(result.rated).toBe(0);
+    expect(result.skippedAlreadyRated).toBe(1);
+    // A skipped book is in the report rather than absent from it: "left alone
+    // because it already has one" and "never looked at" are different answers.
+    expect(result.report).toHaveLength(1);
+    expect(result.report[0]!.status).toBe('skipped');
+    expect(result.report[0]!.codes).toEqual(['already-rated']);
+    expect(result.report[0]!.detail[1]).toBe('Current tags: abs-butler:rated, age:adult');
+  });
 });

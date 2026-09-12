@@ -243,7 +243,7 @@ abs-butler configure --file-changes on      # let organize --apply move files
 abs-butler configure --metadata-rewrite on  # let normalize --apply replace titles and names
 abs-butler disconnect                   # forget the connection, keep history
 
-abs-butler audit --details              # metadata and file problems
+abs-butler audit --details              # metadata and file problems, book by book
 abs-butler metadata                     # fill blank description/year/publisher/ISBN
 abs-butler normalize                    # make titles, authors, narrators, series consistent
 abs-butler normalize --fields work      # stamp Open Library work identities only
@@ -283,6 +283,36 @@ values match better.
 Every command is a dry run until `--apply`. `organize` is the one `revert` cannot undo — it moves
 files and records no revisions — so its dry run is the only preview you get.
 
+### What a run says it did
+
+Every run records a row per book — what it did to that book, or why it did not — and keeps it with
+the run. Counts alone are not actionable: "37 books have no narrator" cannot be acted on until you
+know which 37, and "tagged 300 item(s)" says nothing about what any of them were tagged with, or on
+whose word.
+
+```
+abs-butler audit     --details   # every issue found, per book
+abs-butler rate      --details   # the band, the flags, the tags, and the evidence behind them
+abs-butler metadata  --details   # every value it would write, and which provider supplied it
+abs-butler normalize --details   # every rewrite, its evidence tier, and what was held back
+abs-butler organize  --details   # where each book is going, or why it is staying put
+```
+
+`--only-changed` (`--only-issues` for `audit`) leaves out the items the run had nothing to do to.
+They are listed by default on purpose: a book absent from a report is indistinguishable from one
+that was never reached, and "which of my books are fine" is as much a question as "which are not".
+
+The same report is on the run's page in the web UI, under **What this run did**. Every count doubles
+as a filter — click *Adult* to see exactly those books, *Held back* to see the changes the rewrite
+switch refused, or *Already in place* to see what `organize` looked at and left alone.
+
+Each run's log carries the same information in one line per kind: which bands a `rate` run landed
+on, which fields a `metadata` run filled and who answered for them, which of the three evidence
+tiers a `normalize` run relied on.
+
+Detail is kept for the ten most recent runs and pruned after that — one row per book per run is the
+bulky part. The counts in each run's summary survive for as long as the run is in history.
+
 ### Auditing
 
 Issue codes: `missing-on-disk`, `invalid`, `no-audio`, `missing-title`, `missing-author`,
@@ -310,24 +340,13 @@ written an audiobook's cast onto an EPUB — plausible enough that nobody would 
 **A first audit flags everything, and that is not a fault.** `unrated` is true of every book until
 `rate` has run once, so a fresh library reports 100% affected. Read the breakdown, not the total.
 
-Counts alone are not actionable — "37 books have no narrator" cannot be acted on until you know
-which 37 — so every audited item is kept with the run, **passes included**:
+Every audited item is kept with the run, passes included — see [What a run says it
+did](#what-a-run-says-it-did):
 
 ```
 abs-butler audit --details                 # every item, worst first, clean ones trailing
 abs-butler audit --details --only-issues   # just the problems
 ```
-
-A book that is absent from a report is indistinguishable from one that was never scanned, which is
-why the clean ones are listed rather than omitted.
-
-In the web UI the same report is on the run's page under **What the audit found**. *Everything*,
-*With issues* and *Passed* switch between them, and each issue count doubles as a filter: click
-*No ISBN or ASIN* to see exactly those books.
-
-Detail is kept for the ten most recent audits and pruned after that — it is one row per book per
-audit, so it is the bulky part. The counts in each run's summary survive for as long as the run is
-in history.
 
 The one count worth reading first is **`unmatched`**. Those books carry no ISBN and no ASIN, so no
 provider can rewrite them — if that number is high, `metadata` is doing real work before

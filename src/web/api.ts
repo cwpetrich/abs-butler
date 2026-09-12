@@ -5,13 +5,14 @@ import { keyFilePath, keySource } from '../core/crypto.js';
 import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
 import { AUDIT_CODES, ISSUES } from '../core/audit.js';
+import { RUN_ITEM_LABELS } from '../core/report.js';
 import { FILLABLE } from '../core/metadata.js';
 import { NORMALIZABLE } from '../core/normalize.js';
 import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
-import { countFindings, listFindings } from '../db/findings.js';
+import { countRunItems, listRunItems, summarizeRunItems, type RunItemStatus } from '../db/runItems.js';
 import { listLogs } from '../db/logs.js';
 import { getRun, listRuns, type RunCommand, type RunStatus } from '../db/runs.js';
 import { countRevisions } from '../db/revisions.js';
@@ -289,28 +290,36 @@ export function buildApiRouter(deps: ApiDeps): Router {
   });
 
   /**
-   * What an audit found, item by item.
+   * What a run did, item by item.
    *
-   * Every audited item is here, passes included, so the panel can say what was
-   * looked at rather than only what went wrong. Paged and filterable — by issue
-   * code, because "which books have no narrator" is the question someone
-   * actually has, and by status, because "show me only the problems" is the
-   * other one.
+   * Every item the run looked at is here — the ones it changed, the ones it
+   * found nothing to do to, and the ones it passed over — so the panel can say
+   * what was looked at rather than only what came of it. Paged and filterable
+   * by code, because "which books have no narrator" and "which came out adult"
+   * are the questions someone actually has, and by status, because "show me
+   * only the ones that need me" is the other one.
+   *
+   * The totals come back with the page. They are what the filter chips count,
+   * and computing them here rather than reading them out of the run's summary
+   * is what lets one panel serve every command.
    */
-  router.get('/api/runs/:id/findings', (ctx) => {
+  router.get('/api/runs/:id/items', (ctx) => {
     const runId = numericParam(ctx, 'id');
-    const issue = ctx.url.searchParams.get('issue');
+    const code = ctx.url.searchParams.get('code');
     const status = ctx.url.searchParams.get('status');
     const query = {
       runId,
-      ...(issue ? { issue } : {}),
-      ...(status === 'issues' || status === 'clean' ? { status: status as 'issues' | 'clean' } : {}),
+      ...(code ? { code } : {}),
+      ...(status === 'action' || status === 'clean' || status === 'skipped'
+        ? { status: status as RunItemStatus }
+        : {}),
       limit: Math.min(Number(ctx.url.searchParams.get('limit') ?? 100), 500),
       offset: Number(ctx.url.searchParams.get('offset') ?? 0),
     };
     return {
-      findings: listFindings(db, query),
-      total: countFindings(db, query),
+      items: listRunItems(db, query),
+      total: countRunItems(db, query),
+      totals: summarizeRunItems(db, runId),
     };
   });
 
@@ -418,6 +427,10 @@ export function buildApiRouter(deps: ApiDeps): Router {
     // Labels and severities travel with the codes so the UI can name an issue
     // the same way the CLI does, rather than keeping its own copy that drifts.
     auditIssues: ISSUES.map(({ code, severity, label }) => ({ code, severity, label })),
+    // What each command calls the three per-item statuses. Sent rather than
+    // hardcoded in the browser for the same reason as the issue labels: one
+    // vocabulary, named identically wherever it is read.
+    runItemLabels: RUN_ITEM_LABELS,
     metadataFields: [...FILLABLE],
     normalizeFields: [...NORMALIZABLE],
     providers: [...PROVIDER_NAMES],

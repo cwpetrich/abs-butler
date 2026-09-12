@@ -123,6 +123,8 @@ program
   .option('--providers <names...>', 'restrict to these providers')
   .option('--min-confidence <n>', 'confidence needed before a tag is written', Number)
   .option('--max-age <n>', 'only show books banded above this reader age', Number)
+  .option('--details', 'list every item the run looked at, with what it had to say about each')
+  .option('--only-changed', 'with --details, leave out the items it had nothing to do to')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) => runRate({ ...globals(), ...opts }));
 
@@ -132,6 +134,8 @@ program
   .option('--apply', 'write changes to AudiobookShelf (default is a dry run)')
   .option('--json', 'emit JSON instead of a table')
   .option('--overwrite', 'replace fields that already have a value')
+  .option('--details', 'list every item the run looked at, with what it had to say about each')
+  .option('--only-changed', 'with --details, leave out the items it had nothing to do to')
   .addOption(new Option('--fields <names...>', 'fields to fill').choices(METADATA_FIELDS))
   .option('--providers <names...>', 'restrict to these providers')
   .option('--limit <n>', 'stop after N items', Number)
@@ -145,6 +149,8 @@ program
   .addOption(new Option('--fields <names...>', 'fields to normalize').choices(NORMALIZE_FIELDS))
   .option('--providers <names...>', 'restrict to these providers')
   .option('--no-consensus', 'ignore what the rest of the library spells, and use providers only')
+  .option('--details', 'list every item the run looked at, with what it had to say about each')
+  .option('--only-changed', 'with --details, leave out the items it had nothing to do to')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) =>
     runNormalize({ ...globals(), ...opts, noConsensus: opts.consensus === false }),
@@ -157,6 +163,8 @@ program
   .option('--json', 'emit JSON instead of a table')
   .option('--template <pattern>', `path template (default: ${DEFAULT_TEMPLATE})`, DEFAULT_TEMPLATE)
   .option('--single-files', 'also file loose single-file items (a bare book.m4b) into a folder')
+  .option('--details', 'list every item the run looked at, with what it had to say about each')
+  .option('--only-changed', 'with --details, leave out the items it had nothing to do to')
   .option('--no-scan', 'skip the library rescan after moving')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) => runOrganize({ ...globals(), ...opts, noScan: opts.scan === false }));
