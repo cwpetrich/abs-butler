@@ -1,5 +1,6 @@
 import type { ContentAssessment } from '../content/ageRating.js';
-import { runRateTask } from '../core/rate.js';
+import type { RatingResult } from '../core/rate.js';
+import { runRateTask, tagDelta } from '../core/rate.js';
 import { openStore, type GlobalOptions } from '../context.js';
 import { withRun } from '../core/execute.js';
 import { color, log } from '../logger.js';
@@ -35,10 +36,18 @@ export async function runRate(options: RateOptions): Promise<void> {
   }
 
   printTable(result.results, [
-    { header: 'TITLE', value: (r) => truncate(r.title, 44), maxWidth: 44 },
+    { header: 'TITLE', value: (r) => truncate(r.title, 40), maxWidth: 40 },
     { header: 'BAND', value: (r) => bandColor(r.assessment.band) },
     { header: 'CONF', value: (r) => r.assessment.confidence.toFixed(2), align: 'right' },
     { header: 'FLAGS', value: (r) => r.assessment.flags.map((f) => f.flag).join(', ') || color.dim('—') },
+    // What would actually be written, which is the point of a dry run and was
+    // the one thing the table left out: a band and a confidence are the
+    // reasoning, and the tags are the change.
+    {
+      header: result.applied ? 'TAGS WRITTEN' : 'TAGS TO WRITE',
+      value: (r) => tagChange(r),
+      maxWidth: 44,
+    },
     { header: 'SRC', value: (r) => color.dim(r.assessment.sources.join('/') || 'none') },
   ]);
 
@@ -56,6 +65,23 @@ export async function runRate(options: RateOptions): Promise<void> {
   if (!options.details && result.rated > 0) {
     log.info('re-run with --details to see the evidence behind each rating');
   }
+}
+
+/**
+ * The tag delta for one book: what the run adds, and what it takes away.
+ *
+ * `abs-butler:` is stripped from the display because every tag here carries it
+ * and the column is narrow — the full values are in `--details` and on the run's
+ * page, where there is room to be unambiguous.
+ */
+function tagChange(result: RatingResult): string {
+  const { added, removed } = tagDelta(result);
+  const short = (tag: string) => tag.replace(/^abs-butler:/, '');
+  const parts = [
+    ...added.map((tag) => color.green(`+${short(tag)}`)),
+    ...removed.map((tag) => color.red(`-${short(tag)}`)),
+  ];
+  return parts.length > 0 ? parts.join(' ') : color.dim('no change');
 }
 
 function bandColor(band: ContentAssessment['band']): string {

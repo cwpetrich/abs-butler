@@ -740,12 +740,17 @@ export interface NormalizeTaskResult {
  * library already spelling it the other way, `local` is only a rearrangement of
  * the wording that is already there.
  */
-function normalizeDetail(plan: NormalizePlan, mayReplace: boolean): string[] {
+function normalizeDetail(plan: NormalizePlan, mayReplace: boolean, applied: boolean): string[] {
   return plan.proposals.map((proposal) => {
-    const held = !mayReplace && !isAdditive(proposal) ? ' [held back]' : '';
+    const held = !mayReplace && !isAdditive(proposal);
+    // Held back is neither past nor conditional — it is a refusal, and saying
+    // "would change" of something that will not change however many times you
+    // apply it is the misreading this line exists to prevent.
+    const verb = held ? 'Held back' : applied ? 'Changed' : 'Would change';
     return (
-      `${proposal.field}: ${brief(proposal.from)} → ${brief(proposal.to, 70)} ` +
-      `(${proposal.source}: ${proposal.detail})${held}`
+      `${verb} ${proposal.field}: ${brief(proposal.from)} → ${brief(proposal.to, 70)} ` +
+      `(${proposal.source}: ${proposal.detail})` +
+      `${held ? ' — turn on Allow metadata rewrite to apply it' : ''}`
     );
   });
 }
@@ -913,7 +918,7 @@ export async function runNormalizeTask(
         detail:
           plan.proposals.length === 0
             ? ['Already agrees with the rest of the library']
-            : normalizeDetail(plan, mayReplace),
+            : normalizeDetail(plan, mayReplace, Boolean(options.apply)),
     };
   });
   reportItems(ctx, report);
