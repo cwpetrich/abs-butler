@@ -2,7 +2,7 @@ import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { isEbookOnly } from '../abs/media.js';
 import { log } from '../logger.js';
-import { mapLimit } from '../providers/http.js';
+import { mapLimitPartial } from '../providers/http.js';
 import {
   isBlank,
   normalizeAuthor,
@@ -724,6 +724,10 @@ export interface NormalizeTaskResult {
   bySource: Record<ProposalSource, number>;
   /** How many changes each field accounts for. */
   byField: Record<string, number>;
+  /** True when the run was stopped before it reached every item. */
+  stopped: boolean;
+  /** Items it never got to, because it was stopped. */
+  notReached: number;
   plans: NormalizePlan[];
   /**
    * Exactly what was recorded against the run, one row per book — including the
@@ -788,7 +792,9 @@ export async function runNormalizeTask(
 
   log.info(`checking ${plural(items.length, 'item')} for ${requested.join(', ')} inconsistencies…`);
 
-  const plans = await mapLimit(
+  // Partial on purpose: a run stopped partway has still judged everything up to
+  // that point against the library, and those judgements are worth keeping.
+  const planned = await mapLimitPartial(
     items,
     ctx.settings.providerConcurrency,
     async (item) => {
@@ -812,6 +818,13 @@ export async function runNormalizeTask(
     },
     { signal: ctx.signal },
   );
+  const plans = planned.results;
+  if (planned.stopped) {
+    log.warn(
+      `stopped after checking ${plans.length} of ${items.length} item(s) — ` +
+        `${planned.unreached} were not reached.`,
+    );
+  }
 
   const actionable = plans.filter((p) => p.proposals.length > 0);
   const fieldsToChange = actionable.reduce((sum, p) => sum + p.proposals.length, 0);
@@ -852,12 +865,21 @@ export async function runNormalizeTask(
     );
   }
 
+  // Which books were actually written to, so the report can tell a correction
+  // that was made from one that was only ever going to be.
+  const written = new Set<string>();
   let updated = 0;
   if (options.apply) {
     for (const plan of applicable) {
-      ctx.signal?.throwIfAborted();
+      // Between whole items, and an ending rather than a failure: what was
+      // written stays written, and the report says which books never got there.
+      if (ctx.signal?.aborted) {
+        log.warn(`stopped after writing ${updated} of ${applicable.length} — the rest were left alone.`);
+        break;
+      }
       const item = byId.get(plan.itemId)!;
       await applyPatch(ctx, item, planToPatch(item, plan));
+      written.add(plan.itemId);
       updated += 1;
       if (updated % 25 === 0) log.info(`  wrote ${updated}/${applicable.length}`);
     }
@@ -879,16 +901,16 @@ export async function runNormalizeTask(
 
   if (options.apply) {
     log.success(
-      `Normalized ${plural(updated, 'item')} of ${items.length} checked` +
-        `; ${items.length - actionable.length} already agreed.`,
+      `Normalized ${plural(updated, 'item')} of ${plans.length} checked` +
+        `; ${plans.length - actionable.length} already agreed.`,
     );
   } else if (actionable.length === 0) {
-    log.success(`Everything already agrees — all ${plural(items.length, 'item')} checked.`);
+    log.success(`Everything already agrees — all ${plural(plans.length, 'item')} checked.`);
   } else {
     log.info(
       `${plural(actionable.length, 'item')} would change` +
         `${itemsHeldBack > 0 ? ` (${itemsHeldBack} of them held back entirely)` : ''}` +
-        `; ${items.length - actionable.length} already agree. Apply to write.`,
+        `; ${plans.length - actionable.length} already agree. Apply to write.`,
     );
   }
 
@@ -897,6 +919,8 @@ export async function runNormalizeTask(
   const report: RunItemInput[] = plans.map((plan) => {
       const held = !mayReplace && plan.proposals.some((proposal) => !isAdditive(proposal));
       const nothingWritable = plan.proposals.length > 0 && !writable.has(plan.itemId);
+      // Had something to write, and the run ended before it was written.
+      const unwritten = Boolean(options.apply) && writable.has(plan.itemId) && !written.has(plan.itemId);
       return {
         itemId: plan.itemId,
         title: plan.title,
@@ -913,18 +937,23 @@ export async function runNormalizeTask(
             ...plan.proposals.map((proposal) => proposal.field),
             ...plan.proposals.map((proposal) => proposal.source),
             ...(held ? ['held-back'] : []),
+            ...(unwritten ? ['not-written'] : []),
           ]),
         ],
         detail:
           plan.proposals.length === 0
             ? ['Already agrees with the rest of the library']
-            : normalizeDetail(plan, mayReplace, Boolean(options.apply)),
+            : [
+                ...normalizeDetail(plan, mayReplace, written.has(plan.itemId)),
+                ...(unwritten ? ['The run was stopped before this was written'] : []),
+              ],
     };
   });
   reportItems(ctx, report);
 
   return {
-    scanned: items.length,
+    // What it actually checked; see the note in metadata.ts.
+    scanned: plans.length,
     itemsToChange: actionable.length,
     fieldsToChange,
     heldBack,
@@ -934,6 +963,8 @@ export async function runNormalizeTask(
     fields: requested,
     bySource,
     byField,
+    stopped: planned.stopped || Boolean(ctx.signal?.aborted),
+    notReached: planned.unreached,
     plans: actionable,
     report,
   };

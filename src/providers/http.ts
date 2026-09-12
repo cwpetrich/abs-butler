@@ -82,30 +82,81 @@ export async function getJson<T>(
   return null;
 }
 
-/** Runs tasks with a bounded number in flight, preserving input order. */
-export async function mapLimit<T, R>(
+export interface PartialMap<R> {
+  /** What finished, in input order. */
+  results: R[];
+  /** True when a stop ended it before every item was reached. */
+  stopped: boolean;
+  /** How many items were never started. */
+  unreached: number;
+}
+
+/**
+ * Runs tasks with a bounded number in flight, preserving input order, and
+ * treats a stop as an ending rather than an error: whatever finished comes
+ * back, and `stopped` says the rest never ran.
+ *
+ * That distinction is the whole point. A stopped run has still done everything
+ * up to the moment it was stopped -- a `rate` run stopped at book 300 has
+ * reached a verdict on 300 books -- and throwing the results away on the way
+ * out left the run with nothing to show for the work it did.
+ */
+export async function mapLimitPartial<T, R>(
   items: T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
   options: { signal?: AbortSignal } = {},
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
+): Promise<PartialMap<R>> {
+  const slots = new Array<{ value: R } | undefined>(items.length);
   let cursor = 0;
+  let stopped = false;
 
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     for (;;) {
       // Checked before claiming the next item rather than mid-flight: work
       // already started is allowed to finish, so a stopped run leaves whole
       // items behind it rather than half of one.
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) {
+        stopped = true;
+        return;
+      }
       const index = cursor++;
       if (index >= items.length) return;
-      results[index] = await fn(items[index]!, index);
+      try {
+        slots[index] = { value: await fn(items[index]!, index) };
+      } catch (err) {
+        // A stop reaches the HTTP layer, so the item in flight fails with the
+        // abort reason. That is the run ending, not the item failing, and
+        // anything else is a real error that must still end the run.
+        if (options.signal?.aborted) {
+          stopped = true;
+          return;
+        }
+        throw err;
+      }
     }
   });
 
   await Promise.all(workers);
-  return results;
+
+  const results: R[] = [];
+  for (const slot of slots) if (slot) results.push(slot.value);
+  return { results, stopped, unreached: items.length - results.length };
+}
+
+/**
+ * The same, for callers with nothing useful to say about partial work: a stop
+ * is raised as the error it was.
+ */
+export async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+  options: { signal?: AbortSignal } = {},
+): Promise<R[]> {
+  const mapped = await mapLimitPartial(items, limit, fn, options);
+  if (mapped.stopped) options.signal?.throwIfAborted();
+  return mapped.results;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

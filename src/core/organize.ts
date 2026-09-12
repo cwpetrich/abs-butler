@@ -346,6 +346,10 @@ export interface OrganizeTaskResult {
   skipped: Array<{ title: string; reason: string }>;
   /** Why the items with no plan have none, counted by reason. */
   declined: Partial<Record<NoMoveCode, number>>;
+  /** True when the run was stopped before it reached every planned move. */
+  stopped: boolean;
+  /** Planned moves it never got to, because it was stopped. */
+  notReached: number;
   applied: boolean;
   rescanned: boolean;
   capability: Capability;
@@ -474,6 +478,8 @@ export async function runOrganizeTask(
   const skipped: Array<{ title: string; reason: string }> = [...loose];
   let moved = 0;
   let rescanned = false;
+  /** Planned moves the run was stopped before reaching. */
+  let unreached = 0;
 
   const finish = (applied: boolean): OrganizeTaskResult => {
     const report = [...rows.values()];
@@ -486,6 +492,8 @@ export async function runOrganizeTask(
       inPlace,
       skipped,
       declined,
+      stopped: Boolean(ctx.signal?.aborted),
+      notReached: unreached,
       applied,
       rescanned,
       capability,
@@ -501,7 +509,6 @@ export async function runOrganizeTask(
 
   const touchedLibraries = new Set<string>();
   let blocked = 0;
-  let unreached = 0;
   for (const plan of plans) {
     // Between whole items only. A stopped run leaves the moves it already made
     // in place — they are on disk and correct — and the rescan below still
