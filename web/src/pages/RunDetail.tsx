@@ -119,9 +119,13 @@ function RunItemsPanel({ run }: { run: Run }) {
   const [filter, setFilter] = useState<{ code?: string; status?: RunItemStatus }>({});
   const [limit, setLimit] = useState(100);
   const meta = useAsync(() => api.meta(), []);
+  // `run.status` is a dependency, not decoration. A run's rows are written as it
+  // finishes, so a page opened while it was still going fetched nothing — and
+  // without the status in here, nothing fetched again when it finished. The card
+  // sat on "Nothing recorded for this run" until the page was reloaded.
   const page = useAsync(
     () => api.runItems(run.id, { ...filter, limit }),
-    [run.id, filter.code, filter.status, limit],
+    [run.id, run.status, filter.code, filter.status, limit],
   );
 
   if (run.status === 'running' || run.status === 'queued') return null;

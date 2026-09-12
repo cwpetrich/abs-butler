@@ -431,7 +431,9 @@ export async function runOrganizeTask(
           ...itemIdentity(item),
           status: 'action',
           codes: ['planned'],
-          detail: [`${outcome.plan.from} → ${outcome.plan.to}`],
+          // Conditional until it has happened; the apply loop below rewrites
+          // this line for the ones it actually moves.
+          detail: [`Would move: ${outcome.plan.from} → ${outcome.plan.to}`],
         });
         continue;
       }
@@ -515,7 +517,10 @@ export async function runOrganizeTask(
         if (row) {
           row.status = 'skipped';
           row.codes = ['not-reached'];
-          row.detail = [`${rest.from} → ${rest.to}`, 'The run was stopped before reaching this one'];
+          row.detail = [
+            `Not moved: ${rest.from} → ${rest.to}`,
+            'The run was stopped before reaching this one',
+          ];
         }
       }
       break;
@@ -529,7 +534,7 @@ export async function runOrganizeTask(
       if (row) {
         row.status = 'skipped';
         row.codes = ['blocked'];
-        row.detail = [`${plan.from} → ${plan.to}`, `Not moved: ${reason}`];
+        row.detail = [`Not moved: ${plan.from} → ${plan.to}`, reason];
       }
       continue;
     }
@@ -539,7 +544,7 @@ export async function runOrganizeTask(
     const row = rows.get(plan.itemId);
     if (row) {
       row.codes = ['moved'];
-      row.detail = [`${plan.from} → ${plan.to}`, 'Moved on disk'];
+      row.detail = [`Moved: ${plan.from} → ${plan.to}`];
     }
     log.debug(`moved ${plan.from} -> ${plan.to}`);
   }

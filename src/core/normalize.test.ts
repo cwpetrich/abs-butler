@@ -845,7 +845,7 @@ describe('runNormalizeTask reporting', () => {
     expect(bent.codes).toEqual(['title', 'local']);
     // The old spelling and the new one, so the change can be judged rather
     // than merely counted.
-    expect(bent.detail[0]).toContain('Hobbit, The → The Hobbit');
+    expect(bent.detail[0]).toContain('Would change title: Hobbit, The → The Hobbit');
 
     const fine = rows.find((row) => row.itemId === 'fine')!;
     expect(fine.status).toBe('clean');
@@ -864,6 +864,9 @@ describe('runNormalizeTask reporting', () => {
     const bent = listRunItems(db, { runId: ctx.runId! }).find((row) => row.itemId === 'bent')!;
     expect(bent.status).toBe('skipped');
     expect(bent.codes).toContain('held-back');
-    expect(bent.detail[0]).toContain('[held back]');
+    // Not "would change": applying again changes nothing until the switch is on,
+    // which is the misreading the wording exists to prevent.
+    expect(bent.detail[0]).toContain('Held back title:');
+    expect(bent.detail[0]).toContain('Allow metadata rewrite');
   });
 });

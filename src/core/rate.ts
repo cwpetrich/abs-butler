@@ -102,33 +102,50 @@ export interface RateTaskResult {
   report: RunItemInput[];
 }
 
+/** The tags this rating adds and removes, which is the whole of what it changes. */
+export function tagDelta(result: RatingResult): { added: string[]; removed: string[] } {
+  return {
+    added: result.proposedTags.filter((tag) => !result.currentTags.includes(tag)),
+    removed: result.currentTags.filter((tag) => !result.proposedTags.includes(tag)),
+  };
+}
+
 /**
- * What the run has to say about one book, in the order someone reads it: the
- * verdict, the flags behind it, what that does to the tags, and who said so.
+ * What the run has to say about one book, change first: what it would write to
+ * AudiobookShelf, then the verdict behind it, then who said so.
  *
- * The evidence is the part that matters and the part that used to be thrown
- * away — "adult, confidence 0.82" invites the question "says who", and the
- * answer was only ever visible by re-running the command by hand.
+ * The change leads because that is the question a dry run exists to answer.
+ * "adult — confidence 0.82" is the reasoning, and reasoning belongs second: a
+ * reader scanning the list wants to know what is about to happen to the book
+ * before they want to know why it is about to happen.
+ *
+ * And it is written in the conditional until it is true. A dry run saying "Tags
+ * added" is describing something it has not done.
  */
-function ratingDetail(result: RatingResult): string[] {
+function ratingDetail(result: RatingResult, applied: boolean): string[] {
   const { assessment } = result;
-  const lines = [
+  const { added, removed } = tagDelta(result);
+  const lines: string[] = [];
+
+  if (added.length > 0) lines.push(`${applied ? 'Added' : 'Would add'}: ${added.join(', ')}`);
+  if (removed.length > 0) {
+    lines.push(`${applied ? 'Removed' : 'Would remove'}: ${removed.join(', ')}`);
+  }
+  if (added.length === 0 && removed.length === 0) {
+    lines.push('No tag change — it already says exactly this');
+  }
+
+  lines.push(
     assessment.band === 'unknown'
       ? 'No usable audience signal'
       : `${assessment.band} — confidence ${assessment.confidence.toFixed(2)}`,
-  ];
+  );
 
   if (assessment.flags.length > 0) {
     lines.push(
       `Flags: ${assessment.flags.map((f) => `${f.flag} (${f.confidence.toFixed(2)})`).join(', ')}`,
     );
   }
-
-  const added = result.proposedTags.filter((tag) => !result.currentTags.includes(tag));
-  const removed = result.currentTags.filter((tag) => !result.proposedTags.includes(tag));
-  if (added.length > 0) lines.push(`Tags added: ${added.join(', ')}`);
-  if (removed.length > 0) lines.push(`Tags removed: ${removed.join(', ')}`);
-  if (added.length === 0 && removed.length === 0) lines.push('Tags already say exactly this');
 
   if (assessment.sources.length > 0) {
     lines.push(`Asked: ${[...new Set(assessment.sources)].join(', ')}`);
@@ -304,7 +321,7 @@ export async function runRateTask(
       path: byPath.get(result.itemId) ?? '',
       status: result.changed ? ('action' as const) : ('clean' as const),
       codes: ratingCodes(result),
-      detail: ratingDetail(result),
+      detail: ratingDetail(result, Boolean(options.apply)),
     })),
     ...skippedRows,
   ];

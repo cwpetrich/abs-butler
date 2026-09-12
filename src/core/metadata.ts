@@ -116,14 +116,17 @@ export interface MetadataTaskResult {
 }
 
 /**
- * One line per field the run would write, saying what it is replacing and who
- * said so. The value is shown, not just named: "description from googlebooks"
- * is not something anyone can approve or object to without reading it.
+ * One line per field the run writes, saying what it is replacing and who said
+ * so. The value is shown, not just named: "description from googlebooks" is not
+ * something anyone can approve or object to without reading it.
+ *
+ * In the conditional until it is true — a dry run has set nothing.
  */
-function metadataDetail(plan: MetadataPlan): string[] {
+function metadataDetail(plan: MetadataPlan, applied: boolean): string[] {
   return plan.changes.map(
     (change) =>
-      `${change.field}: ${brief(change.from)} → ${brief(change.to, 90)} (from ${change.source})`,
+      `${applied ? 'Set' : 'Would set'} ${change.field}: ${brief(change.from)} → ` +
+      `${brief(change.to, 90)} (from ${change.source})`,
   );
 }
 
@@ -212,7 +215,8 @@ export async function runMetadataTask(
     path: itemPath(byId.get(plan.itemId)!),
     status: plan.changes.length > 0 ? ('action' as const) : ('clean' as const),
     codes: plan.changes.map((change) => change.field),
-    detail: plan.changes.length > 0 ? metadataDetail(plan) : ['Nothing missing'],
+    detail:
+      plan.changes.length > 0 ? metadataDetail(plan, Boolean(options.apply)) : ['Nothing missing'],
   }));
   reportItems(ctx, report);
 

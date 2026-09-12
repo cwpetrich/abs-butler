@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
+import type { AbsLibrary, AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import type { TaskContext } from '../context.js';
 import { closeDb, openDb, type Db } from '../db/index.js';
 import { DEFAULT_SETTINGS } from '../db/settings.js';
@@ -26,13 +26,16 @@ function books(count: number): AbsLibraryItem[] {
 }
 
 /** Everything runRateTask asks of AudiobookShelf, and nothing else. */
-function client(items: AbsLibraryItem[]) {
+function client(items: AbsLibraryItem[], written: AbsMediaPatch[] = []) {
   return {
     async listLibraries() {
       return [library];
     },
     async *iterateLibraryItems() {
       for (const item of items) yield item;
+    },
+    async patchItemMedia(_id: string, patch: AbsMediaPatch) {
+      written.push(patch);
     },
   } as unknown as TaskContext['client'];
 }
@@ -125,9 +128,17 @@ describe('runRateTask', () => {
     // as an absence for someone to interpret.
     expect(first.status).toBe('action');
     expect(first.codes).toContain('unknown');
-    expect(first.detail[0]).toBe('No usable audience signal');
-    expect(first.detail.some((line) => line.startsWith('Tags added:'))).toBe(true);
+    // The change leads, in the conditional: a dry run answers "what would this
+    // do to the book" before "what did it conclude", and has added nothing.
+    expect(first.detail[0]).toBe('Would add: abs-butler:rated');
+    expect(first.detail[1]).toBe('No usable audience signal');
     expect(result.bandCounts).toEqual({ unknown: 2 });
+  });
+
+  it('says it added the tags only once it has', async () => {
+    const result = await runRateTask(context(books(1)), { apply: true });
+    expect(result.tagged).toBe(1);
+    expect(result.report[0]!.detail[0]).toBe('Added: abs-butler:rated');
   });
 
   it('says which books it passed over, and what they already carry', async () => {
