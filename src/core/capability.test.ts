@@ -9,6 +9,8 @@ import type { ConnectionRecord } from '../db/connection.js';
 function connection(patch: Partial<ConnectionRecord> = {}): ConnectionRecord {
   return {
     url: 'http://localhost:13378',
+    authMethod: null,
+    authUsername: null,
     libraryRoot: null,
     pathPrefix: null,
     createdAt: 0,

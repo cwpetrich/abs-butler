@@ -94,6 +94,18 @@ describe('connection', () => {
     expect(getConnectionWithKey(db)?.apiKey).toBe('rotated-key');
   });
 
+  // Both methods store the same token, so this is the only way to tell them apart.
+  it('records whether the token was pasted or came from signing in', () => {
+    saveConnection(db, { ...input, authMethod: 'login', authUsername: 'root' });
+    expect(getConnection(db)).toMatchObject({ authMethod: 'login', authUsername: 'root' });
+
+    updateConnection(db, { libraryRoot: '/library' });
+    expect(getConnection(db)).toMatchObject({ authMethod: 'login', authUsername: 'root' });
+
+    updateConnection(db, { apiKey: 'pasted-key' });
+    expect(getConnection(db)).toMatchObject({ authMethod: 'token', authUsername: null });
+  });
+
   it('clears the library root when set to empty, disabling organize', () => {
     saveConnection(db, { ...input, libraryRoot: '/library' });
     updateConnection(db, { libraryRoot: '' });
