@@ -1,5 +1,6 @@
 import type { Db } from './index.js';
 import { z } from 'zod';
+import { DEFAULT_TEMPLATE, templateProblem } from '../core/template.js';
 
 /**
  * Application settings live in the database so the web UI can change them
@@ -66,6 +67,18 @@ export const SettingsSchema = z.object({
    * Off by default, so a fresh install cannot move a file until someone says so.
    */
   allowFileChanges: z.boolean().default(false),
+  /**
+   * The folder layout organize files books into, unless a run is given its
+   * own. Saved so a layout is chosen once rather than retyped on every run.
+   */
+  organizeTemplate: z
+    .string()
+    .trim()
+    .default(DEFAULT_TEMPLATE)
+    .superRefine((value, ctx) => {
+      const problem = templateProblem(value);
+      if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+    }),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

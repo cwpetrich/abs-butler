@@ -161,6 +161,7 @@ export interface Settings {
   allowFileChanges: boolean;
   allowMetadataRewrite: boolean;
   crossFormatDuplicates: boolean;
+  organizeTemplate: string;
   googleBooksApiKeySet: boolean;
 }
 
@@ -184,6 +185,11 @@ export interface Meta {
   ageBands: string[];
   contentFlags: string[];
   defaultTemplate: string;
+  /** Organize's placeholders and example paths, rendered by the server. */
+  templateHelp: {
+    fields: Array<{ name: string; description: string }>;
+    examples: Array<{ template: string; renders: Array<{ book: string; path: string }> }>;
+  };
   /** What each command calls the three per-item statuses. */
   runItemLabels: Record<RunCommand, Record<RunItemStatus, string>>;
 }

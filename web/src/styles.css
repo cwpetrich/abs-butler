@@ -241,6 +241,48 @@ label {
   font-weight: 550;
   font-size: 13px;
 }
+/* ---- template help ---- */
+
+.template-help {
+  margin: 4px 0 12px;
+  font-size: 13px;
+}
+.template-help summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12.5px;
+  width: fit-content;
+}
+.template-help[open] {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.template-help h3 {
+  font-size: 13px;
+  margin: 14px 0 4px;
+}
+.template-help p,
+.template-help ul {
+  margin: 4px 0;
+  color: var(--text-dim);
+}
+.template-help table {
+  margin-top: 6px;
+}
+.template-help td {
+  padding: 5px 8px;
+  overflow-wrap: anywhere;
+}
+.template-help > table td:first-child {
+  white-space: nowrap;
+  width: 1%;
+}
+.template-example {
+  margin: 10px 0 0;
+}
+
 label .hint {
   display: block;
   font-weight: 400;

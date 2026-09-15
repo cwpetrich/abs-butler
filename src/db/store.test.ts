@@ -233,6 +233,34 @@ describe('settings', () => {
     expect(() => updateSettings(db, { providerConcurrency: 99 })).toThrow();
   });
 
+  it('saves the organize template so runs need not repeat it', () => {
+    updateSettings(db, { organizeTemplate: '{author}/{title} ({year})' });
+    expect(getSettings(db).organizeTemplate).toBe('{author}/{title} ({year})');
+  });
+
+  // Rendering drops an unknown placeholder, so a saved typo would quietly pile
+  // every book by an author into one folder on every run.
+  it('refuses a template with a placeholder that does not exist', () => {
+    expect(() => updateSettings(db, { organizeTemplate: '{autor}/{title}' })).toThrow(/\{autor\}/);
+    expect(() => updateSettings(db, { organizeTemplate: '{author}' })).toThrow(/\{title\}/);
+  });
+
+  it('checks every branch of a conditional template', () => {
+    expect(() =>
+      updateSettings(db, { organizeTemplate: '{author}/{if-series:{series}/{title}|{year}}' }),
+    ).toThrow(/without series/);
+    expect(() => updateSettings(db, { organizeTemplate: '{author}/{if-seires:{series}/}{title}' })).toThrow(
+      /\{if-seires/,
+    );
+    expect(() => updateSettings(db, { organizeTemplate: '{author}/{if-series:{series}/{title}' })).toThrow(
+      /never closed/,
+    );
+    expect(
+      updateSettings(db, { organizeTemplate: '{author}/{if-series:{series}/{sequence} - {title}|{title} ({year})}' })
+        .organizeTemplate,
+    ).toContain('{if-series:');
+  });
+
   it('falls back to defaults rather than failing on a corrupt row', () => {
     db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('minConfidence', 'not-json');
     expect(getSettings(db).minConfidence).toBe(0.35);

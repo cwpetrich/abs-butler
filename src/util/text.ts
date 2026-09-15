@@ -32,10 +32,20 @@ export function normalizeAuthor(value: string | null | undefined): string {
   return normalizeTitle(primary);
 }
 
-/** Filesystem-safe segment: no separators, no reserved characters, no trailing dots. */
+/**
+ * Filesystem-safe segment: no separators, no reserved characters, no trailing
+ * dots — and one spelling of every apostrophe.
+ *
+ * Audible writes `Stalin’s War` with a curly apostrophe and people type folder
+ * names with a straight one. The two look alike in every listing, so a library
+ * holding both forms cannot be told apart by eye. The straight one wins because
+ * it is the one anyone can type in a shell.
+ */
 export function sanitizePathSegment(value: string, options: { maxLength?: number } = {}): string {
   const max = options.maxLength ?? 120;
   const cleaned = value
+    .normalize('NFC')
+    .replace(/[‘’‚‛′]/g, "'")
     .replace(/[\\/:*?"<>|]/g, '-')
     .replace(/[\u0000-\u001f]/g, '')
     .replace(/\s+/g, ' ')
@@ -111,6 +121,35 @@ export function stripSeriesReference(value: string): string {
   return stripped === '' ? value : stripped;
 }
 
+/**
+ * A credit role appended to a name, which Audible writes into the author list
+ * itself: "Susan Trott, Libby Spurrier - adaptor", "Larry Correia - foreword".
+ *
+ * AudiobookShelf has no field for the role, so it arrives as part of the person
+ * — a separate author called "Libby Spurrier - adaptor", and a folder named
+ * after them. Only a known role word qualifies, so a hyphenated name or a
+ * title-like suffix is never touched.
+ */
+const CREDIT_ROLE =
+  /\s+[-–]\s+(adaptor|adapter|adaptation|afterword|annotator|compiler|contributor|editor|editors|epilogue|foreword|illustrator|introduction|narrator|preface|prologue|translator|translation)\s*(?=,|$)/gi;
+
+/** Removes credit roles from a name, or from each name in a flattened list. */
+export function stripCreditRoles(value: string): string {
+  const stripped = value.replace(CREDIT_ROLE, '').trim();
+  return stripped === '' ? value : stripped;
+}
+
+/**
+ * The form two paths are compared in when deciding whether a book has to move.
+ *
+ * Only Unicode composition is ignored. macOS and SMB shares rewrite an accented
+ * name between its composed and decomposed forms underneath a folder, so a move
+ * made to fix it would be undone by the filesystem and planned again next run.
+ */
+export function pathComparisonKey(value: string): string {
+  return value.normalize('NFC');
+}
+
 /** Name suffixes that follow a comma and must not be read as an inversion. */
 const NAME_SUFFIX = /^(jr|sr|ii|iii|iv|phd|md|esq)\.?$/i;
 
@@ -124,7 +163,7 @@ const NAME_SUFFIX = /^(jr|sr|ii|iii|iv|phd|md|esq)\.?$/i;
  */
 export function normalizePersonName(value: string | null | undefined): string | null {
   if (isBlank(value)) return null;
-  const trimmed = stripSeriesReference(value!.replace(/\s+/g, ' ').trim());
+  const trimmed = stripCreditRoles(stripSeriesReference(value!.replace(/\s+/g, ' ').trim()));
 
   const parts = trimmed.split(',');
   if (parts.length !== 2) return trimmed !== value ? trimmed : null;

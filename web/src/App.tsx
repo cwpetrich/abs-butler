@@ -166,7 +166,7 @@ function Route({
     case '/connection':
       return <ConnectionPage onChanged={reloadConnection} />;
     case '/settings':
-      return <SettingsPage />;
+      return <SettingsPage meta={meta} />;
     default:
       return (
         <>
