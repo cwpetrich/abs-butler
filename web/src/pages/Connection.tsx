@@ -7,8 +7,11 @@ import { Banner, Spinner, useAsync } from '../lib';
  * is what gets stored either way, and it can be revoked in AudiobookShelf
  * without disturbing the account's password. Signing in is offered because
  * finding the token means a trip through the AudiobookShelf settings.
+ *
+ * `keep` exists only when editing, so changing a path is not mistaken for
+ * replacing a credential.
  */
-type AuthMethod = 'apiKey' | 'password';
+type AuthMethod = 'keep' | 'apiKey' | 'password';
 
 interface FormState {
   url: string;
@@ -72,9 +75,9 @@ function NotConnected({ onSaved }: { onSaved: () => void }) {
     <div className="card">
       <h2>Connect to AudiobookShelf</h2>
       <p className="hint">
-        The API token is in AudiobookShelf under Settings → Users → your user → API Token. If it is
-        easier, sign in with an admin username and password instead — abs-butler exchanges them for
-        that same token and stores only the token.
+        Tell abs-butler where AudiobookShelf is and how to authenticate. Either paste an API token,
+        or sign in with an admin username and password — abs-butler exchanges the login for that
+        user's API token and stores only the token.
       </p>
       <ConnectionForm initial={EMPTY} requireKey onSaved={onSaved} submitLabel="Connect" />
     </div>
@@ -112,10 +115,10 @@ function Connected({
       <div className="card">
         <div className="row-between">
           <div>
+            <div className="hint">AudiobookShelf server</div>
             <h2 className="mono">{connection.url}</h2>
-            <div className="hint">
-              API key {connection.key.encrypted ? 'encrypted at rest' : 'stored in plaintext'}
-            </div>
+            {urlNote(connection.url) && <p className="hint">{urlNote(connection.url)}</p>}
+            <p className="hint">{credentialSummary(connection)}</p>
           </div>
           <button onClick={test} disabled={testing}>
             {testing ? 'Testing…' : 'Test'}
@@ -128,6 +131,12 @@ function Connected({
         </div>
 
         {testError && <Banner tone="err">{testError}</Banner>}
+        {report?.user?.username && (
+          <p className="hint">
+            Reachable. The stored token authenticates as <strong>{report.user.username}</strong>
+            {report.user.type ? ` (${report.user.type})` : ''}.
+          </p>
+        )}
         {report && <CapabilityTable report={report} />}
       </div>
 
@@ -136,7 +145,7 @@ function Connected({
         <ConnectionForm
           initial={{
             url: connection.url,
-            method: 'apiKey',
+            method: 'keep',
             apiKey: '',
             username: '',
             password: '',
@@ -151,7 +160,8 @@ function Connected({
       <div className="card">
         <h2>Disconnect</h2>
         <p className="hint">
-          Forgets the URL and API key. Run history, logs, schedules, and settings are kept.
+          Forgets the server URL and the stored API token. Run history, logs, schedules, and
+          settings are kept.
         </p>
         {confirmingDisconnect ? (
           <div className="actions">
@@ -176,6 +186,52 @@ function Connected({
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * Explains hostnames that only resolve from inside Docker. The installer picks
+ * these on its own, so they are the ones people find and do not recognize.
+ */
+function urlNote(url: string): string | null {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  if (host === 'host.docker.internal') {
+    return (
+      'host.docker.internal is how a Docker container reaches the machine it runs on. ' +
+      'It works from abs-butler, not from your browser.'
+    );
+  }
+  const singleLabel = !host.includes('.') && !host.includes(':') && host !== 'localhost';
+  if (singleLabel) {
+    return (
+      `"${host}" is a Docker container name: abs-butler reaches AudiobookShelf over their ` +
+      'shared Docker network. It will not open in your browser, and does not need to.'
+    );
+  }
+  return null;
+}
+
+function credentialSummary(connection: Connection): string {
+  const atRest = connection.key.encrypted ? 'encrypted at rest' : 'stored in plaintext';
+  if (connection.authMethod === 'login') {
+    const who = connection.authUsername ? ` as ${connection.authUsername}` : '';
+    return (
+      `Connected by signing in${who}. abs-butler exchanged that login for the user's API token ` +
+      `and stores only the token (${atRest}), never the password.`
+    );
+  }
+  if (connection.authMethod === 'token') {
+    return `Authenticates with an API token that was pasted in (${atRest}).`;
+  }
+  return (
+    `Authenticates with a stored API token (${atRest}). If you connected by signing in — as the ` +
+    'installer does — AudiobookShelf issued this token for that user; you did not have to ' +
+    'create one. Test shows which user it belongs to.'
   );
 }
 
@@ -209,14 +265,14 @@ function ConnectionForm({
     setError(null);
     setStatus(null);
     try {
-      // Only the chosen method is sent. On an edit, an untouched API token
-      // field sends nothing at all, which the server reads as "keep the
-      // stored one".
-      const credentials = usingPassword
-        ? { username: form.username, password: form.password }
-        : form.apiKey
-          ? { apiKey: form.apiKey }
-          : {};
+      // Only the chosen method is sent. Keeping the current credential sends
+      // nothing at all, which the server reads as "keep the stored token".
+      const credentials =
+        form.method === 'password'
+          ? { username: form.username, password: form.password }
+          : form.method === 'apiKey'
+            ? { apiKey: form.apiKey }
+            : {};
 
       const payload = {
         url: form.url,
@@ -228,7 +284,12 @@ function ConnectionForm({
       else await api.updateConnection(payload);
 
       // Neither secret is kept in component state after a save.
-      setForm((f) => ({ ...f, apiKey: '', password: '' }));
+      setForm((f) => ({
+        ...f,
+        apiKey: '',
+        password: '',
+        ...(requireKey ? {} : { method: 'keep' as const }),
+      }));
       setStatus(usingPassword ? 'Saved. Stored the API token, not the password.' : 'Saved.');
       onSaved();
     } catch (err) {
@@ -248,7 +309,13 @@ function ConnectionForm({
       )}
 
       <label>
-        Server URL
+        AudiobookShelf URL
+        <span className="hint">
+          The address abs-butler uses to reach AudiobookShelf — not necessarily the one you open in
+          your browser. If both run in Docker on a shared network, use the container name, e.g.{' '}
+          <code>http://audiobookshelf:80</code>. If only abs-butler is in Docker, use{' '}
+          <code>http://host.docker.internal:13378</code>.
+        </span>
         <input
           value={form.url}
           onChange={(e) => set('url', e.target.value)}
@@ -257,45 +324,61 @@ function ConnectionForm({
         />
       </label>
 
-      <div className="actions" style={{ marginBottom: 10 }}>
-        <label className="checkbox">
-          <input
-            type="radio"
-            name={methodName}
-            checked={!usingPassword}
-            onChange={() => set('method', 'apiKey')}
-          />
-          API token <span className="badge ok">recommended</span>
-        </label>
-        <label className="checkbox">
-          <input
-            type="radio"
-            name={methodName}
-            checked={usingPassword}
-            onChange={() => set('method', 'password')}
-          />
-          Sign in
-        </label>
+      <div style={{ marginBottom: 10 }}>
+        <div className="field-label">How abs-butler authenticates</div>
+        <div className="actions">
+          {!requireKey && (
+            <label className="checkbox">
+              <input
+                type="radio"
+                name={methodName}
+                checked={form.method === 'keep'}
+                onChange={() => set('method', 'keep')}
+              />
+              Keep the stored token
+            </label>
+          )}
+          <label className="checkbox">
+            <input
+              type="radio"
+              name={methodName}
+              checked={form.method === 'apiKey'}
+              onChange={() => set('method', 'apiKey')}
+            />
+            {requireKey ? 'Paste an API token' : 'Paste a new API token'}{' '}
+            <span className="badge ok">recommended</span>
+          </label>
+          <label className="checkbox">
+            <input
+              type="radio"
+              name={methodName}
+              checked={usingPassword}
+              onChange={() => set('method', 'password')}
+            />
+            {requireKey ? 'Sign in with a username and password' : 'Sign in again'}
+          </label>
+        </div>
       </div>
 
-      {usingPassword ? (
+      {usingPassword && (
         <>
           <p className="hint">
-            Used once to fetch an API token. The password is not stored, and abs-butler needs an
-            account that can read the libraries — an admin is the safe choice.
+            Used once to fetch that user's API token; the password is never stored. The account
+            needs to read every library, so an admin is the safe choice.
           </p>
           <div className="field-grid">
             <label>
-              Admin username
+              AudiobookShelf username
               <input
                 value={form.username}
                 onChange={(e) => set('username', e.target.value)}
+                placeholder="e.g. root"
                 autoComplete="username"
                 required
               />
             </label>
             <label>
-              Admin password
+              AudiobookShelf password
               <input
                 type="password"
                 value={form.password}
@@ -306,44 +389,49 @@ function ConnectionForm({
             </label>
           </div>
         </>
-      ) : (
+      )}
+
+      {form.method === 'apiKey' && (
         <label>
           API token
-          {!requireKey && <span className="hint">Leave blank to keep the stored token.</span>}
+          <span className="hint">
+            In AudiobookShelf: Settings → Users → your user → API Token.
+          </span>
           <input
             type="password"
             value={form.apiKey}
             onChange={(e) => set('apiKey', e.target.value)}
-            placeholder={requireKey ? '' : '••••••••'}
+            placeholder="Paste the token here"
             autoComplete="new-password"
-            required={requireKey}
+            required
           />
         </label>
       )}
 
       <div className="field-grid">
         <label>
-          Library root — where <em>this machine</em> sees the media
+          Library folder, as abs-butler sees it
           <span className="hint">
-            Needed only for organizing files. Leave blank to manage over the API alone.
+            Only needed to organize files; leave blank to work over the API alone. In the Docker
+            setup this is always <code>/audiobooks</code>.
           </span>
           <input
             value={form.libraryRoot}
             onChange={(e) => set('libraryRoot', e.target.value)}
-            placeholder="/audiobooks"
+            placeholder="e.g. /audiobooks"
           />
         </label>
 
         <label>
-          Path prefix — where <em>AudiobookShelf</em> sees it
+          Library folder, as AudiobookShelf sees it
           <span className="hint">
-            Only if it differs, which it does when AudiobookShelf runs in Docker. Test to see the
-            paths it reports.
+            Only if it differs from the one beside it — usual when AudiobookShelf runs in its own
+            container. Test lists the paths AudiobookShelf reports.
           </span>
           <input
             value={form.pathPrefix}
             onChange={(e) => set('pathPrefix', e.target.value)}
-            placeholder="leave blank if the paths match"
+            placeholder="blank when both paths match"
           />
         </label>
       </div>

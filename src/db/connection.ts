@@ -15,8 +15,18 @@ import {
  * pinned to one row by a CHECK constraint rather than by convention, so there
  * is no such thing as a second connection to disagree about.
  */
+/**
+ * How the stored API token was obtained. Both end in the same token; this only
+ * exists so the UI can say which, instead of implying a key someone never made.
+ */
+export type AuthMethod = 'token' | 'login';
+
 export interface ConnectionRecord {
   url: string;
+  /** Null on connections saved before this was recorded. */
+  authMethod: AuthMethod | null;
+  /** The AudiobookShelf user who signed in, when `authMethod` is 'login'. */
+  authUsername: string | null;
   /** Where this machine sees the media. Required for `organize`, unused otherwise. */
   libraryRoot: string | null;
   /** The path AudiobookShelf itself reports, when it differs — the usual case when ABS is in Docker. */
@@ -33,6 +43,9 @@ export interface ConnectionWithKey extends ConnectionRecord {
 export interface ConnectionInput {
   url: string;
   apiKey: string;
+  /** Defaults to 'token'. Written only alongside a new `apiKey`. */
+  authMethod?: AuthMethod;
+  authUsername?: string | null;
   libraryRoot?: string | null;
   pathPrefix?: string | null;
 }
@@ -40,6 +53,8 @@ export interface ConnectionInput {
 interface ConnectionRow {
   url: string;
   api_key: string;
+  auth_method: string | null;
+  auth_username: string | null;
   library_root: string | null;
   path_prefix: string | null;
   created_at: number;
@@ -49,6 +64,8 @@ interface ConnectionRow {
 function toRecord(row: ConnectionRow): ConnectionRecord {
   return {
     url: row.url,
+    authMethod: row.auth_method === 'token' || row.auth_method === 'login' ? row.auth_method : null,
+    authUsername: row.auth_username,
     libraryRoot: row.library_root,
     pathPrefix: row.path_prefix,
     createdAt: row.created_at,
@@ -60,6 +77,12 @@ function normalizeUrl(url: string): string {
   const trimmed = url.trim().replace(/\/+$/, '');
   const parsed = new URL(trimmed); // throws on garbage, which is what we want
   return parsed.origin + (parsed.pathname === '/' ? '' : parsed.pathname);
+}
+
+/** A username only means something for a login, so a pasted token clears it. */
+function authColumns(input: Partial<ConnectionInput>): [AuthMethod, string | null] {
+  const method = input.authMethod ?? 'token';
+  return [method, method === 'login' ? input.authUsername?.trim() || null : null];
 }
 
 function row(db: Db): ConnectionRow | undefined {
@@ -88,17 +111,21 @@ export function saveConnection(db: Db, input: ConnectionInput): ConnectionRecord
   const now = Date.now();
   const existing = row(db);
   db.prepare(
-    `INSERT INTO connection (id, url, api_key, library_root, path_prefix, created_at, updated_at)
-     VALUES (1, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO connection
+       (id, url, api_key, auth_method, auth_username, library_root, path_prefix, created_at, updated_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        url = excluded.url,
        api_key = excluded.api_key,
+       auth_method = excluded.auth_method,
+       auth_username = excluded.auth_username,
        library_root = excluded.library_root,
        path_prefix = excluded.path_prefix,
        updated_at = excluded.updated_at`,
   ).run(
     normalizeUrl(input.url),
     encryptSecret(input.apiKey),
+    ...authColumns(input),
     input.libraryRoot?.trim() || null,
     input.pathPrefix?.trim() || null,
     existing?.created_at ?? now,
@@ -120,7 +147,12 @@ export function updateConnection(db: Db, patch: Partial<ConnectionInput>): Conne
 
   if (patch.url !== undefined) set('url', normalizeUrl(patch.url));
   // An empty apiKey means "leave it alone" — the UI never round-trips the real key.
-  if (patch.apiKey) set('api_key', encryptSecret(patch.apiKey));
+  if (patch.apiKey) {
+    set('api_key', encryptSecret(patch.apiKey));
+    const [method, username] = authColumns(patch);
+    set('auth_method', method);
+    set('auth_username', username);
+  }
   if (patch.libraryRoot !== undefined) set('library_root', patch.libraryRoot?.trim() || null);
   if (patch.pathPrefix !== undefined) set('path_prefix', patch.pathPrefix?.trim() || null);
 

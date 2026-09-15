@@ -113,6 +113,13 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   return result.data;
 }
 
+/** Mirrors `resolveApiKey`: a pasted token wins over a login when both arrive. */
+function authFor(input: { apiKey?: string | undefined }, username: string | undefined) {
+  return input.apiKey
+    ? { authMethod: 'token' as const }
+    : { authMethod: 'login' as const, authUsername: username ?? null };
+}
+
 /** Public shape of the connection: never includes the API key, encrypted or not. */
 function publicConnection(db: Db) {
   const connection = getConnection(db);
@@ -240,8 +247,8 @@ export function buildApiRouter(deps: ApiDeps): Router {
     await new AbsClient({ baseUrl: input.url, token: apiKey }).listLibraries();
     // Destructured rather than spread so it is visible that the password does
     // not reach the database.
-    const { username: _username, password: _password, ...rest } = input;
-    saveConnection(db, { ...rest, apiKey });
+    const { username, password: _password, ...rest } = input;
+    saveConnection(db, { ...rest, apiKey, ...authFor(input, username) });
     return { connection: publicConnection(db) };
   });
 
@@ -257,8 +264,11 @@ export function buildApiRouter(deps: ApiDeps): Router {
     if (patch.url || reauthenticating) {
       await new AbsClient({ baseUrl: url, token: apiKey }).listLibraries();
     }
-    const { username: _username, password: _password, ...rest } = patch;
-    updateConnection(db, { ...rest, ...(reauthenticating ? { apiKey } : {}) });
+    const { username, password: _password, ...rest } = patch;
+    updateConnection(db, {
+      ...rest,
+      ...(reauthenticating ? { apiKey, ...authFor(patch, username) } : {}),
+    });
     return { connection: publicConnection(db) };
   });
 
@@ -275,8 +285,11 @@ export function buildApiRouter(deps: ApiDeps): Router {
     const client = new AbsClient({ baseUrl: withKey.url, token: withKey.apiKey });
     try {
       const libraries = await client.listLibraries();
+      // Nice to have, never a reason to call the server unreachable.
+      const user = await client.me().catch(() => null);
       return {
         reachable: true,
+        user,
         libraries: libraries.map((l) => ({
           id: l.id,
           name: l.name,

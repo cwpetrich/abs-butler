@@ -61,6 +61,9 @@ export async function runConnect(options: ConnectOptions): Promise<void> {
   const connection = saveConnection(db, {
     url: options.url,
     apiKey,
+    ...(credentials.apiKey
+      ? { authMethod: 'token' as const }
+      : { authMethod: 'login' as const, authUsername: credentials.username ?? null }),
     libraryRoot: options.libraryRoot ?? null,
     pathPrefix: options.pathPrefix ?? null,
   });
@@ -132,7 +135,11 @@ export async function runConfigure(options: ConfigureOptions): Promise<void> {
 
   const connectionPatch = {
     ...(options.url !== undefined ? { url: options.url } : {}),
-    ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(apiKey !== undefined
+      ? credentials.username
+        ? { apiKey, authMethod: 'login' as const, authUsername: credentials.username }
+        : { apiKey, authMethod: 'token' as const }
+      : {}),
     ...(options.libraryRoot !== undefined ? { libraryRoot: options.libraryRoot } : {}),
     ...(options.pathPrefix !== undefined ? { pathPrefix: options.pathPrefix } : {}),
   };

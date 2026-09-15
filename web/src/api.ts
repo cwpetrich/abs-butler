@@ -12,6 +12,9 @@ export interface LocalRootStatus {
 
 export interface Connection {
   url: string;
+  /** How the stored token was obtained; null when saved before this was recorded. */
+  authMethod: 'token' | 'login' | null;
+  authUsername: string | null;
   libraryRoot: string | null;
   pathPrefix: string | null;
   createdAt: number;
@@ -142,6 +145,8 @@ export interface LibraryCapability {
 export interface CapabilityReport {
   reachable: boolean;
   error?: string;
+  /** Who the stored token authenticates as, when AudiobookShelf says. */
+  user?: { username: string; type: string } | null;
   libraries: Array<{ id: string; name: string; mediaType: string; folders: string[] }>;
   capability: {
     canManageFiles: boolean;

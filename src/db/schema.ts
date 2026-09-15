@@ -277,4 +277,18 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE run_items ADD COLUMN plan TEXT;
   `,
+
+  // 12 — remember how the stored token was obtained
+  //
+  // Signing in and pasting a token both end with one API token in `api_key`,
+  // so the UI could only ever say "API key encrypted at rest". Someone the
+  // installer connected by signing in reads that as a key they never created.
+  // `auth_method` is 'token' or 'login', and `auth_username` is who signed in.
+  //
+  // Both stay null on existing rows: nothing on disk says which way they were
+  // made, and guessing would put a false claim in front of the user.
+  `
+  ALTER TABLE connection ADD COLUMN auth_method TEXT;
+  ALTER TABLE connection ADD COLUMN auth_username TEXT;
+  `,
 ];

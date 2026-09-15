@@ -105,6 +105,12 @@ export class AbsClient {
     return res.libraries ?? [];
   }
 
+  /** The user the token belongs to — how the UI names a token it never saw issued. */
+  async me(): Promise<{ username: string; type: string }> {
+    const res = await this.request<{ username?: string; type?: string }>('GET', '/api/me');
+    return { username: res?.username ?? '', type: res?.type ?? '' };
+  }
+
   /**
    * Exchanges a username and password for a long-lived API token.
    *

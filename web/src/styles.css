@@ -283,6 +283,17 @@ label {
   margin: 10px 0 0;
 }
 
+/* A heading for a group of controls that has no single input to label. */
+.field-label {
+  font-weight: 550;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.hint code {
+  font-size: 11px;
+}
+
 label .hint {
   display: block;
   font-weight: 400;
