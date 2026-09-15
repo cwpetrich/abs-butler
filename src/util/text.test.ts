@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeAuthor,
   normalizeTitle,
+  normalizePersonName,
   padSequence,
+  pathComparisonKey,
   sanitizePathSegment,
+  stripCreditRoles,
   stripSeriesReference,
 } from './text.js';
 
@@ -64,6 +67,11 @@ describe('sanitizePathSegment', () => {
     expect(sanitizePathSegment('   ')).toBe('Unknown');
   });
 
+  it('writes every apostrophe the one way', () => {
+    expect(sanitizePathSegment('Stalin’s War')).toBe("Stalin's War");
+    expect(sanitizePathSegment("Stalin's War")).toBe("Stalin's War");
+  });
+
   it('truncates very long segments', () => {
     expect(sanitizePathSegment('a'.repeat(300)).length).toBe(120);
   });
@@ -96,5 +104,42 @@ describe('stripSeriesReference', () => {
 
   it('never consumes the whole name', () => {
     expect(stripSeriesReference("Sackett's 10")).toBe("Sackett's 10")
+  })
+})
+
+describe('stripCreditRoles', () => {
+  // Both straight from a real library's organize dry run, where each role
+  // became part of a folder name.
+  it('removes a role from the last name in a flattened list', () => {
+    expect(stripCreditRoles('Susan Trott, Libby Spurrier - adaptor')).toBe('Susan Trott, Libby Spurrier')
+    expect(
+      stripCreditRoles('Zachary Hill, Patrick M. Tracy, Paul Genesse, Larry Correia - foreword'),
+    ).toBe('Zachary Hill, Patrick M. Tracy, Paul Genesse, Larry Correia')
+  })
+
+  it('removes a role from any name in the list', () => {
+    expect(stripCreditRoles('Jane Doe - translator, John Roe')).toBe('Jane Doe, John Roe')
+  })
+
+  it('leaves names that only look similar alone', () => {
+    expect(stripCreditRoles('Jean-Paul Sartre')).toBe('Jean-Paul Sartre')
+    expect(stripCreditRoles('The Editors - Collected')).toBe('The Editors - Collected')
+  })
+
+  it('tidies the role away when normalizing a person', () => {
+    expect(normalizePersonName('Libby Spurrier - adaptor')).toBe('Libby Spurrier')
+    expect(normalizePersonName('Spurrier, Libby - adaptor')).toBe('Libby Spurrier')
+  })
+})
+
+describe('pathComparisonKey', () => {
+  it('treats composed and decomposed accents as the same path', () => {
+    expect(pathComparisonKey('Andre\u0301 Aciman')).toBe(pathComparisonKey('Andr\u00e9 Aciman'))
+  })
+
+  // A visible difference is a real one, and a rename to fix it is the point.
+  it('keeps apostrophe style and case significant', () => {
+    expect(pathComparisonKey('Stalin’s War')).not.toBe(pathComparisonKey("Stalin's War"))
+    expect(pathComparisonKey("stalin's war")).not.toBe(pathComparisonKey("Stalin's War"))
   })
 })

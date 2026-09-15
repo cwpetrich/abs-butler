@@ -162,7 +162,7 @@ program
   .description('Move book folders on disk into a consistent naming scheme')
   .option('--apply', 'actually move files (default is a dry run)')
   .option('--json', 'emit JSON instead of a table')
-  .option('--template <pattern>', `path template (default: ${DEFAULT_TEMPLATE})`, DEFAULT_TEMPLATE)
+  .option('--template <pattern>', `path template (default: the one saved in Settings, else ${DEFAULT_TEMPLATE})`)
   .option('--single-files', 'also file loose single-file items (a bare book.m4b) into a folder')
   .option('--details', 'list every item the run looked at, with what it had to say about each')
   .option('--only-changed', 'with --details, leave out the items it had nothing to do to')

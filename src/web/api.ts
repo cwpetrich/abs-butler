@@ -8,7 +8,7 @@ import { AUDIT_CODES, ISSUES } from '../core/audit.js';
 import { RUN_ITEM_LABELS } from '../core/report.js';
 import { FILLABLE } from '../core/metadata.js';
 import { NORMALIZABLE } from '../core/normalize.js';
-import { DEFAULT_TEMPLATE, unavailableMessage } from '../core/organize.js';
+import { DEFAULT_TEMPLATE, templateHelp, unavailableMessage } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
@@ -499,6 +499,9 @@ export function buildApiRouter(deps: ApiDeps): Router {
     ageBands: [...AGE_BANDS],
     contentFlags: [...CONTENT_FLAGS],
     defaultTemplate: DEFAULT_TEMPLATE,
+    // Rendered by the server's own template code, so the help and the moves
+    // organize plans can never disagree.
+    templateHelp: templateHelp(),
   }));
 
   router.get('/api/health', () => ({ ok: true, version: VERSION }), { isPublic: true });

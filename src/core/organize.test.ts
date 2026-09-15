@@ -9,6 +9,7 @@ import {
   planMoveOutcome,
   renderTemplate,
   runOrganizeTask,
+  templateHelp,
 } from './organize.js';
 import type { TaskContext } from '../context.js';
 import type { AbsLibrary, AbsLibraryItem } from '../abs/types.js';
@@ -40,8 +41,53 @@ describe('renderTemplate', () => {
     );
   });
 
+  const conditional = '{author}/{if-series:{series}/{sequence} - {title}|{title} ({year})}';
+
+  it('takes the first branch of a section when the field is present', () => {
+    expect(renderTemplate(conditional, vars)).toBe(
+      'Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings',
+    );
+  });
+
+  it('takes the otherwise branch when the field is empty', () => {
+    expect(renderTemplate(conditional, { ...vars, series: '', sequence: '' })).toBe(
+      'Brandon Sanderson/The Way of Kings (2010)',
+    );
+  });
+
+  it('renders nothing for a section with no otherwise branch and an empty field', () => {
+    expect(renderTemplate('{author}/{if-year:{year}/}{title}', { ...vars, year: '' })).toBe(
+      'Brandon Sanderson/The Way of Kings',
+    );
+  });
+
+  it('allows sections inside sections', () => {
+    const nested = '{author}/{if-series:{series}/{if-sequence:Book {sequence} - }}{title}';
+    expect(renderTemplate(nested, { ...vars, sequence: '' })).toBe(
+      'Brandon Sanderson/The Stormlight Archive/The Way of Kings',
+    );
+    expect(renderTemplate(nested, vars)).toBe(
+      'Brandon Sanderson/The Stormlight Archive/Book 01 - The Way of Kings',
+    );
+  });
+
   it('drops unknown placeholders instead of leaving them literal', () => {
     expect(renderTemplate('{author}/{nope}{title}', vars)).toBe('Brandon Sanderson/The Way of Kings');
+  });
+});
+
+describe('templateHelp', () => {
+  it('describes every placeholder the renderer understands', () => {
+    expect(templateHelp().fields.map((f) => f.name)).toEqual(['author', 'title', 'series', 'sequence', 'year']);
+  });
+
+  it('shows each example as organize would actually render it', () => {
+    const conditional = templateHelp().examples.find((e) => e.template.includes('{if-series:'));
+    expect(conditional?.renders.map((r) => r.path)).toEqual([
+      'Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings',
+      "Sean McMeekin/Stalin's War (2021)",
+      'Susan Trott, Libby Spurrier/The Man on the Mountaintop (2017)',
+    ]);
   });
 });
 
@@ -133,6 +179,57 @@ describe('planMove', () => {
   it('returns null when the item is already in place', () => {
     const inPlace = item({ relPath: 'Brandon Sanderson/The Stormlight Archive/01 - The Way of Kings' });
     expect(planMove(inPlace, library, DEFAULT_TEMPLATE, localServer)).toBeNull();
+  });
+
+  // Audible's curly apostrophe against a folder typed with a straight one. The
+  // two look identical, so the dry run showed a move with no visible change.
+  it('writes a curly apostrophe from the metadata as a straight one', () => {
+    const stalin = item({
+      relPath: "Sean McMeekin/Stalin's War (2021)",
+      path: "/audiobooks/Sean McMeekin/Stalin's War (2021)",
+      media: {
+        ...item().media!,
+        metadata: { ...item().media!.metadata!, title: 'Stalin’s War', authorName: 'Sean McMeekin', series: [], publishedYear: '2021' },
+      },
+    });
+    expect(planMoveOutcome(stalin, library, '{author}/{title} ({year})', localServer)).toMatchObject({
+      code: 'in-place',
+    });
+  });
+
+  // One spelling of the apostrophe, whichever the folder was typed with.
+  it('moves a folder with a curly apostrophe to the straight one', () => {
+    const curly = item({
+      relPath: 'Sean McMeekin/Stalin’s War (2021)',
+      path: '/audiobooks/Sean McMeekin/Stalin’s War (2021)',
+      media: {
+        ...item().media!,
+        metadata: { ...item().media!.metadata!, title: 'Stalin’s War', authorName: 'Sean McMeekin', series: [], publishedYear: '2021' },
+      },
+    });
+    expect(planMove(curly, library, '{author}/{title} ({year})', localServer)?.to).toBe(
+      "Sean McMeekin/Stalin's War (2021)",
+    );
+  });
+
+  it('leaves credit roles out of the author folder', () => {
+    const adapted = item({
+      relPath: 'Susan Trott, Libby Spurrier/The Man on the Mountaintop (2017)',
+      path: '/audiobooks/Susan Trott, Libby Spurrier/The Man on the Mountaintop (2017)',
+      media: {
+        ...item().media!,
+        metadata: {
+          ...item().media!.metadata!,
+          title: 'The Man on the Mountaintop',
+          authorName: 'Susan Trott, Libby Spurrier - adaptor',
+          series: [],
+          publishedYear: '2017',
+        },
+      },
+    });
+    expect(planMoveOutcome(adapted, library, '{author}/{title} ({year})', localServer)).toMatchObject({
+      code: 'in-place',
+    });
   });
 
   it('translates container paths to host paths', () => {
@@ -314,6 +411,12 @@ describe('the file-changes guard', () => {
     await expect(runOrganizeTask(contextRefusingRequests(false), { apply: false })).rejects.toThrow(
       /reached the network/,
     );
+  });
+
+  it('refuses a run given a template with an unknown placeholder', async () => {
+    await expect(
+      runOrganizeTask(contextRefusingRequests(true), { template: '{autor}/{title}' }),
+    ).rejects.toThrow(/Unknown placeholder \{autor\}/);
   });
 
   it('lets an apply proceed once file changes are allowed', async () => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Connection, type Meta, type Run, type RunCommand } from '../api';
+import { TemplateHelp } from '../components/TemplateHelp';
 import { Banner, Empty, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 
 export function RunsPage({
@@ -180,7 +181,9 @@ function NewRunForm({
   const [command, setCommand] = useState<RunCommand>('audit');
   const [apply, setApply] = useState(false);
   const [limit, setLimit] = useState('');
-  const [template, setTemplate] = useState(meta.defaultTemplate);
+  // null until edited, so the field shows the template saved in Settings and a
+  // run started without touching it follows that setting.
+  const [template, setTemplate] = useState<string | null>(null);
   const [singleFiles, setSingleFiles] = useState(false);
   const [force, setForce] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
@@ -226,7 +229,7 @@ function NewRunForm({
       if (apply) options.apply = true;
       if (limit) options.limit = Number(limit);
       if (command === 'organize') {
-        options.template = template;
+        if (template !== null) options.template = template;
         if (singleFiles) options.singleFiles = true;
       }
       if (command === 'rate' && force) options.force = true;
@@ -274,9 +277,16 @@ function NewRunForm({
         <>
           <label>
             Path template
-            <span className="hint">Placeholders: author, title, series, sequence, year.</span>
-            <input value={template} onChange={(e) => setTemplate(e.target.value)} className="mono" />
+            <span className="hint">
+              For this run only — the default is saved in Settings.
+            </span>
+            <input
+              value={template ?? settings.data?.settings.organizeTemplate ?? meta.defaultTemplate}
+              onChange={(e) => setTemplate(e.target.value)}
+              className="mono"
+            />
           </label>
+          <TemplateHelp help={meta.templateHelp} />
           <label className="checkbox">
             <input type="checkbox" checked={singleFiles} onChange={(e) => setSingleFiles(e.target.checked)} />
             Include single-file items

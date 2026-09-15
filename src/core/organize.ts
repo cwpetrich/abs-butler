@@ -8,14 +8,17 @@ import type { RunItemInput } from '../db/runItems.js';
 import { assessCapability, toLocalPath, type Capability } from './capability.js';
 import { itemIdentity, plural, reportItems } from './report.js';
 import { log } from '../logger.js';
-import { padSequence, sanitizePathSegment } from '../util/text.js';
+import { padSequence, pathComparisonKey, sanitizePathSegment, stripCreditRoles } from '../util/text.js';
+import {
+  DEFAULT_TEMPLATE,
+  resolveConditionals,
+  TEMPLATE_EXAMPLES,
+  TEMPLATE_FIELD_HELP,
+  TEMPLATE_FIELDS,
+  templateProblem,
+} from './template.js';
 
-/**
- * Default layout, matching AudiobookShelf's own recommended structure:
- *   Author/Series/Vol - Title/
- * Series segments collapse away for standalone books.
- */
-export const DEFAULT_TEMPLATE = '{author}/{series}/{sequence} - {title}';
+export { DEFAULT_TEMPLATE };
 
 export interface MovePlan {
   itemId: string;
@@ -51,8 +54,12 @@ export interface TemplateVars {
 export function templateVars(item: AbsLibraryItem): TemplateVars {
   const metadata = item.media?.metadata;
   const series = metadata?.series?.[0];
+  const author = itemAuthor(item);
   return {
-    author: sanitizePathSegment(itemAuthor(item) ?? 'Unknown Author'),
+    // Every author, as AudiobookShelf lists them, but without the credit roles
+    // Audible writes into the names — "Libby Spurrier - adaptor" is a person
+    // and a job, and only the person belongs in a folder name.
+    author: sanitizePathSegment(author ? stripCreditRoles(author) : 'Unknown Author'),
     title: sanitizePathSegment(metadata?.title ?? 'Unknown Title'),
     series: series?.name ? sanitizePathSegment(series.name) : '',
     sequence: padSequence(series?.sequence),
@@ -65,10 +72,12 @@ export function templateVars(item: AbsLibraryItem): TemplateVars {
  *
  * A path segment that ends up empty is dropped entirely, and a `{x} - {y}`
  * separator whose left side is empty loses the separator too — so a standalone
- * book renders `Author/Title`, not `Author//  - Title`.
+ * book renders `Author/Title`, not `Author//  - Title`. A layout that differs in
+ * shape rather than only in what is missing uses an `{if-field:…|…}` section.
  */
 export function renderTemplate(template: string, vars: TemplateVars): string {
-  return template
+  // Sections first, since a chosen branch can add or remove whole folders.
+  return resolveConditionals(template, (field) => Boolean(vars[field as keyof TemplateVars]))
     .split('/')
     .map((segment) =>
       segment
@@ -78,6 +87,60 @@ export function renderTemplate(template: string, vars: TemplateVars): string {
     )
     .filter((segment) => segment.length > 0)
     .join('/');
+}
+
+export interface TemplateHelp {
+  fields: Array<{ name: string; description: string }>;
+  examples: Array<{ template: string; renders: Array<{ book: string; path: string }> }>;
+}
+
+/**
+ * Books chosen to show off what a template does with the awkward cases: a
+ * series, a standalone with Audible's curly apostrophe, and a credit role in
+ * the author list.
+ */
+const SAMPLE_BOOKS: Array<{ label: string; metadata: Record<string, unknown> }> = [
+  {
+    label: 'The Way of Kings — Stormlight Archive #1',
+    metadata: {
+      title: 'The Way of Kings',
+      authorName: 'Brandon Sanderson',
+      series: [{ id: 's', name: 'The Stormlight Archive', sequence: '1' }],
+      publishedYear: '2010',
+    },
+  },
+  {
+    label: 'Stalin’s War — standalone',
+    metadata: { title: 'Stalin’s War', authorName: 'Sean McMeekin', series: [], publishedYear: '2021' },
+  },
+  {
+    label: 'The Man on the Mountaintop — with an adaptor credit',
+    metadata: {
+      title: 'The Man on the Mountaintop',
+      authorName: 'Susan Trott, Libby Spurrier - adaptor',
+      series: [],
+      publishedYear: '2017',
+    },
+  },
+];
+
+/**
+ * The placeholders and some worked examples, for the web UI's template help.
+ *
+ * The examples are rendered here by the real renderer rather than written out
+ * by hand, so the help cannot promise a path organize would not produce.
+ */
+export function templateHelp(): TemplateHelp {
+  return {
+    fields: TEMPLATE_FIELDS.map((name) => ({ name, description: TEMPLATE_FIELD_HELP[name] })),
+    examples: TEMPLATE_EXAMPLES.map((template) => ({
+      template,
+      renders: SAMPLE_BOOKS.map(({ label, metadata }) => ({
+        book: label,
+        path: renderTemplate(template, templateVars({ media: { metadata } } as unknown as AbsLibraryItem)),
+      })),
+    })),
+  };
 }
 
 /**
@@ -161,7 +224,7 @@ export function planMoveOutcome(
   }
 
   const currentRel = (item.relPath ?? '').replace(/^\/+/, '');
-  if (currentRel === target) return { plan: null, code: 'in-place', reason: 'it already matches the template' };
+  if (samePath(currentRel, target)) return { plan: null, code: 'in-place', reason: 'it already matches the template' };
 
   const fromLocal = toLocalPath(item.path, config);
   const folderLocal = toLocalPath(folder.fullPath, config);
@@ -174,7 +237,7 @@ export function planMoveOutcome(
   }
 
   const toLocal = join(folderLocal, target);
-  if (resolve(fromLocal) === resolve(toLocal)) {
+  if (samePath(resolve(fromLocal), resolve(toLocal))) {
     return { plan: null, code: 'in-place', reason: 'it already matches the template' };
   }
 
@@ -191,6 +254,11 @@ export function planMoveOutcome(
       libraryId: item.libraryId,
     },
   };
+}
+
+/** Whether two paths name the same place once invisible differences are ignored. */
+export function samePath(a: string, b: string): boolean {
+  return pathComparisonKey(a) === pathComparisonKey(b);
 }
 
 export function planMove(
@@ -384,7 +452,11 @@ export async function runOrganizeTask(
   // should say so immediately, not after reading an entire library.
   if (options.apply && !ctx.settings.allowFileChanges) throw new Error(WRITES_DISABLED);
 
-  const template = options.template ?? DEFAULT_TEMPLATE;
+  // A template passed to this run wins; otherwise the one saved in Settings, so
+  // a layout chosen once applies to every run and schedule without retyping.
+  const template = options.template?.trim() || ctx.settings.organizeTemplate || DEFAULT_TEMPLATE;
+  const problem = templateProblem(template);
+  if (problem) throw new Error(problem);
   const allLibraries = await ctx.client.listLibraries();
   const capability = assessCapability(ctx.connection, allLibraries);
 

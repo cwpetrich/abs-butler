@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { api, type SecurityStatus, type Settings } from '../api';
+import { api, type Meta, type SecurityStatus, type Settings } from '../api';
+import { TemplateHelp } from '../components/TemplateHelp';
 import { Banner, Spinner, useAsync } from '../lib';
 
-export function SettingsPage() {
+export function SettingsPage({ meta }: { meta: Meta | undefined }) {
   const loaded = useAsync(() => api.settings(), []);
   const [form, setForm] = useState<Settings | null>(null);
   const [googleKey, setGoogleKey] = useState('');
@@ -84,6 +85,26 @@ export function SettingsPage() {
               applying one is what gets refused, whether it comes from here, the CLI, or a schedule.
             </p>
           )}
+        </div>
+
+        <div className="card">
+          <h2>Organizing</h2>
+
+          <label>
+            Path template
+            <span className="hint">
+              The folder layout <span className="mono">organize</span> uses for every run and
+              schedule, unless a run is given its own.
+            </span>
+            <input
+              className="mono"
+              value={form.organizeTemplate}
+              onChange={(e) => set('organizeTemplate', e.target.value)}
+              placeholder={meta?.defaultTemplate}
+            />
+          </label>
+
+          <TemplateHelp help={meta?.templateHelp} />
         </div>
 
         <div className="card">
