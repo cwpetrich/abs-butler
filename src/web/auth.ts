@@ -38,6 +38,18 @@ function generateCode(): string {
   return `${pick()}-${pick()}`;
 }
 
+/**
+ * How a code is compared, applied to both sides.
+ *
+ * Codes are read off a screen and typed back by hand, so case and stray
+ * whitespace cannot be allowed to matter. Normalizing only what was typed left
+ * a lowercase BUTLER_SETUP_CODE impossible to enter at all — the comparison it
+ * had to match was already uppercase.
+ */
+function normalizeCode(code: string): string {
+  return code.trim().toUpperCase();
+}
+
 function constantTimeEquals(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
@@ -62,7 +74,7 @@ export interface SetupState {
 
 export class Auth {
   private readonly startedAt = Date.now();
-  private readonly code = setupCode() ?? generateCode();
+  private readonly code = normalizeCode(setupCode() ?? generateCode());
   private readonly codeFromEnv = Boolean(setupCode());
   private claim: { token: string; at: number } | null = null;
   private readonly throttle = new Throttle();
@@ -154,7 +166,7 @@ export class Auth {
     }
     if (state.codeRequired) {
       const key = this.guard(ctx);
-      if (!code || !constantTimeEquals(code.trim().toUpperCase(), this.code)) {
+      if (!code || !constantTimeEquals(normalizeCode(code), this.code)) {
         this.throttle.recordFailure(key);
         throw unauthorized(
           this.codeFromEnv
