@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { describeMount, libraryMounts, mountFor, type MountEntry } from './mounts.js';
 
 /**
  * Which of the three supported installs this process is running under.
@@ -61,6 +62,8 @@ export interface DenialContext {
   owner?: Owner;
   /** Overridable so tests can exercise every deployment on one machine. */
   deployment?: Deployment;
+  /** Likewise the mount table, which decides whether ownership is the files' or the share's. */
+  mounts?: MountEntry[];
 }
 
 /**
@@ -87,8 +90,8 @@ export function explainDenial(ctx: DenialContext): string {
       case 'docker':
         return (
           `${path} cannot be read by abs-butler (running as ${runningAs()}). Inside a container ` +
-          `this usually means the library was never bind-mounted at this path, or a parent ` +
-          `directory denies traversal. Check the volume mapping and HOST_LIBRARY_PATH.`
+          `this usually means a parent directory denies traversal, or a network share's mount ` +
+          `options do not grant this uid access. Check the volume mapping and HOST_LIBRARY_PATH.`
         );
       case 'native':
         return (
@@ -106,10 +109,85 @@ export function explainDenial(ctx: DenialContext): string {
     case 'snap':
       return `${preamble} ${snapRemedy(path)}`;
     case 'docker':
-      return `${preamble} ${dockerRemedy(owner)}`;
+      return `${preamble} ${dockerRemedy(owner, mountFor(path, ctx.mounts))}`;
     case 'native':
       return `${preamble} ${nativeRemedy(path, owner)}`;
   }
+}
+
+/**
+ * Why a path is not there, in terms of this install.
+ *
+ * Inside a container "does not exist" is true and unhelpful: the path is almost
+ * always right somewhere — on the host, or in AudiobookShelf's container — and
+ * simply was not mounted into this one. The mount table says what was, which
+ * is nearly always the answer.
+ */
+export function explainMissing(
+  path: string,
+  options: { deployment?: Deployment; mounts?: MountEntry[]; serverPath?: boolean } = {},
+): string {
+  const deployment = options.deployment ?? detectDeployment();
+  if (deployment !== 'docker') return `${path} does not exist on this machine`;
+
+  const mounts = options.mounts ?? libraryMounts();
+  const whose = options.serverPath
+    ? ` That is the path AudiobookShelf uses; abs-butler's own container sees the library somewhere else.`
+    : '';
+  const where =
+    mounts.length > 0
+      ? ` The library is mounted here at ${mounts.map(describeMount).join(', ')}, so the library root ` +
+        'has to be that path or a folder inside it. Test on the Connection page, or abs-butler status, ' +
+        'finds both paths by looking for your books.'
+      : ' Nothing is mounted for the library at all — check the volumes in docker-compose.yml.';
+  return `${path} is not mounted in this container.${whose}${where}`;
+}
+
+/** `Z:\Audiobooks`, `\\nas\share`, `//nas/share`: paths only Windows means. */
+function windowsPath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || /^(\\\\|\/\/)/.test(path);
+}
+
+/**
+ * Why a library directory is empty, when it is.
+ *
+ * An empty directory passes every other check — it exists, it is writable —
+ * which is exactly why it is worth naming. Under Docker it is almost always the
+ * default mount: HOST_LIBRARY_PATH unset, so compose creates ./audiobooks and
+ * mounts that. docker-compose.yml passes HOST_LIBRARY_PATH through, set or not,
+ * so the difference between "unset" and "set to the wrong thing" is knowable.
+ */
+export function explainEmpty(
+  path: string,
+  options: { deployment?: Deployment; env?: NodeJS.ProcessEnv } = {},
+): string {
+  const deployment = options.deployment ?? detectDeployment();
+  const env = options.env ?? process.env;
+  const usual = 'Check that it is the folder AudiobookShelf uses.';
+  if (deployment !== 'docker') return `${path} is empty. ${usual}`;
+
+  const source = env.HOST_LIBRARY_PATH;
+  if (source === undefined) {
+    return `${path} is empty. Check that the volume mounted here is the folder AudiobookShelf uses.`;
+  }
+  if (source.trim() === '') {
+    return (
+      `${path} is empty. HOST_LIBRARY_PATH is not set, so Docker mounted an empty audiobooks folder ` +
+      'beside docker-compose.yml instead of your library. Set HOST_LIBRARY_PATH in .env to the folder ' +
+      'AudiobookShelf uses, then run docker compose up -d.'
+    );
+  }
+  if (windowsPath(source)) {
+    return (
+      `${path} is empty, although HOST_LIBRARY_PATH is ${source}. Docker Desktop cannot see mapped ` +
+      'network drives or \\\\server\\share paths, so if that is a NAS share it has to be mounted as a ' +
+      'volume instead — see "Libraries on a NAS" in docs/docker.md.'
+    );
+  }
+  return (
+    `${path} is empty, although HOST_LIBRARY_PATH is ${source}. ${usual} If it is a network share, ` +
+    'check that it was mounted before the container started.'
+  );
 }
 
 function snapRemedy(path: string): string {
@@ -124,7 +202,17 @@ function snapRemedy(path: string): string {
   );
 }
 
-function dockerRemedy(owner?: Owner): string {
+function dockerRemedy(owner?: Owner, mount?: MountEntry | null): string {
+  // On an SMB share the ownership stat reports is invented by the mount from its
+  // own options, so matching PUID/PGID to it can succeed and still not write.
+  if (mount && (mount.fsType === 'cifs' || mount.fsType === 'smb3')) {
+    return (
+      `It is on an SMB share (${mount.source}), where ownership and permissions come from the ` +
+      `mount's options, not the files. Add uid=${process.getuid?.() ?? 1000},gid=` +
+      `${process.getgid?.() ?? 1000},file_mode=0664,dir_mode=0775 to the volume's options, and ` +
+      'check the share account itself may write.'
+    );
+  }
   if (!owner) return 'Check that the library is mounted read-write, and that PUID/PGID match its owner.';
   return (
     `Set PUID=${owner.uid} and PGID=${owner.gid} in .env and recreate the container. If that is ` +

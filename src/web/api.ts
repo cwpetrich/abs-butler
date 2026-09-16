@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { AbsClient, resolveApiKey } from '../abs/client.js';
 import { assessCapability, checkLocalRoot } from '../core/capability.js';
+import { detectDeployment } from '../core/deployment.js';
+import { discoverFromServer } from '../core/discover.js';
+import { describeMount, libraryMounts } from '../core/mounts.js';
 import { keyFilePath, keySource } from '../core/crypto.js';
 import type { JobRunner } from '../core/jobs.js';
 import { COMMANDS, FILE_COMMANDS, isRunCommand } from '../core/tasks.js';
@@ -244,12 +247,21 @@ export function buildApiRouter(deps: ApiDeps): Router {
     // verified is exactly what gets stored.
     const apiKey = await resolveApiKey(input.url, input);
     // Verify before saving, so a typo surfaces here rather than on first run.
-    await new AbsClient({ baseUrl: input.url, token: apiKey }).listLibraries();
+    const client = new AbsClient({ baseUrl: input.url, token: apiKey });
+    const libraries = await client.listLibraries();
     // Destructured rather than spread so it is visible that the password does
     // not reach the database.
     const { username, password: _password, ...rest } = input;
-    saveConnection(db, { ...rest, apiKey, ...authFor(input, username) });
-    return { connection: publicConnection(db) };
+    // Left blank, the paths are filled in from where the books were actually
+    // found. Only ever a verified answer, and never at the cost of connecting.
+    const paths =
+      !input.libraryRoot?.trim() && !input.pathPrefix?.trim()
+        ? await discoverFromServer(client, libraries, { libraryRoot: null, pathPrefix: null })
+            .then((d) => d.mapping)
+            .catch(() => null)
+        : null;
+    saveConnection(db, { ...rest, ...(paths ?? {}), apiKey, ...authFor(input, username) });
+    return { connection: publicConnection(db), discoveredPaths: paths };
   });
 
   router.patch('/api/connection', async (ctx) => {
@@ -287,6 +299,8 @@ export function buildApiRouter(deps: ApiDeps): Router {
       const libraries = await client.listLibraries();
       // Nice to have, never a reason to call the server unreachable.
       const user = await client.me().catch(() => null);
+      // Same: a failed search means no suggestion, not a failed test.
+      const discovery = await discoverFromServer(client, libraries, connection).catch(() => null);
       return {
         reachable: true,
         user,
@@ -297,9 +311,20 @@ export function buildApiRouter(deps: ApiDeps): Router {
           folders: l.folders.map((f) => f.fullPath),
         })),
         capability: assessCapability(connection, libraries),
+        discovery,
+        // What this container has mounted, for when neither the settings nor
+        // the search found the books: it is usually the whole explanation.
+        mounts: detectDeployment() === 'docker' ? libraryMounts().map(describeMount) : [],
       };
     } catch (err) {
-      return { reachable: false, error: (err as Error).message, libraries: [], capability: null };
+      return {
+        reachable: false,
+        error: (err as Error).message,
+        libraries: [],
+        capability: null,
+        discovery: null,
+        mounts: [],
+      };
     }
   });
 

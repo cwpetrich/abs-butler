@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -17,6 +17,13 @@ function connection(patch: Partial<ConnectionRecord> = {}): ConnectionRecord {
     updatedAt: 0,
     ...patch,
   };
+}
+
+/** A directory with a book in it. An empty one is its own case, tested below. */
+function libraryDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(join(dir, 'The Hobbit.m4b'), '');
+  return dir;
 }
 
 function library(fullPath: string): AbsLibrary {
@@ -51,7 +58,35 @@ describe('toLocalPath', () => {
   });
 });
 
+describe('toLocalPath, prefix boundaries', () => {
+  // relative('/audio', '/audiobooks2/x') is '../audiobooks2/x', which joined to
+  // the root points outside it.
+  it('does not let a prefix match part of a folder name', () => {
+    const s = { libraryRoot: '/mnt/media', pathPrefix: '/audio' };
+    expect(toLocalPath('/audiobooks2/Title', s)).toBeNull();
+    expect(toLocalPath('/audio/Title', s)).toBe('/mnt/media/Title');
+  });
+
+  it('tolerates a trailing slash on the prefix', () => {
+    const s = { libraryRoot: '/audiobooks', pathPrefix: '/nas/AudioBooks/' };
+    expect(toLocalPath('/nas/AudioBooks/Author/Title', s)).toBe('/audiobooks/Author/Title');
+    expect(toLocalPath('/nas/AudioBooks', s)).toBe('/audiobooks');
+  });
+});
+
 describe('checkLocalRoot', () => {
+  // Exists and is writable, and is still the wrong directory: the placeholder
+  // Docker mounts when HOST_LIBRARY_PATH is unset.
+  it('does not enable file management for an empty root', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'butler-empty-'));
+    mkdirSync(join(dir, '@eaDir'));
+    writeFileSync(join(dir, '.DS_Store'), '');
+    const status = checkLocalRoot({ libraryRoot: dir });
+    expect(status.canManageFiles).toBe(false);
+    expect(status.access).toBe('empty');
+    expect(status.reason).toMatch(/is empty/);
+  });
+
   it('disables file management when no library root is set', () => {
     const status = checkLocalRoot(connection());
     expect(status.canManageFiles).toBe(false);
@@ -68,7 +103,7 @@ describe('checkLocalRoot', () => {
   });
 
   it('enables file management for a writable local root', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'butler-local-'));
+    const dir = libraryDir('butler-local-');
     const status = checkLocalRoot({ libraryRoot: dir });
     expect(status.canManageFiles).toBe(true);
     expect(status.access).toBe('read-write');
@@ -81,6 +116,7 @@ describe('checkLocalRoot', () => {
     const base = mkdtempSync(join(tmpdir(), 'butler-localro-'));
     const dir = join(base, 'locked');
     mkdirSync(dir);
+    writeFileSync(join(dir, 'The Hobbit.m4b'), '');
     chmodSync(dir, 0o500);
     try {
       const status = checkLocalRoot({ libraryRoot: dir });
@@ -101,7 +137,7 @@ describe('assessCapability', () => {
   });
 
   it('reports read-write for a real writable directory', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'butler-cap-'));
+    const dir = libraryDir('butler-cap-');
     const result = assessCapability(
       connection({ libraryRoot: dir, pathPrefix: '/audiobooks' }),
       [library('/audiobooks')],
@@ -125,6 +161,7 @@ describe('assessCapability', () => {
     const base = mkdtempSync(join(tmpdir(), 'butler-ro-'));
     const dir = join(base, 'locked');
     mkdirSync(dir);
+    writeFileSync(join(dir, 'The Hobbit.m4b'), '');
     chmodSync(dir, 0o500);
     try {
       const result = assessCapability(
@@ -164,7 +201,7 @@ describe('assessCapability', () => {
   });
 
   it('ignores podcast libraries, which none of the book tooling applies to', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'butler-pod-'));
+    const dir = libraryDir('butler-pod-');
     const podcasts: AbsLibrary = {
       id: 'lib2',
       name: 'Podcasts',

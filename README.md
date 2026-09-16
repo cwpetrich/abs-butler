@@ -594,8 +594,13 @@ Because AudiobookShelf reports paths as *it* sees them — and a containerized A
 | **Library root** | abs-butler's | `/audiobooks` in Docker, or `/mnt/media/audiobooks` natively |
 
 Leave the prefix blank if the two already agree, which they do when AudiobookShelf runs natively.
-**Connection → Test** shows each library folder, the path it maps to here, and whether that path is
-reachable and writable — the fastest way to get this right.
+
+You rarely need to fill in either one. Leave both blank when connecting and abs-butler finds them by
+looking for a few of your books from where it runs. **Connection → Test** (or `abs-butler status`)
+does the same later, offers the right paths when the saved ones are wrong, and says what is mounted
+when the books cannot be found at all. It never settles for a folder that merely exists: an empty
+one is reported as empty. A library on a NAS under Docker Desktop has its own notes in
+[Libraries on a NAS](docs/docker.md#libraries-on-a-nas).
 
 If the library root is unset or unreachable, organizing is **disabled outright**: not offered in the
 UI, not schedulable, and refused by the CLI and API with the reason. It does not generate a plan it

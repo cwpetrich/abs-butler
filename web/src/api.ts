@@ -1,6 +1,6 @@
 /** Typed client for the abs-butler API. All calls are same-origin. */
 
-export type FileAccess = 'read-write' | 'read-only' | 'unreachable' | 'not-configured';
+export type FileAccess = 'read-write' | 'read-only' | 'empty' | 'unreachable' | 'not-configured';
 
 export interface LocalRootStatus {
   /** False means file organization is unavailable, full stop. */
@@ -142,6 +142,20 @@ export interface LibraryCapability {
   reason?: string;
 }
 
+export interface PathMapping {
+  libraryRoot: string;
+  /** Null when AudiobookShelf and abs-butler use the same path. */
+  pathPrefix: string | null;
+}
+
+/** Where the server's books were found from here, by looking for them. */
+export interface PathDiscovery {
+  mapping: PathMapping | null;
+  checked: number;
+  found: number;
+  matchesCurrent: boolean;
+}
+
 export interface CapabilityReport {
   reachable: boolean;
   error?: string;
@@ -153,6 +167,9 @@ export interface CapabilityReport {
     reason: string;
     libraries: LibraryCapability[];
   } | null;
+  discovery: PathDiscovery | null;
+  /** What the container has mounted that could be the library; empty outside Docker. */
+  mounts: string[];
 }
 
 export interface Settings {
@@ -249,7 +266,10 @@ export const api = {
   update: () => request<UpdateStatus>('/api/update'),
   connection: () => request<{ connection: Connection | null }>('/api/connection'),
   saveConnection: (input: Record<string, unknown>) =>
-    request<{ connection: Connection }>('/api/connection', { method: 'PUT', body: body(input) }),
+    request<{ connection: Connection; discoveredPaths: PathMapping | null }>('/api/connection', {
+      method: 'PUT',
+      body: body(input),
+    }),
   updateConnection: (patch: Record<string, unknown>) =>
     request<{ connection: Connection }>('/api/connection', { method: 'PATCH', body: body(patch) }),
   disconnect: () => request<{ ok: true }>('/api/connection', { method: 'DELETE' }),
