@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { detectDeployment, explainDenial, explainReadonlyDatabase } from './deployment.js';
+import {
+  detectDeployment,
+  explainDenial,
+  explainEmpty,
+  explainMissing,
+  explainReadonlyDatabase,
+} from './deployment.js';
+import type { MountEntry } from './mounts.js';
 
 const OWNER = { uid: 1000, gid: 1003, mode: 0o40750 };
 
@@ -140,5 +147,84 @@ describe('explainReadonlyDatabase', () => {
   it('reports the running identity for a native install', () => {
     if (process.getuid?.() === 0) return;
     expect(explainReadonlyDatabase('/srv/butler', 'native')).toContain('uid');
+  });
+});
+
+describe('explainMissing', () => {
+  const mounts: MountEntry[] = [{ path: '/audiobooks', fsType: 'ext4', source: '/dev/vda1' }];
+
+  it('keeps it plain outside a container', () => {
+    expect(explainMissing('/srv/books', { deployment: 'native' })).toBe(
+      '/srv/books does not exist on this machine',
+    );
+  });
+
+  // AudiobookShelf's path typed into both fields: the setup this was written for.
+  it('names what is mounted, and says when the path is AudiobookShelf\'s', () => {
+    const reason = explainMissing('/nas/AudioBooks', { deployment: 'docker', mounts, serverPath: true });
+    expect(reason).toContain('/nas/AudioBooks is not mounted in this container');
+    expect(reason).toContain('path AudiobookShelf uses');
+    expect(reason).toContain('mounted here at /audiobooks');
+  });
+
+  it('names the share behind a network mount', () => {
+    const reason = explainMissing('/library', {
+      deployment: 'docker',
+      mounts: [{ path: '/audiobooks', fsType: 'cifs', source: '//nas/AudioBooks' }],
+    });
+    expect(reason).toContain('/audiobooks (cifs //nas/AudioBooks)');
+  });
+
+  it('says when nothing is mounted at all', () => {
+    expect(explainMissing('/audiobooks', { deployment: 'docker', mounts: [] })).toContain(
+      'Nothing is mounted',
+    );
+  });
+});
+
+describe('explainEmpty', () => {
+  it('blames the unset HOST_LIBRARY_PATH when compose passed it through empty', () => {
+    const reason = explainEmpty('/audiobooks', { deployment: 'docker', env: { HOST_LIBRARY_PATH: '' } });
+    expect(reason).toContain('HOST_LIBRARY_PATH is not set');
+  });
+
+  it('warns that Docker Desktop cannot mount a mapped network drive', () => {
+    for (const source of ['Z:\\AudioBooks', '\\\\nas\\AudioBooks', '//nas/AudioBooks']) {
+      const reason = explainEmpty('/audiobooks', { deployment: 'docker', env: { HOST_LIBRARY_PATH: source } });
+      expect(reason).toContain('mapped network drives');
+    }
+  });
+
+  it('points at the folder itself when HOST_LIBRARY_PATH is set to something ordinary', () => {
+    const reason = explainEmpty('/audiobooks', {
+      deployment: 'docker',
+      env: { HOST_LIBRARY_PATH: '/mnt/media/books' },
+    });
+    expect(reason).toContain('although HOST_LIBRARY_PATH is /mnt/media/books');
+    expect(reason).not.toContain('mapped network drives');
+  });
+
+  it('makes no claim about HOST_LIBRARY_PATH outside Docker', () => {
+    expect(explainEmpty('/srv/books', { deployment: 'native' })).not.toContain('HOST_LIBRARY_PATH');
+  });
+});
+
+describe('explainDenial on an SMB share', () => {
+  // A cifs mount invents ownership from its options, so PUID/PGID matching the
+  // reported owner can be exactly right and still not write.
+  it('points at the mount options rather than PUID/PGID', () => {
+    const reason = explainDenial({
+      path: '/audiobooks/Author',
+      kind: 'not-writable',
+      owner: OWNER,
+      deployment: 'docker',
+      mounts: [
+        { path: '/', fsType: 'overlay', source: 'overlay' },
+        { path: '/audiobooks', fsType: 'cifs', source: '//nas/AudioBooks' },
+      ],
+    });
+    expect(reason).toContain('SMB share (//nas/AudioBooks)');
+    expect(reason).toContain('file_mode=0664');
+    expect(reason).not.toContain('PUID=');
   });
 });

@@ -1,6 +1,7 @@
 import { AbsClient, resolveApiKey } from '../abs/client.js';
 import { gatherCredentials, terminalPrompts, type CredentialPrompts } from './credentials.js';
 import { assessCapability } from '../core/capability.js';
+import { discoverFromServer, type Discovery } from '../core/discover.js';
 import { keyFilePath, keySource } from '../core/crypto.js';
 import { openStore } from '../context.js';
 import {
@@ -49,13 +50,22 @@ export async function runConnect(options: ConnectOptions): Promise<void> {
   const apiKey = await resolveApiKey(options.url, credentials);
   if (!credentials.apiKey) log.info('logged in; storing the API token, not the password');
 
+  let paths: { libraryRoot: string; pathPrefix: string | null } | null = null;
   if (!options.noVerify) {
     log.info(`checking ${options.url}…`);
-    const libraries = await new AbsClient({
-      baseUrl: options.url,
-      token: apiKey,
-    }).listLibraries();
+    const client = new AbsClient({ baseUrl: options.url, token: apiKey });
+    const libraries = await client.listLibraries();
     log.success(`connected — ${libraries.length} librar(ies) visible`);
+
+    // Neither path given: fill them in from where the books really are.
+    if (options.libraryRoot === undefined && options.pathPrefix === undefined) {
+      const discovery = await discoverFromServer(client, libraries, {
+        libraryRoot: null,
+        pathPrefix: null,
+      }).catch(() => null);
+      paths = discovery?.mapping ?? null;
+      if (paths) log.success(`found the library: ${describeMapping(paths)}`);
+    }
   }
 
   const connection = saveConnection(db, {
@@ -64,8 +74,8 @@ export async function runConnect(options: ConnectOptions): Promise<void> {
     ...(credentials.apiKey
       ? { authMethod: 'token' as const }
       : { authMethod: 'login' as const, authUsername: credentials.username ?? null }),
-    libraryRoot: options.libraryRoot ?? null,
-    pathPrefix: options.pathPrefix ?? null,
+    libraryRoot: options.libraryRoot ?? paths?.libraryRoot ?? null,
+    pathPrefix: options.pathPrefix ?? paths?.pathPrefix ?? null,
   });
 
   log.debug(
@@ -74,6 +84,29 @@ export async function runConnect(options: ConnectOptions): Promise<void> {
 
   if (options.json) printJson(connection);
   else log.success(`Connected to ${connection.url}.`);
+}
+
+function describeMapping(mapping: { libraryRoot: string; pathPrefix: string | null }): string {
+  return mapping.pathPrefix
+    ? `AudiobookShelf's ${mapping.pathPrefix} is ${mapping.libraryRoot} here`
+    : `${mapping.libraryRoot}, the same path AudiobookShelf uses`;
+}
+
+/** What the search for the books adds to `status`, if anything. */
+function reportDiscovery(discovery: Discovery | null): void {
+  if (!discovery || discovery.checked === 0) return;
+  const tally = `${discovery.found} of ${discovery.checked} sampled books found`;
+  if (!discovery.mapping) {
+    log.warn(`paths: none of ${discovery.checked} sampled books could be found from here`);
+    return;
+  }
+  if (discovery.matchesCurrent) {
+    log.success(`paths: ${describeMapping(discovery.mapping)} (${tally})`);
+    return;
+  }
+  const { libraryRoot, pathPrefix } = discovery.mapping;
+  log.warn(`paths: found the books — ${describeMapping(discovery.mapping)} (${tally}) — but that is not what is configured`);
+  log.info(`  to use it: abs-butler configure --library-root ${libraryRoot} --path-prefix "${pathPrefix ?? ''}"`);
 }
 
 export interface ConfigureOptions {
@@ -175,6 +208,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
   try {
     const libraries = await client.listLibraries();
     const capability = assessCapability(connection, libraries);
+    const discovery = await discoverFromServer(client, libraries, connection).catch(() => null);
 
     const { allowFileChanges, allowMetadataRewrite } = getSettings(db);
 
@@ -186,6 +220,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
         allowFileChanges,
         allowMetadataRewrite,
         capability,
+        discovery,
       });
       return;
     }
@@ -193,6 +228,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
     log.success(`${connection.url}: connected, ${libraries.length} librar(ies)`);
     if (capability.canManageFiles) log.success(`files: ${capability.reason}`);
     else log.warn(`files: ${capability.reason}`);
+    reportDiscovery(discovery);
 
     // Reachable files and permission to change them are separate gates, and
     // organize needs both — so reporting only one of them would mislead.

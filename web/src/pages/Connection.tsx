@@ -138,6 +138,7 @@ function Connected({
           </p>
         )}
         {report && <CapabilityTable report={report} />}
+        {report && <PathFinding report={report} onApplied={onChanged} />}
       </div>
 
       <div className="card">
@@ -408,30 +409,37 @@ function ConnectionForm({
         </label>
       )}
 
+      <p className="hint">
+        {requireKey
+          ? 'Only needed to organize files. Leave both blank and abs-butler fills them in by finding ' +
+            "your books from here — it looks for them, so it will not settle on an empty folder."
+          : 'Only needed to organize files. Test looks for your books from here and offers the right ' +
+            'paths if these are wrong.'}
+      </p>
       <div className="field-grid">
         <label>
           Library folder, as abs-butler sees it
           <span className="hint">
-            Only needed to organize files; leave blank to work over the API alone. In the Docker
-            setup this is always <code>/audiobooks</code>.
+            In the Docker setup this is <code>/audiobooks</code>, where docker-compose.yml mounts{' '}
+            <code>HOST_LIBRARY_PATH</code> — not the path AudiobookShelf uses.
           </span>
           <input
             value={form.libraryRoot}
             onChange={(e) => set('libraryRoot', e.target.value)}
-            placeholder="e.g. /audiobooks"
+            placeholder={requireKey ? 'found automatically' : 'e.g. /audiobooks'}
           />
         </label>
 
         <label>
           Library folder, as AudiobookShelf sees it
           <span className="hint">
-            Only if it differs from the one beside it — usual when AudiobookShelf runs in its own
-            container. Test lists the paths AudiobookShelf reports.
+            The path AudiobookShelf shows for the library, e.g. <code>/audiobooks</code> or{' '}
+            <code>/nas/AudioBooks</code>. Blank when it is the same as the one beside it.
           </span>
           <input
             value={form.pathPrefix}
             onChange={(e) => set('pathPrefix', e.target.value)}
-            placeholder="blank when both paths match"
+            placeholder={requireKey ? 'found automatically' : 'blank when both paths match'}
           />
         </label>
       </div>
@@ -442,6 +450,84 @@ function ConnectionForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * The answer from looking for the books: confirmation when the settings find
+ * them, the settings that would when they do not, and what is mounted when
+ * nothing does.
+ */
+function PathFinding({ report, onApplied }: { report: CapabilityReport; onApplied: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const discovery = report.discovery;
+  if (!report.reachable || !discovery || discovery.checked === 0) return null;
+
+  const { mapping, checked, found } = discovery;
+  const tally = `${found} of ${checked} sampled ${checked === 1 ? 'book' : 'books'}`;
+
+  if (mapping && discovery.matchesCurrent) {
+    return <p className="hint">Checked by looking for them: {tally} are where these paths say.</p>;
+  }
+
+  if (mapping) {
+    const apply = async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        await api.updateConnection({
+          libraryRoot: mapping.libraryRoot,
+          pathPrefix: mapping.pathPrefix ?? '',
+        });
+        onApplied();
+      } catch (err) {
+        setError((err as Error).message);
+        setBusy(false);
+      }
+    };
+    return (
+      <div className="banner" style={{ marginTop: 12 }}>
+        <strong>Found your books ({tally})</strong>
+        <div>
+          {mapping.pathPrefix ? (
+            <>
+              AudiobookShelf's <code>{mapping.pathPrefix}</code> is <code>{mapping.libraryRoot}</code>{' '}
+              here.
+            </>
+          ) : (
+            <>
+              At <code>{mapping.libraryRoot}</code>, the same path AudiobookShelf uses.
+            </>
+          )}
+        </div>
+        {error && <Banner tone="err">{error}</Banner>}
+        <div className="actions" style={{ marginTop: 8 }}>
+          <button className="primary" onClick={apply} disabled={busy}>
+            {busy ? 'Saving…' : 'Use these paths'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="banner warn" style={{ marginTop: 12 }}>
+      <strong>None of {checked} sampled books could be found from here</strong>
+      <div>
+        abs-butler is not looking at the same files as AudiobookShelf, so no setting here can fix it:
+        the library has to be mounted into abs-butler first.{' '}
+        {report.mounts.length > 0 ? (
+          <>
+            Mounted in this container: <code>{report.mounts.join(', ')}</code>. Point{' '}
+            <code>HOST_LIBRARY_PATH</code> at the folder AudiobookShelf uses and run{' '}
+            <code>docker compose up -d</code>.
+          </>
+        ) : (
+          'Check that the folder AudiobookShelf uses is reachable from this machine.'
+        )}
+      </div>
+    </div>
   );
 }
 

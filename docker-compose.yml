@@ -25,6 +25,9 @@ x-butler: &butler
     # The database and encryption key always live at /data inside the
     # container; persist them with the butler-data volume below.
     BUTLER_DATA_DIR: /data
+    # Passed through, set or not, so an empty /audiobooks can be explained:
+    # unset means Docker mounted the ./audiobooks placeholder, not your library.
+    HOST_LIBRARY_PATH: ${HOST_LIBRARY_PATH:-}
   volumes:
     - butler-data:/data
     # Mounted read-write, but abs-butler will not move a file until "Allow file

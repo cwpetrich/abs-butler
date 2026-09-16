@@ -1,8 +1,8 @@
-import { accessSync, constants, statSync, type Stats } from 'node:fs';
+import { accessSync, constants, opendirSync, statSync, type Stats } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { AbsLibrary } from '../abs/types.js';
 import type { ConnectionRecord } from '../db/connection.js';
-import { explainDenial } from './deployment.js';
+import { explainDenial, explainEmpty, explainMissing } from './deployment.js';
 
 /**
  * Whether this machine can manage the library's files.
@@ -16,7 +16,7 @@ import { explainDenial } from './deployment.js';
  * this.
  */
 
-export type FileAccess = 'read-write' | 'read-only' | 'unreachable' | 'not-configured';
+export type FileAccess = 'read-write' | 'read-only' | 'empty' | 'unreachable' | 'not-configured';
 
 export interface LibraryCapability {
   libraryId: string;
@@ -52,14 +52,46 @@ const NOT_CONFIGURED =
  */
 export function toLocalPath(absPath: string, config: PathConfig): string | null {
   if (config.pathPrefix && config.libraryRoot) {
-    if (!absPath.startsWith(config.pathPrefix)) return null;
-    return join(config.libraryRoot, relative(config.pathPrefix, absPath));
+    // Matched a whole folder at a time: a prefix of /audio must not claim
+    // /audiobooks2, which relative() would turn into a path outside the root.
+    const prefix = config.pathPrefix.length > 1 ? config.pathPrefix.replace(/\/+$/, '') : config.pathPrefix;
+    const inside = absPath === prefix || absPath.startsWith(prefix === '/' ? '/' : `${prefix}/`);
+    if (!inside) return null;
+    return join(config.libraryRoot, relative(prefix, absPath));
   }
   if (config.libraryRoot) return absPath;
   return null;
 }
 
-function probe(path: string): { access: FileAccess; reason?: string } {
+/**
+ * Whether a directory holds nothing that could be a book. Dotfiles and the
+ * bookkeeping folders NAS systems scatter everywhere (Synology's @eaDir, a
+ * #recycle bin) do not count, so a share that is empty apart from those still
+ * reads as the empty mount it is.
+ */
+function isEmptyLibrary(path: string): boolean {
+  try {
+    const dir = opendirSync(path);
+    try {
+      for (let entry = dir.readSync(); entry; entry = dir.readSync()) {
+        if (!/^[.@#]/.test(entry.name)) return false;
+      }
+      return true;
+    } finally {
+      dir.closeSync();
+    }
+  } catch {
+    // Unlistable is a permission question, and the write probe answers those.
+    return false;
+  }
+}
+
+interface ProbeHint {
+  /** The path given is AudiobookShelf's own name for the library. */
+  serverPath?: boolean;
+}
+
+function probe(path: string, hint: ProbeHint = {}): { access: FileAccess; reason?: string } {
   let info: Stats;
   try {
     info = statSync(path);
@@ -71,12 +103,16 @@ function probe(path: string): { access: FileAccess; reason?: string } {
     if (code === 'EACCES' || code === 'EPERM') {
       return { access: 'unreachable', reason: explainDenial({ path, kind: 'not-visible' }) };
     }
-    return { access: 'unreachable', reason: `${path} does not exist on this machine` };
+    return { access: 'unreachable', reason: explainMissing(path, { serverPath: hint.serverPath }) };
   }
 
   if (!info.isDirectory()) {
     return { access: 'unreachable', reason: `${path} exists but is not a directory` };
   }
+
+  // Checked before writability: an empty directory is the wrong directory, and
+  // being able to write to it is no consolation.
+  if (isEmptyLibrary(path)) return { access: 'empty', reason: explainEmpty(path) };
 
   try {
     accessSync(path, constants.W_OK);
@@ -108,12 +144,18 @@ export interface LocalRootStatus {
  * Makes no network call, so the UI can disable organize up front and the job
  * runner can re-check immediately before executing without a round trip.
  */
-export function checkLocalRoot(config: Pick<ConnectionRecord, 'libraryRoot'>): LocalRootStatus {
+export function checkLocalRoot(
+  config: Pick<ConnectionRecord, 'libraryRoot'> & Partial<Pick<ConnectionRecord, 'pathPrefix'>>,
+): LocalRootStatus {
   if (!config.libraryRoot) {
     return { canManageFiles: false, access: 'not-configured', reason: NOT_CONFIGURED, path: null };
   }
 
-  const { access, reason } = probe(config.libraryRoot);
+  // Both fields holding the same path is the tell of AudiobookShelf's path typed
+  // into both, which under Docker is never abs-butler's path too.
+  const { access, reason } = probe(config.libraryRoot, {
+    serverPath: config.pathPrefix === config.libraryRoot,
+  });
   return {
     canManageFiles: access === 'read-write',
     access,
@@ -162,7 +204,8 @@ export function assessCapability(config: PathConfig, libraries: AbsLibrary[]): C
         });
         continue;
       }
-      const { access, reason } = probe(localPath);
+      // Untranslated, so the path that is missing is AudiobookShelf's own.
+      const { access, reason } = probe(localPath, { serverPath: localPath === folder.fullPath });
       results.push({
         libraryId: library.id,
         libraryName: library.name,

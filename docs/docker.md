@@ -264,8 +264,66 @@ The path prefix is what AudiobookShelf itself reports for the library, and it is
 that differs from the library root. If ABS maps the same directory to `/audiobooks` too, the two
 agree and you can leave the prefix blank. If it maps it to `/library`, set the prefix to `/library`.
 
-**Connection → Test** settles it: the table lists each folder's path on the server, the path it maps
-to here, and whether that path is reachable and writable.
+You rarely have to work either one out. Leave both blank when connecting and abs-butler fills them
+in by **finding your books**: it takes a few books AudiobookShelf reports, say
+`/nas/AudioBooks/Jane Austen/Emma`, and looks for `Jane Austen/Emma` under everything mounted into
+its container. Where it turns up gives both paths. Because it looks for the books themselves, an
+empty folder never passes, even though it exists and is writable.
+
+**Connection → Test** runs the same search on an existing connection. If the paths are wrong it
+offers the right ones with a **Use these paths** button. It also lists each folder's path on the
+server, the path it maps to here, and whether that path is reachable and writable.
+`abs-butler status` reports the same from the CLI.
+
+If none of the books can be found, no setting will fix it, because the library is not mounted into
+abs-butler at all. Test then shows what *is* mounted. The usual causes:
+
+- **`HOST_LIBRARY_PATH` is not set.** Compose then mounts an empty `audiobooks` folder beside
+  `docker-compose.yml`, and abs-butler says so.
+- **It points at a different folder than AudiobookShelf's**, or at a different level of the same
+  share. Copy the left-hand side of AudiobookShelf's own volume line (`docker inspect
+  <container> --format "{{json .Mounts}}"` prints it).
+- **It is a Windows mapped drive or `\\server\share` path.** See below.
+
+### Libraries on a NAS
+
+If the share is already mounted on the machine running Docker (an fstab entry on Linux, say), it is
+just a path: set `HOST_LIBRARY_PATH` to it.
+
+**Docker Desktop on Windows or macOS cannot bind-mount a mapped network drive** (`Z:\AudioBooks`) or
+a `\\server\share` path. Those belong to your login session, and Docker's VM never sees them. Have
+Docker mount the share itself instead, in a `docker-compose.override.yml` beside the compose file:
+
+```yaml
+services:
+  butler:
+    volumes: !override
+      - butler-data:/data
+      - nas-audiobooks:/audiobooks
+  cli:
+    volumes: !override
+      - butler-data:/data
+      - nas-audiobooks:/audiobooks
+volumes:
+  nas-audiobooks:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//192.168.1.50/AudioBooks"
+      o: "username=USER,password=PASS,uid=1000,gid=1000,file_mode=0664,dir_mode=0775,vers=3.0"
+```
+
+- **Use the NAS's IP address.** Its hostname often does not resolve from inside Docker's VM.
+- **Ownership on an SMB share comes from `uid`/`gid` and the modes in `o:`**, not from the files, so
+  `PUID`/`PGID` do not change what abs-butler may write. Match `uid`/`gid` to `PUID`/`PGID` (1000
+  by default).
+- **An NFS export** works the same way: `type: nfs`, `o: addr=192.168.1.50,rw,nfsvers=4`,
+  `device: ":/volume1/AudioBooks"`. `install.sh --nfs` writes this for you on Linux.
+
+Then run `docker compose up -d` and press **Test**.
+
+If AudiobookShelf itself runs on the NAS, the simpler setup is to run abs-butler there too. The
+library is then a local path, and `install.sh` finds everything.
 
 The library is mounted read-write, but that on its own does not let abs-butler move anything.
 **Applying an `organize` plan is refused until "Allow file changes" is turned on** under Settings →
