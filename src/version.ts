@@ -8,4 +8,4 @@
  *
  * The web UI takes it from the API rather than carrying its own copy.
  */
-export const VERSION = '0.13.0';
+export const VERSION = '0.14.0';
