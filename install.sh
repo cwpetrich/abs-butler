@@ -28,6 +28,7 @@ VERSION="0.4.0"
 # migration_notes().
 INSTALL_VERSION=2
 IMAGE_DEFAULT="ghcr.io/cwpetrich/abs-butler:latest"
+INSTALLER_IMAGE="${ABS_BUTLER_INSTALLER_IMAGE:-ghcr.io/cwpetrich/abs-butler-installer:latest}"
 COMPOSE_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/docker-compose.yml"
 SELF_URL="https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh"
 
@@ -58,6 +59,7 @@ library_target=""
 # Set by installer/entrypoint.sh: this script is in a container, with the host's
 # Docker behind the socket. Host paths are then only Docker's to look at.
 in_container="${ABS_BUTLER_IN_CONTAINER:-0}"
+auto_update=""
 
 say()  { printf '%s\n' "$*"; }
 note() { printf 'abs-butler: %s\n' "$*"; }
@@ -110,6 +112,10 @@ Options:
                         AudiobookShelf again, compare its library with the one
                         mounted here, and confirm the container can see books.
                         Offers each change rather than making it.
+  --auto-update         Pull and restart onto each new release by itself, from
+                        a nightly job on this host (a systemd timer as root,
+                        otherwise a crontab line). Off unless asked for.
+  --no-auto-update      Remove that job again
   --update              Bring an existing install up to date: refresh the
                         compose file, pull the current image, restart, and
                         report anything that needs a decision. Changes no
@@ -222,6 +228,8 @@ while [ $# -gt 0 ]; do
     --repair) repair=1; do_update=1; shift ;;
     --library-volume) [ $# -ge 2 ] || usage_error "--library-volume needs a volume name"; library_volume="$2"; shift 2 ;;
     --library-volume=*) library_volume="${1#*=}"; shift ;;
+    --auto-update) auto_update=1; shift ;;
+    --no-auto-update) auto_update=0; shift ;;
     --remote) remote=1; shift ;;                       # kept: it was the old spelling of the default
     --local) bind="127.0.0.1"; shift ;;
     --setup-code) [ $# -ge 2 ] || usage_error "--setup-code needs a value"; setup_code="$2"; shift 2 ;;
@@ -398,6 +406,7 @@ if [ -f "$install_dir/.env" ]; then
   project=$(env_value COMPOSE_PROJECT_NAME)
   data_mode=$(env_value BUTLER_DATA)
   [ -n "$setup_code" ]  || setup_code=$(env_value BUTLER_SETUP_CODE)
+  [ -n "$auto_update" ] || auto_update=$(env_value BUTLER_AUTO_UPDATE)
   installed_version=$(env_value BUTLER_INSTALL_VERSION)
   # Absent means it predates the stamp, which is generation 1.
   [ -n "$installed_version" ] || installed_version=1
@@ -704,7 +713,7 @@ if [ -n "$library$library_volume" ] && [ "$dry_run" -eq 0 ]; then
       die "stopped. Point it at the folder AudiobookShelf uses."
     fi
   else
-    check_ok "Docker sees $3 entries in $library_desc"
+    check_ok "Docker sees $3 $([ "$3" -eq 1 ] && echo entry || echo entries) in $library_desc"
   fi
 fi
 
@@ -755,6 +764,266 @@ if [ "$bind" != "127.0.0.1" ] && [ "$bind" != "localhost" ]; then
   fi
 fi
 
+# ---- updating unattended ---------------------------------------------------
+#
+# abs-butler does not update itself, and that stays true: replacing a running
+# container takes the Docker socket, which is root on the host, and a web UI on
+# the network should not hold it. What --auto-update adds is a job that runs on
+# the host, as whoever ran this script, doing what an operator would type:
+# pull, and recreate if the image moved.
+#
+# It only ever pulls the image. install.sh and docker-compose.yml are fetched
+# from main, which is not a release, so running --update unattended would put
+# unreleased code on a machine nobody is watching. An image tag moves only when
+# a release is published. A release that also needs --update says so in the
+# sidebar, as it always has.
+AUTO_UPDATE_MARK="abs-butler-auto-update"
+AUTO_UPDATE_UNIT="abs-butler-update"
+UNIT_DIR="/etc/systemd/system"
+
+# A system timer needs root to install. Without root, a user unit would need
+# lingering turned on to fire while nobody is logged in, which is its own
+# decision; a crontab line has no such catch.
+use_systemd() {
+  [ "$(id -u)" -eq 0 ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1
+}
+
+crontab_without_ours() {
+  crontab -l 2>/dev/null | grep -v "# $AUTO_UPDATE_MARK\$" || true
+}
+
+has_our_crontab_line() {
+  command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q "# $AUTO_UPDATE_MARK\$"
+}
+
+# Rewritten on every run with --auto-update in effect, so --update also brings
+# the job itself up to date.
+write_update_script() {
+  # cron starts with PATH=/usr/bin:/bin, which on macOS and many NAS systems
+  # does not contain docker. Where it was found now is where it will be then.
+  wus_docker_dir=$(dirname "$(command -v docker)")
+  # Already covered by the fallbacks below, in the common case.
+  case ":/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:" in
+    *":$wus_docker_dir:"*) wus_docker_dir="" ;;
+  esac
+  {
+    printf '#!/bin/sh\n'
+    printf '# Written by install.sh --auto-update, and rewritten by each run of it --\n'
+    printf '# change the flags, not this file. Run it by hand to update now.\n'
+    printf 'PATH="%s/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"\n' "${wus_docker_dir:+$wus_docker_dir:}"
+    printf 'export PATH\n'
+    cat <<'EOF'
+set -eu
+cd "$(dirname "$0")"
+
+say() { printf '%s abs-butler: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
+# Stopped on purpose is a decision this must not overrule.
+cid=$(docker compose ps -q butler 2>/dev/null || true)
+if [ -z "$cid" ]; then
+  say "not running, so leaving it stopped. 'docker compose up -d butler' starts it."
+  exit 0
+fi
+running=$(docker inspect -f '{{.Image}}' "$cid")
+
+ref=$(sed -n 's/^BUTLER_IMAGE=//p' .env 2>/dev/null | tail -1)
+[ -n "$ref" ] || ref="ghcr.io/cwpetrich/abs-butler:latest"
+
+if ! docker compose pull -q butler; then
+  say "could not pull $ref; trying again next time."
+  exit 1
+fi
+pulled=$(docker image inspect -f '{{.Id}}' "$ref")
+
+# Compared with what the container runs, not with what was here before the
+# pull: an update put off last night is still owed tonight.
+if [ "$pulled" = "$running" ]; then
+  say "already current."
+  exit 0
+fi
+
+version_of() {
+  docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$1" 2>/dev/null || true
+}
+from=$(version_of "$running"); to=$(version_of "$pulled")
+
+# A restart abandons whatever is running, and a run abandoned partway through
+# organize leaves books half-moved. Asked of the running container, not of a
+# fresh `cli` one: that would start the new version against the database while
+# the old one still holds it. If the question cannot be answered at all, the
+# update goes ahead -- skipping on every failure would mean never updating.
+if docker compose exec -T butler node /app/dist/index.js runs --json --limit 20 2>/dev/null \
+    | grep -Eq '"status": *"(running|queued)"'; then
+  say "a run is in progress; updating to ${to:-$ref} next time instead of interrupting it."
+  exit 0
+fi
+
+say "updating ${from:-?} -> ${to:-?}"
+docker compose up -d butler
+
+# Healthy is the image's own healthcheck; an image without one counts as up
+# once it is running.
+state=""
+i=0
+while [ "$i" -lt 24 ]; do
+  cid=$(docker compose ps -q butler 2>/dev/null || true)
+  state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)
+  case "$state" in healthy|running) break ;; esac
+  i=$((i + 1))
+  sleep 5
+done
+
+case "$state" in
+  healthy|running)
+    # The old image only, by id. `docker image prune` would also take anything
+    # else on this host that happens to be dangling.
+    docker image rm "$running" >/dev/null 2>&1 || true
+    say "now on ${to:-$ref}."
+    ;;
+  *)
+    # Put the old image back under the tag and recreate onto it, so a bad
+    # release costs one failed restart rather than an outage until someone
+    # notices. The next pull moves the tag forward again, and tries again.
+    say "${to:-the new version} did not come up ($state); going back to ${from:-the previous one}."
+    docker tag "$running" "$ref"
+    docker compose up -d butler
+    say "rolled back. 'docker compose logs butler' has what went wrong."
+    exit 1
+    ;;
+esac
+EOF
+  } > update.sh
+  chmod 755 update.sh
+}
+
+# The command that runs update.sh nightly. From a container there is no host
+# scheduler to reach -- writing to this container's own crontab would schedule
+# nothing -- so the job is the installer image itself, which is also the only
+# form Windows can run: update.sh is a shell script, and the image is the shell.
+auto_update_command() {
+  if [ "$in_container" = "1" ]; then
+    printf 'docker run --rm --pull always -v /var/run/docker.sock:/var/run/docker.sock -v "%s:/install" %s auto-update' \
+      "${ABS_BUTLER_HOST_DIR:-$install_dir}" "$INSTALLER_IMAGE"
+  else
+    printf "/bin/sh '%s/update.sh'" "$install_dir"
+  fi
+}
+
+install_auto_update() {
+  write_update_script
+  if [ "$in_container" = "1" ]; then
+    # Said rather than done: scheduling on the host is the host's to do, and
+    # guessing at it from in here would leave somebody believing in a nightly
+    # job that does not exist.
+    say ""
+    say "Automatic updates need a scheduled task, which an installer in a container cannot"
+    say "create. update.sh is written; schedule this, once a night:"
+    say ""
+    say "  $(auto_update_command)"
+    say ""
+    case "${ABS_BUTLER_HOST_DIR:-}" in
+      [A-Za-z]:*)
+        say "On Windows, in an administrator PowerShell:"
+        say ""
+        say "  schtasks /create /tn abs-butler-update /sc daily /st 04:00 /tr \"$(auto_update_command)\""
+        ;;
+      *)
+        say "With cron (crontab -e):"
+        say ""
+        say "  17 4 * * * $(auto_update_command) >> '${ABS_BUTLER_HOST_DIR:-$install_dir}/update.log' 2>&1"
+        ;;
+    esac
+    return 0
+  fi
+  if use_systemd; then
+    cat > "$UNIT_DIR/$AUTO_UPDATE_UNIT.service" <<EOF
+# Written by install.sh --auto-update.
+[Unit]
+Description=Update abs-butler to its latest published image
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$install_dir
+ExecStart=/bin/sh "$install_dir/update.sh"
+EOF
+    # Persistent catches up on a night the machine was off. The random delay
+    # keeps every install from pulling from ghcr.io in the same minute.
+    cat > "$UNIT_DIR/$AUTO_UPDATE_UNIT.timer" <<EOF
+# Written by install.sh --auto-update.
+[Unit]
+Description=Update abs-butler nightly
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now "$AUTO_UPDATE_UNIT.timer" >/dev/null 2>&1 \
+      || { warn "could not enable $AUTO_UPDATE_UNIT.timer; 'systemctl status $AUTO_UPDATE_UNIT.timer' says why."; return 0; }
+    # One schedule, not two, if an earlier run without root left a cron line.
+    has_our_crontab_line && crontab_without_ours | crontab -
+    note "automatic updates on: nightly between 04:00 and 05:00 (journalctl -u $AUTO_UPDATE_UNIT)"
+  elif command -v crontab >/dev/null 2>&1; then
+    iau_minute=$(od -An -tu2 -N2 /dev/urandom 2>/dev/null | tr -d ' \n')
+    iau_minute=$(( ${iau_minute:-0} % 60 ))
+    { crontab_without_ours
+      printf "%s 4 * * * /bin/sh '%s/update.sh' >> '%s/update.log' 2>&1 # %s\n" \
+        "$iau_minute" "$install_dir" "$install_dir" "$AUTO_UPDATE_MARK"
+    } | crontab - || { warn "could not write the crontab entry."; return 0; }
+    note "automatic updates on: nightly at 04:$(printf '%02d' "$iau_minute") (log in $install_dir/update.log)"
+  else
+    warn "nothing here to schedule it with: no systemd as root, and no crontab."
+    warn "  $install_dir/update.sh is written; run it from whatever scheduler this machine has."
+  fi
+}
+
+# Only removes what is there, so it is safe to call on every run with it off.
+remove_auto_update() {
+  rau_removed=0
+  if [ "$in_container" = "1" ]; then
+    if [ -f update.sh ]; then
+      rm -f update.sh
+      note "update.sh removed. Delete the scheduled task that ran it (Windows: schtasks /delete /tn abs-butler-update)."
+    fi
+    return 0
+  fi
+  if [ -f "$UNIT_DIR/$AUTO_UPDATE_UNIT.timer" ] && use_systemd; then
+    systemctl disable --now "$AUTO_UPDATE_UNIT.timer" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$AUTO_UPDATE_UNIT.timer" "$UNIT_DIR/$AUTO_UPDATE_UNIT.service"
+    systemctl daemon-reload
+    rau_removed=1
+  fi
+  if has_our_crontab_line; then
+    crontab_without_ours | crontab -
+    rau_removed=1
+  fi
+  [ -f update.sh ] && { rm -f update.sh; rau_removed=1; }
+  [ "$rau_removed" -eq 1 ] && note "automatic updates off; the nightly job is removed."
+  return 0
+}
+
+# Updating unattended is opt-in, and asked about once: the answer is recorded
+# either way, so a re-run does not ask again. --update never asks -- it changes
+# no settings -- and without a terminal the answer is the default, off. --yes
+# is not a yes here: it means "take the defaults", and the default is off.
+if [ -z "$auto_update" ]; then
+  if [ "$do_update" -eq 0 ] && [ "$in_container" != "1" ] && interactive; then
+    say ""
+    say "abs-butler can keep itself current: a nightly job on this machine pulls"
+    say "each new release and restarts onto it, waiting out any run in progress."
+    if confirm "Update automatically?"; then auto_update=1; else auto_update=0; fi
+  else
+    auto_update=0
+    [ "$do_update" -eq 1 ] && note "automatic updates are available now: re-run with --auto-update to turn them on."
+  fi
+fi
+
 # ---- what gets written -----------------------------------------------------
 
 env_body="# Written by install.sh on $(date -u '+%Y-%m-%dT%H:%M:%SZ').
@@ -771,6 +1040,8 @@ BUTLER_BIND=$bind
 BUTLER_PORT=$port
 PUID=$puid
 PGID=$pgid
+# 1 when install.sh --auto-update scheduled update.sh to run nightly.
+BUTLER_AUTO_UPDATE=$auto_update
 "
 if [ -n "$setup_code" ]; then
   env_body="${env_body}# Required to set the first password, instead of the 15-minute open window.
@@ -883,6 +1154,13 @@ if [ "$dry_run" -eq 1 ]; then
   printf '%s' "$override_body"
   say ""
   say "Would then run: docker compose up -d butler"
+  if [ "$auto_update" = "1" ]; then
+    if use_systemd; then
+      say "Would schedule:     update.sh nightly, via $UNIT_DIR/$AUTO_UPDATE_UNIT.timer"
+    else
+      say "Would schedule:     update.sh nightly, via crontab"
+    fi
+  fi
   exit 0
 fi
 
@@ -971,6 +1249,8 @@ fi
 
 note "pulling and starting"
 docker compose up -d butler || die "compose failed to start. 'docker compose logs butler' has the detail. If the pull was denied, the image may be private — run 'docker login ghcr.io' first."
+
+if [ "$auto_update" = "1" ]; then install_auto_update; else remove_auto_update; fi
 
 # The container has its own healthcheck; this just waits for the port to answer
 # so the closing message is not a lie.

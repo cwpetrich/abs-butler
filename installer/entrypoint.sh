@@ -18,6 +18,10 @@ case "${1:-}" in
   install) shift ;;
   repair) shift; set -- --repair "$@" ;;
   update) shift; set -- --update "$@" ;;
+  # The nightly job, for a host whose scheduler cannot run a shell script
+  # itself. install.sh --auto-update writes update.sh; this runs it, from the
+  # folder whose name the host knows.
+  auto-update) auto_update_run=1 ;;
 esac
 
 [ -S /var/run/docker.sock ] || die "the Docker socket is not mounted. Add: -v /var/run/docker.sock:/var/run/docker.sock"
@@ -49,4 +53,10 @@ cd "$work"
 # their own machine names it.
 ABS_BUTLER_HOST_DIR="$src"
 export ABS_BUTLER_HOST_DIR
+
+if [ "${auto_update_run:-0}" = "1" ]; then
+  [ -f ./update.sh ] || die "there is no update.sh here. Turn automatic updates on first: ... repair --auto-update"
+  exec sh ./update.sh
+fi
+
 exec sh /opt/abs-butler-installer/install.sh --dir "$work" "$@"

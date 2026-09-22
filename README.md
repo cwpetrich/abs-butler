@@ -75,6 +75,8 @@ cd /opt/abs-butler && docker compose pull && docker compose up -d
 ```
 
 The image tag is `:latest`, so that is the whole update — the same thing AudiobookShelf asks of you.
+To have it done nightly instead, `install.sh --auto-update` schedules exactly that on the host —
+off unless you turn it on; see [Automatically](docs/docker.md#automatically).
 `install.sh --update` exists for the rarer case where the scaffolding around the container changed
 rather than abs-butler itself, and a release that needs it says so. See
 [Updating](docs/docker.md#updating). Read it before you run it — it is one file, and it
