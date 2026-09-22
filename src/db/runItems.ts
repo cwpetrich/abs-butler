@@ -159,6 +159,8 @@ export interface RunItemQuery {
   /** Restrict to items carrying this code. */
   code?: string;
   status?: RunItemStatus;
+  /** Restrict to items whose title, author or path contains this text. */
+  search?: string;
   limit?: number;
   offset?: number;
 }
@@ -173,6 +175,15 @@ function where(query: RunItemQuery): { clause: string; params: Array<string | nu
   if (query.status) {
     clause += ' AND status = ?';
     params.push(query.status);
+  }
+  const search = query.search?.trim();
+  if (search) {
+    // Escaped so that a title with a % or _ in it is searched for as written
+    // rather than read as a wildcard. LIKE is case-insensitive for ASCII,
+    // which is what a search box is expected to be.
+    const pattern = `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    clause += " AND (title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\')";
+    params.push(pattern, pattern, pattern);
   }
   return { clause, params };
 }

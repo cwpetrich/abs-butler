@@ -289,7 +289,13 @@ export const api = {
   /** Run detail: every item the run looked at, and what it had to say about each. */
   runItems: (
     id: number,
-    params: { code?: string; status?: RunItemStatus; limit?: number; offset?: number } = {},
+    params: {
+      code?: string;
+      status?: RunItemStatus;
+      search?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
   ) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {

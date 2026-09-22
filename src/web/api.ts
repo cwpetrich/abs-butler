@@ -369,9 +369,11 @@ export function buildApiRouter(deps: ApiDeps): Router {
     const runId = numericParam(ctx, 'id');
     const code = ctx.url.searchParams.get('code');
     const status = ctx.url.searchParams.get('status');
+    const search = ctx.url.searchParams.get('search');
     const query = {
       runId,
       ...(code ? { code } : {}),
+      ...(search ? { search } : {}),
       ...(status === 'action' || status === 'clean' || status === 'skipped'
         ? { status: status as RunItemStatus }
         : {}),
