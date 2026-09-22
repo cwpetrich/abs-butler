@@ -160,6 +160,47 @@ docker compose up -d
 That is the whole update, and it is what AudiobookShelf asks of you too: the image tag is
 `:latest`, so pulling and recreating is a new version. `./data` is a bind mount and is not touched.
 
+#### Automatically
+
+The installer can schedule that update for you. It is off unless you ask — an interactive install
+asks once, and the answer is kept in `.env` as `BUTLER_AUTO_UPDATE`:
+
+```bash
+sh install.sh --auto-update --dir /opt/abs-butler      # turn it on
+sh install.sh --no-auto-update --dir /opt/abs-butler   # and off again
+```
+
+Run from the installer image, `--auto-update` writes `update.sh` and prints the one line to
+schedule, rather than scheduling it: a container has no way to create a task on the host, and a job
+somebody believes in but does not have is worse than none. The job it prints runs `update.sh`
+through the installer image, so Windows can run it too:
+
+```powershell
+docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer repair --auto-update
+schtasks /create /tn abs-butler-update /sc daily /st 04:00 /tr "docker run --rm --pull always -v /var/run/docker.sock:/var/run/docker.sock -v \"C:\abs-butler:/install\" ghcr.io/cwpetrich/abs-butler-installer auto-update"
+```
+
+This keeps the rule above: the job runs on the host, as whoever ran `install.sh`, and abs-butler
+itself still never touches the Docker socket. It writes `update.sh` beside `.env` and runs it
+nightly — from a systemd timer between 04:00 and 05:00 when installed as root
+(`journalctl -u abs-butler-update`), otherwise from a crontab line or scheduled task (logged to
+`update.log`). Each night it:
+
+- pulls `BUTLER_IMAGE`, and stops there if the running container already has it;
+- leaves a container you stopped stopped;
+- waits until the next night if a run is queued or in progress, rather than cutting it off;
+- recreates the container, and if the new one does not become healthy within two minutes, puts the
+  previous image back and restarts on that.
+
+It only ever pulls the image — never `install.sh` or `docker-compose.yml`, which are fetched from
+`main` rather than from a release. A release that needs `--update` still says so in the sidebar.
+
+To take only patch releases, pin the minor version in `.env`, e.g.
+`BUTLER_IMAGE=ghcr.io/cwpetrich/abs-butler:0.13`. Run `./update.sh` by hand to update right away.
+On macOS, cron may need Full Disk Access to reach an install under your home folder.
+
+#### What install.sh is for
+
 `install.sh` is not involved, because a new version of abs-butler does not need it. It is needed
 only when the scaffolding around the container changes — a new key in `.env`, or a fix to
 `docker-compose.yml` — and a release that needs it says so:
