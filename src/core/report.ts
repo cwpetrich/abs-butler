@@ -19,6 +19,7 @@ export const RUN_ITEM_LABELS: Record<RunCommand, Record<RunItemStatus, string>> 
   metadata: { action: 'Gaps to fill', clean: 'Nothing missing', skipped: 'Skipped' },
   normalize: { action: 'Corrections', clean: 'Already agrees', skipped: 'Held back' },
   organize: { action: 'Moves', clean: 'Already in place', skipped: 'Left alone' },
+  repair: { action: 'Repairs', clean: 'Tracks all on disk', skipped: 'Left alone' },
 };
 
 /** Where the book is, as ABS reports it — what someone needs to go and look. */

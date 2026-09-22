@@ -60,9 +60,10 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
         <div className="card">
           <h2>File changes</h2>
           <p className="hint">
-            Only <span className="mono">organize</span> touches the filesystem. Audit, rate,
-            metadata and normalize work purely over the AudiobookShelf API and are unaffected by
-            this.
+            <span className="mono">organize</span> moves files, and{' '}
+            <span className="mono">repair</span> may update one file's modified time — the gentlest
+            way to mend a one-file book. Audit, rate, metadata and normalize work purely over the
+            AudiobookShelf API and are unaffected by this.
           </p>
 
           <label className="checkbox">
@@ -135,6 +136,39 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
             <p className="hint">
               normalize can still show every change it would make — applying one is what gets
               refused, whether it comes from here, the CLI, or a schedule.
+            </p>
+          )}
+        </div>
+
+        <div className="card">
+          <h2>Track repair</h2>
+          <p className="hint">
+            <span className="mono">repair</span> removes audio records whose files are gone — left
+            behind when a library moves to new storage, they make every book list each file twice and
+            play at double length. It rewrites the track list and rescans the item; it never changes
+            what is in a file.
+          </p>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={form.allowTrackRepair}
+              onChange={(e) => set('allowTrackRepair', e.target.checked)}
+            />
+            Allow track repair
+          </label>
+
+          {form.allowTrackRepair ? (
+            <Banner tone="warn">
+              repair can now rewrite track lists when applied. A book with more than one file is
+              mended over the API alone. A one-file book has one of its files touched when file
+              changes are allowed, and otherwise has its track list emptied and rebuilt by a rescan.
+              Every repair can be put back with revert.
+            </Banner>
+          ) : (
+            <p className="hint">
+              repair can still find every damaged book and show how it would mend each — applying
+              is what gets refused, whether it comes from here, the CLI, or a schedule.
             </p>
           )}
         </div>

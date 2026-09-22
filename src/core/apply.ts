@@ -22,6 +22,15 @@ import {
 } from './organize.js';
 import type { ItemPlan } from './plans.js';
 import { brief, itemPath, plural, reportItems } from './report.js';
+import {
+  assessItem,
+  describeDamage,
+  repairItem,
+  touchAccess,
+  TRACK_REPAIR_DISABLED,
+  type Assessment,
+  type TouchAccess,
+} from './repair.js';
 import { applyPatch } from './revisions.js';
 
 /**
@@ -80,7 +89,10 @@ export interface ApplyTaskResult {
   itemsHeldBack: number;
   /** Books no longer on the server, or files no longer where they were. */
   missing: number;
-  /** Moves the filesystem refused — a destination that now exists, usually. */
+  /**
+   * Moves the filesystem refused — a destination that now exists, usually — or
+   * repairs that did not take.
+   */
   blocked: number;
   stopped: boolean;
   /** Books it never got to, because it was stopped. */
@@ -91,8 +103,8 @@ export interface ApplyTaskResult {
 }
 
 export const NOTHING_TO_APPLY =
-  'That run has nothing left to carry out. Only a dry run of rate, metadata, normalize or ' +
-  'organize keeps its decisions — an audit has none to keep, and anything a run already wrote ' +
+  'That run has nothing left to carry out. Only a dry run of rate, metadata, normalize, ' +
+  'organize or repair keeps its decisions — an audit has none to keep, and anything a run already wrote ' +
   'is done. Detail is kept for the ten most recent runs, so an older run has had its plans ' +
   'pruned along with the rest of its per-book report.';
 
@@ -100,6 +112,7 @@ export const NOTHING_TO_APPLY =
 type Outcome = { held?: number } & (
   | { act: 'write'; patch: AbsMediaPatch; lines: string[]; codes: string[] }
   | { act: 'move'; move: MovePlan; lines: string[] }
+  | { act: 'repair'; assessment: Assessment; lines: string[] }
   | { act: 'none'; status: 'clean' | 'skipped'; code: string; lines: string[]; keep: boolean }
 );
 
@@ -139,6 +152,11 @@ export async function runApplyTask(
     const local = checkLocalRoot(ctx.connection);
     if (!local.canManageFiles) throw new Error(unavailableMessage(local.reason));
   }
+
+  if (command === 'repair' && options.apply && !ctx.settings.allowTrackRepair) {
+    throw new Error(TRACK_REPAIR_DISABLED);
+  }
+  const access: TouchAccess | null = command === 'repair' ? touchAccess(ctx) : null;
 
   const mayReplace = ctx.settings.allowMetadataRewrite;
 
@@ -244,7 +262,10 @@ export async function runApplyTask(
       report.push({
         ...identity,
         status: 'action',
-        codes: outcome.act === 'move' ? ['planned'] : outcome.codes,
+        codes:
+          outcome.act === 'move' || outcome.act === 'repair'
+            ? ['planned']
+            : outcome.codes,
         detail: outcome.lines,
         plan: row.plan,
       });
@@ -279,6 +300,23 @@ export async function runApplyTask(
         plan: null,
       });
       log.debug(`moved ${outcome.move.from} -> ${outcome.move.to}`);
+      continue;
+    }
+
+    if (outcome.act === 'repair') {
+      const result = await repairItem(ctx, item, outcome.assessment, access!);
+      // Settled either way: a failed repair has an undo record, and trying
+      // again blindly is not what somebody reading the failure would want.
+      settled.push(row.itemId);
+      if (result.ok) written += 1;
+      else blocked += 1;
+      report.push({
+        ...identity,
+        status: result.ok ? 'action' : 'skipped',
+        codes: result.codes,
+        detail: [...outcome.lines, ...result.lines],
+        plan: null,
+      });
       continue;
     }
 
@@ -377,7 +415,42 @@ function decide(
       return decideNormalize(plan.proposals, item, context);
     case 'organize':
       return decideOrganize(plan.move, item);
+    case 'repair':
+      return decideRepair(plan.dead, item);
   }
+}
+
+/**
+ * A repair is still the one that was judged only while the item has the same
+ * dead records. Any other set — some gone, new ones appeared — means the item
+ * has been rescanned or edited since, and its certainty has to be worked out
+ * again rather than borrowed.
+ */
+function decideRepair(dead: string[], item: AbsLibraryItem): Outcome {
+  const assessment = assessItem(item);
+  if (assessment.dead.length === 0) {
+    return {
+      act: 'none',
+      status: 'clean',
+      code: 'already-applied',
+      lines: ['Every audio record already points at a file on disk'],
+      keep: false,
+    };
+  }
+  const now = assessment.dead.map((record) => String(record.ino));
+  if (!sameSet(now, dead) || assessment.problem) {
+    return {
+      act: 'none',
+      status: 'skipped',
+      code: 'changed-since',
+      lines: [
+        assessment.problem ??
+          'Its dead records are not the ones the run found — re-run repair to judge it again',
+      ],
+      keep: false,
+    };
+  }
+  return { act: 'repair', assessment, lines: describeDamage(assessment) };
 }
 
 /**

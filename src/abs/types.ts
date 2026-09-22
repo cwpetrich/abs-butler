@@ -37,11 +37,50 @@ export interface AbsBookMetadata {
   abridged?: boolean;
 }
 
+/**
+ * One entry of `media.audioFiles` on an expanded item.
+ *
+ * Only the fields abs-butler reads are named, but the rest are kept rather than
+ * discarded: a repair records these objects whole, so a revert can hand them
+ * back to AudiobookShelf exactly as they were.
+ */
+export interface AbsAudioFile {
+  index: number;
+  ino: string;
+  duration: number;
+  exclude?: boolean;
+  metadata: { filename: string; path: string; relPath: string; size: number; ext?: string };
+  [key: string]: unknown;
+}
+
+export interface AbsChapter {
+  id: number;
+  start: number;
+  end: number;
+  title: string;
+}
+
+/**
+ * One entry of `libraryFiles` on an expanded item — the files AudiobookShelf
+ * found on disk at the last scan. `/api/items/:id/file/:ino` resolves against
+ * these, which is what makes an audio record whose inode is not among them
+ * unplayable.
+ */
+export interface AbsLibraryFile {
+  ino: string;
+  fileType?: string;
+  metadata: { filename: string; path: string; relPath: string; size: number };
+}
+
 export interface AbsMedia {
   id: string;
   metadata: AbsBookMetadata;
   coverPath: string | null;
   tags: string[];
+  /** Expanded items only. */
+  audioFiles?: AbsAudioFile[];
+  /** Expanded items only. */
+  chapters?: AbsChapter[];
   numTracks?: number;
   numAudioFiles?: number;
   /**
@@ -69,8 +108,19 @@ export interface AbsLibraryItem {
   numFiles?: number;
   size?: number;
   media: AbsMedia;
+  /** Expanded items only. */
+  libraryFiles?: AbsLibraryFile[];
   addedAt?: number;
   updatedAt?: number;
+}
+
+/** A saved listening position, as `/api/users/:id` returns it. */
+export interface AbsMediaProgress {
+  libraryItemId: string;
+  episodeId?: string | null;
+  duration: number;
+  currentTime: number;
+  isFinished: boolean;
 }
 
 export interface AbsLibraryFolder {
@@ -123,4 +173,14 @@ export interface AbsMediaPatch {
     series?: Array<{ id?: string; name: string; sequence?: string | null }>;
   };
   tags?: string[];
+  /**
+   * The whole track list and chapter list, replaced wholesale.
+   *
+   * ABS marks this part of the endpoint for removal, so it is used only where
+   * nothing else will do: by `revert`, to put back exactly the lists a `repair`
+   * changed, and by a repair's last resort, which empties the track list of a
+   * one-file book so a rescan rebuilds it. Accepted by 2.32 to 2.36.
+   */
+  audioFiles?: AbsAudioFile[];
+  chapters?: AbsChapter[];
 }

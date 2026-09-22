@@ -122,6 +122,8 @@ export interface ConfigureOptions {
   fileChanges?: string;
   /** 'on' or 'off'; undefined leaves the setting alone. */
   metadataRewrite?: string;
+  /** 'on' or 'off'; undefined leaves the setting alone. */
+  trackRepair?: string;
 }
 
 /** Shared parsing so both switches reject the same values the same way. */
@@ -140,7 +142,9 @@ export async function runConfigure(options: ConfigureOptions): Promise<void> {
   if (options.fileChanges !== undefined) {
     const allowFileChanges = parseSwitch('--file-changes', options.fileChanges);
     updateSettings(db, { allowFileChanges });
-    if (allowFileChanges) log.warn('File changes are ON: organize --apply can now move files.');
+    if (allowFileChanges) {
+      log.warn('File changes are ON: organize --apply can now move files, and repair can touch one to mend a one-file book.');
+    }
     else log.success('File changes are OFF: organize --apply will be refused.');
   }
 
@@ -151,6 +155,16 @@ export async function runConfigure(options: ConfigureOptions): Promise<void> {
       log.warn('Metadata rewrite is ON: normalize --apply can now replace titles and names.');
     } else {
       log.success('Metadata rewrite is OFF: normalize --apply will be refused.');
+    }
+  }
+
+  if (options.trackRepair !== undefined) {
+    const allowTrackRepair = parseSwitch('--track-repair', options.trackRepair);
+    updateSettings(db, { allowTrackRepair });
+    if (allowTrackRepair) {
+      log.warn('Track repair is ON: repair --apply can now rewrite track lists and rescan items.');
+    } else {
+      log.success('Track repair is OFF: repair --apply will be refused.');
     }
   }
 
@@ -210,7 +224,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
     const capability = assessCapability(connection, libraries);
     const discovery = await discoverFromServer(client, libraries, connection).catch(() => null);
 
-    const { allowFileChanges, allowMetadataRewrite } = getSettings(db);
+    const { allowFileChanges, allowMetadataRewrite, allowTrackRepair } = getSettings(db);
 
     if (options.json) {
       printJson({
@@ -219,6 +233,7 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
         libraries: libraries.length,
         allowFileChanges,
         allowMetadataRewrite,
+        allowTrackRepair,
         capability,
         discovery,
       });
@@ -237,6 +252,9 @@ export async function runStatus(options: { json?: boolean } = {}): Promise<void>
 
     if (allowMetadataRewrite) log.warn('metadata rewrite: allowed — normalize --apply will replace names');
     else log.info('metadata rewrite: off — normalize can plan but not apply (configure --metadata-rewrite on)');
+
+    if (allowTrackRepair) log.warn('track repair: allowed — repair --apply will rewrite track lists');
+    else log.info('track repair: off — repair can find damage but not mend it (configure --track-repair on)');
 
     if (capability.libraries.length > 0) {
       printTable(capability.libraries, [

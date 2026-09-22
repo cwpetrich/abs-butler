@@ -205,7 +205,9 @@ function NewRunForm({
     isFileCommand(command) && settings.data?.settings.allowFileChanges === false;
   const rewriteBlocked =
     command === 'normalize' && settings.data?.settings.allowMetadataRewrite === false;
-  const writesBlocked = fileWritesBlocked || rewriteBlocked;
+  const repairBlocked =
+    command === 'repair' && settings.data?.settings.allowTrackRepair === false;
+  const writesBlocked = fileWritesBlocked || rewriteBlocked || repairBlocked;
 
   // A mount can disappear while this form is open; a now-impossible command
   // must not stay selected in a form that still looks ready to submit.
@@ -320,6 +322,13 @@ function NewRunForm({
         </Banner>
       )}
 
+      {repairBlocked && (
+        <Banner tone="warn">
+          Track repair is turned off, so repair can find damaged books but not mend them. Turn on
+          "Allow track repair" in Settings to apply a plan.
+        </Banner>
+      )}
+
       <div className="actions" style={{ marginBottom: 12 }}>
         <label className="checkbox" style={{ marginBottom: 0 }}>
           <input
@@ -365,7 +374,8 @@ function NewRunForm({
         <Banner tone="warn">
           This will write to AudiobookShelf
           {command === 'organize' ? ' and move files on disk' : ''}
-          {command === 'normalize' ? ', replacing titles and names that already have a value' : ''}.
+          {command === 'normalize' ? ', replacing titles and names that already have a value' : ''}
+          {command === 'repair' ? ', rewriting track lists and rescanning each damaged book' : ''}.
           Run it as a dry run first.
         </Banner>
       )}

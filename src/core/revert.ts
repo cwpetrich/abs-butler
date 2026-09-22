@@ -1,4 +1,4 @@
-import type { AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
+import type { AbsChapter, AbsLibraryItem, AbsMediaPatch } from '../abs/types.js';
 import type { TaskContext } from '../context.js';
 import { getRun } from '../db/runs.js';
 import { listRevisions, markReverted, type RevisionRecord } from '../db/revisions.js';
@@ -47,6 +47,8 @@ export const NOTHING_TO_REVERT =
 export function patchFields(patch: AbsMediaPatch): string[] {
   const fields = Object.keys(patch.metadata ?? {});
   if (patch.tags) fields.push('tags');
+  if (patch.audioFiles) fields.push('tracks');
+  if (patch.chapters) fields.push('chapters');
   return fields;
 }
 
@@ -67,6 +69,21 @@ export function changedSince(item: AbsLibraryItem, after: AbsMediaPatch): string
 
   if (after.tags && !sameSet(item.media?.tags ?? [], after.tags)) {
     return 'tags have changed since the run';
+  }
+
+  // A repair's lists, compared by what identifies them rather than whole: a
+  // track is its inode, and a rescan rewrites every other field on it.
+  if (
+    after.audioFiles &&
+    !sameSet(
+      (item.media?.audioFiles ?? []).map((file) => file.ino),
+      after.audioFiles.map((file) => file.ino),
+    )
+  ) {
+    return 'the track list has changed since the run';
+  }
+  if (after.chapters && !sameChapters(item.media?.chapters ?? [], after.chapters)) {
+    return 'chapters have changed since the run';
   }
   return null;
 }
@@ -96,6 +113,13 @@ function sameValue(current: unknown, written: unknown): boolean {
     return sameSet(current as string[], normalized);
   }
   return (current ?? null) === (written ?? null);
+}
+
+function sameChapters(a: AbsChapter[], b: AbsChapter[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((c, i) => c.start === b[i]!.start && c.end === b[i]!.end && c.title === b[i]!.title)
+  );
 }
 
 function sameSet(a: string[], b: string[]): boolean {

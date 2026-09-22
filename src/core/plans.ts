@@ -22,7 +22,13 @@ export type ItemPlan =
   | { kind: 'rate'; added: string[]; removed: string[] }
   | { kind: 'metadata'; changes: FieldChange[] }
   | { kind: 'normalize'; proposals: FieldProposal[] }
-  | { kind: 'organize'; move: MovePlan };
+  | { kind: 'organize'; move: MovePlan }
+  /**
+   * The dead records a repair found, by inode, and the live ones it expects to
+   * keep. Re-checked against the item before anything is written: a different
+   * set of dead records means the item is no longer the one that was judged.
+   */
+  | { kind: 'repair'; dead: string[]; live: string[]; durationBefore: number; durationAfter: number };
 
 export type PlanKind = ItemPlan['kind'];
 
@@ -36,6 +42,7 @@ export const PLAN_COMMANDS: ReadonlySet<RunCommand> = new Set<RunCommand>([
   'metadata',
   'normalize',
   'organize',
+  'repair',
 ]);
 
 export function planKindFor(command: RunCommand): PlanKind | null {
@@ -63,6 +70,11 @@ export function isItemPlan(value: unknown): value is ItemPlan {
       return Array.isArray((plan as ItemPlan & { kind: 'normalize' }).proposals);
     case 'organize':
       return Boolean((plan as ItemPlan & { kind: 'organize' }).move);
+    case 'repair':
+      return (
+        Array.isArray((plan as ItemPlan & { kind: 'repair' }).dead) &&
+        Array.isArray((plan as ItemPlan & { kind: 'repair' }).live)
+      );
     default:
       return false;
   }
