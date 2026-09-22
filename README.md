@@ -576,6 +576,12 @@ included. So a repair removes the dead records and then gives a rescan a reason 
   (nothing in it is changed), so the rescan sees a change.
 - **A one-file book otherwise** — its track list is emptied and the rescan rebuilds it from the
   file. It has no tracks for the moment the rescan takes.
+- **A single file at the library root** (a bare `Book.m4b` rather than a folder) — AudiobookShelf
+  refuses to rescan one of these on its own, so its dead records are removed, its file is touched,
+  and the whole library is scanned: a library scan rescans an item whose file changed. Every such
+  book in a run shares one scan, and the run waits for it to finish. This needs **Allow file
+  changes** and the library mounted where abs-butler can reach it; without them these books are
+  reported with what to turn on, and a report applied later keeps them waiting until it is.
 
 Chapters that still run past the new end are trimmed. Every repair is checked afterwards — no dead
 records left, every live track back, and the length the tracks add up to — and one that did not take
