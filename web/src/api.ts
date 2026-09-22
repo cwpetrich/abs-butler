@@ -44,7 +44,7 @@ export interface SecurityStatus {
   apiKeyEncrypted: boolean;
 }
 
-export type RunCommand = 'audit' | 'rate' | 'metadata' | 'normalize' | 'organize';
+export type RunCommand = 'audit' | 'rate' | 'metadata' | 'normalize' | 'organize' | 'repair';
 export type RunStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
 
 export interface RevertResult {
@@ -182,6 +182,7 @@ export interface Settings {
   logRetentionDays: number;
   allowFileChanges: boolean;
   allowMetadataRewrite: boolean;
+  allowTrackRepair: boolean;
   crossFormatDuplicates: boolean;
   organizeTemplate: string;
   googleBooksApiKeySet: boolean;

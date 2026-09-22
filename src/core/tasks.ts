@@ -6,6 +6,7 @@ import { runMetadataTask, type MetadataTaskResult } from './metadata.js';
 import { runNormalizeTask, type NormalizeTaskResult } from './normalize.js';
 import { runOrganizeTask, type OrganizeTaskResult } from './organize.js';
 import { runRateTask, type RateTaskResult } from './rate.js';
+import { runRepairTask, type RepairTaskResult } from './repair.js';
 
 export type TaskResult =
   | ApplyTaskResult
@@ -13,9 +14,10 @@ export type TaskResult =
   | RateTaskResult
   | MetadataTaskResult
   | NormalizeTaskResult
-  | OrganizeTaskResult;
+  | OrganizeTaskResult
+  | RepairTaskResult;
 
-export const COMMANDS: RunCommand[] = ['audit', 'rate', 'metadata', 'normalize', 'organize'];
+export const COMMANDS: RunCommand[] = ['audit', 'rate', 'metadata', 'normalize', 'organize', 'repair'];
 
 /** Commands that need the media mounted on this machine. */
 export const FILE_COMMANDS: ReadonlySet<RunCommand> = new Set<RunCommand>(['organize']);
@@ -26,6 +28,7 @@ export const MUTATING_COMMANDS: ReadonlySet<RunCommand> = new Set<RunCommand>([
   'metadata',
   'normalize',
   'organize',
+  'repair',
 ]);
 
 export function isRunCommand(value: string): value is RunCommand {
@@ -65,6 +68,8 @@ export async function runTask(
       return runNormalizeTask(ctx, options);
     case 'organize':
       return runOrganizeTask(ctx, options);
+    case 'repair':
+      return runRepairTask(ctx, options);
   }
 }
 
@@ -175,6 +180,23 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         applied: r.applied,
         rescanned: r.rescanned,
         canManageFiles: r.capability.canManageFiles,
+      };
+    }
+    case 'repair': {
+      const r = result as RepairTaskResult;
+      return {
+        scanned: r.scanned,
+        affected: r.affected,
+        repairable: r.repairable,
+        ambiguous: r.ambiguous,
+        repaired: r.repaired,
+        failed: r.failed,
+        applied: r.applied,
+        methods: r.methods,
+        doubledProgress: r.doubledProgress,
+        syntheticInodes: r.syntheticInodes,
+        stopped: r.stopped,
+        notReached: r.notReached,
       };
     }
   }

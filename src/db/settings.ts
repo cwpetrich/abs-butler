@@ -49,6 +49,15 @@ export const SettingsSchema = z.object({
    * they chose rather than something a default allowed. Off on a fresh install.
    */
   allowMetadataRewrite: z.boolean().default(false),
+  /**
+   * Master switch for `repair --apply`, which rewrites an item's track list and
+   * rescans it to remove audio records whose files are gone.
+   *
+   * No file's contents are changed, but what AudiobookShelf plays is, and the
+   * last-resort method leaves an item briefly without tracks. Off on a fresh
+   * install, like the other two switches.
+   */
+  allowTrackRepair: z.boolean().default(false),
   /** Runs kept in history; older ones are pruned. */
   historyLimit: z.number().int().min(10).max(10_000).default(500),
   /** Days of log retention. */

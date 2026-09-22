@@ -11,6 +11,7 @@ import { runNormalize, NORMALIZE_FIELDS } from './commands/normalize.js';
 import { runOrganize } from './commands/organize.js';
 import { runRevert, runRunsList } from './commands/revert.js';
 import { runRate } from './commands/rate.js';
+import { runRepair } from './commands/repair.js';
 import {
   runConfigure,
   runConnect,
@@ -72,6 +73,7 @@ program
   .option('--path-prefix <path>')
   .option('--file-changes <on|off>', 'allow or refuse organize --apply on this install')
   .option('--metadata-rewrite <on|off>', 'allow or refuse normalize --apply on this install')
+  .option('--track-repair <on|off>', 'allow or refuse repair --apply on this install')
   .action(async (opts) => runConfigure(opts));
 
 program
@@ -169,6 +171,16 @@ program
   .option('--no-scan', 'skip the library rescan after moving')
   .option('--limit <n>', 'stop after N items', Number)
   .action(async (opts) => runOrganize({ ...globals(), ...opts, noScan: opts.scan === false }));
+
+program
+  .command('repair')
+  .description('Remove audio records whose files are gone, so each book plays at its real length')
+  .option('--apply', 'repair the items (default is a dry run)')
+  .option('--json', 'emit JSON instead of a table')
+  .option('--details', 'list every item the run looked at, with what it had to say about each')
+  .option('--only-changed', 'with --details, leave out the items it had nothing to do to')
+  .option('--limit <n>', 'stop after N items', Number)
+  .action(async (opts) => runRepair({ ...globals(), ...opts }));
 
 program
   .command('runs')

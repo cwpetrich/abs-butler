@@ -51,8 +51,8 @@ export interface RevisionInput {
   after: AbsMediaPatch;
 }
 
-export function recordRevision(db: Db, input: RevisionInput): void {
-  db.prepare(
+export function recordRevision(db: Db, input: RevisionInput): number {
+  const result = db.prepare(
     `INSERT INTO revisions (run_id, item_id, title, before, after, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(
@@ -63,6 +63,20 @@ export function recordRevision(db: Db, input: RevisionInput): void {
     JSON.stringify(input.after),
     Date.now(),
   );
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Settles what a write left behind, once it is known.
+ *
+ * A patch knows its result before it is sent. A repair does not: its last step
+ * is a rescan, and the track and chapter lists that come out of it are
+ * AudiobookShelf's to decide. The revision is still recorded before the first
+ * write, as every revision is, and completed here afterwards — so `revert` can
+ * tell whether the item has been touched since.
+ */
+export function updateRevisionAfter(db: Db, revisionId: number, after: AbsMediaPatch): void {
+  db.prepare('UPDATE revisions SET after = ? WHERE id = ?').run(JSON.stringify(after), revisionId);
 }
 
 /** Everything a run changed, oldest first. */

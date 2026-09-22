@@ -1,8 +1,10 @@
 import { log } from '../logger.js';
 import type {
+  AbsChapter,
   AbsLibrary,
   AbsLibraryItem,
   AbsMediaPatch,
+  AbsMediaProgress,
   AbsPage,
 } from './types.js';
 
@@ -27,10 +29,11 @@ export interface AbsClientOptions {
 /**
  * Thin client over the AudiobookShelf HTTP API.
  *
- * All writes go through `patchItemMedia` / `scanLibrary`, which are the only
- * mutating calls in this codebase — commands must not hand-roll fetches. The
- * one other POST is `login`, which touches no library data: it exchanges
- * credentials for the API token everything else runs on.
+ * All writes go through the methods here — commands must not hand-roll
+ * fetches. `patchItemMedia` and the scans serve every command; `updateTracks`
+ * and `updateChapters` exist for `repair` alone. The one other POST is
+ * `login`, which touches no library data: it exchanges credentials for the API
+ * token everything else runs on.
  */
 export class AbsClient {
   private readonly baseUrl: string;
@@ -193,6 +196,44 @@ export class AbsClient {
     await this.request('POST', `/api/libraries/${libraryId}/scan`, {
       query: options.force ? { force: 1 } : {},
     });
+  }
+
+  /**
+   * Rescans one item and waits for it, unlike a library scan. Admin only, and
+   * refused (500) for an item that is a bare file rather than a folder.
+   *
+   * Returns ABS's verdict — UPDATED, UPTODATE, REMOVED — for the log.
+   */
+  async scanItem(itemId: string): Promise<string> {
+    const res = await this.request<{ result?: string }>('POST', `/api/items/${itemId}/scan`);
+    return res?.result ?? '';
+  }
+
+  /**
+   * The endpoint behind "Manage tracks". Whatever list is sent *becomes* the
+   * track list: an entry left out is dropped from the item, not excluded.
+   */
+  async updateTracks(
+    itemId: string,
+    orderedFileData: Array<{ ino: string; exclude?: boolean }>,
+  ): Promise<void> {
+    await this.request('PATCH', `/api/items/${itemId}/tracks`, { body: { orderedFileData } });
+  }
+
+  async updateChapters(itemId: string, chapters: AbsChapter[]): Promise<void> {
+    await this.request('POST', `/api/items/${itemId}/chapters`, { body: { chapters } });
+  }
+
+  /** Every user, without their progress — see `getUserProgress`. Admin only. */
+  async listUsers(): Promise<Array<{ id: string; username: string }>> {
+    const res = await this.request<{ users?: Array<{ id: string; username: string }> }>('GET', '/api/users');
+    return res?.users ?? [];
+  }
+
+  /** One user's saved listening positions. Admin only. */
+  async getUserProgress(userId: string): Promise<AbsMediaProgress[]> {
+    const res = await this.request<{ mediaProgress?: AbsMediaProgress[] }>('GET', `/api/users/${userId}`);
+    return res?.mediaProgress ?? [];
   }
 }
 
