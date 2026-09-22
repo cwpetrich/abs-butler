@@ -69,7 +69,7 @@ export function toLocalPath(absPath: string, config: PathConfig): string | null 
  * #recycle bin) do not count, so a share that is empty apart from those still
  * reads as the empty mount it is.
  */
-function isEmptyLibrary(path: string): boolean {
+export function isEmptyLibrary(path: string): boolean {
   try {
     const dir = opendirSync(path);
     try {

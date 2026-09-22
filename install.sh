@@ -10,6 +10,11 @@
 #   ./install.sh                                  # asks where the library is
 #   ./install.sh --library /srv/audiobooks        # or say so up front
 #   ./install.sh --nfs 192.168.1.10:/volume1/audiobooks
+#   ./install.sh --repair                         # check an install and fix it
+#
+# It also runs as a container, which is how it runs on Windows -- see
+# installer/Dockerfile. Everything below works the same either way: what it
+# needs to know about the host it asks Docker, not the filesystem.
 #
 # Everything else has a working default. Run with --dry-run to see what it
 # would write without touching anything.
@@ -37,6 +42,7 @@ image=""
 assume_yes=0
 dry_run=0
 abs_url=""
+abs_container=""
 abs_username=""
 abs_password=""
 abs_network=""
@@ -45,6 +51,13 @@ no_discover=0
 setup_code=""
 remote=0
 do_update=0
+repair=0
+library_changed=0
+library_volume=""
+library_target=""
+# Set by installer/entrypoint.sh: this script is in a container, with the host's
+# Docker behind the socket. Host paths are then only Docker's to look at.
+in_container="${ABS_BUTLER_IN_CONTAINER:-0}"
 
 say()  { printf '%s\n' "$*"; }
 note() { printf 'abs-butler: %s\n' "$*"; }
@@ -63,9 +76,16 @@ Where the audiobooks are (pick one; asked for if omitted):
                         NAS share is just a path — use this for it.
   --nfs HOST:/EXPORT    An NFS export, mounted by Docker itself. Use this only
                         when the share is not already mounted on the host.
+  --library-volume NAME[:/PATH]
+                        A Docker volume that already holds the library -- the
+                        one AudiobookShelf mounts, typically. Mounted at PATH
+                        (default /audiobooks). Found by itself when
+                        AudiobookShelf runs in Docker on this machine.
 
 Connecting to AudiobookShelf (all optional — it looks for it by itself):
   --abs-url URL         Skip discovery and use this URL
+  --abs-container NAME  The AudiobookShelf container to use, when there are
+                        several on this machine
   --abs-username NAME   Admin username, to connect during install
   --abs-password PW     Admin password; prompted for if a username is given
   --no-discover         Do not look for a running AudiobookShelf at all
@@ -85,6 +105,11 @@ Options:
                         AudiobookShelf able to read its own library.
   --image REF           Container image (default: $IMAGE_DEFAULT)
   -y, --yes             Do not prompt; fail instead if something is missing
+  --repair              Check an existing install end to end and fix what it
+                        can: everything --update does, and then look for
+                        AudiobookShelf again, compare its library with the one
+                        mounted here, and confirm the container can see books.
+                        Offers each change rather than making it.
   --update              Bring an existing install up to date: refresh the
                         compose file, pull the current image, restart, and
                         report anything that needs a decision. Changes no
@@ -156,9 +181,10 @@ self_update() {
 }
 
 su_self=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")
-if [ "${ABS_BUTLER_SELF_UPDATED:-0}" != "1" ] && [ -f "$su_self" ]; then
+# In a container the image is the update: there is no copy on disk to replace.
+if [ "$in_container" != "1" ] && [ "${ABS_BUTLER_SELF_UPDATED:-0}" != "1" ] && [ -f "$su_self" ]; then
   for su_arg in "$@"; do
-    if [ "$su_arg" = "--update" ]; then
+    if [ "$su_arg" = "--update" ] || [ "$su_arg" = "--repair" ]; then
       self_update "$@" || true
       break
     fi
@@ -185,12 +211,17 @@ while [ $# -gt 0 ]; do
     --image=*) image="${1#*=}"; shift ;;
     --abs-url) [ $# -ge 2 ] || usage_error "--abs-url needs a URL"; abs_url="$2"; shift 2 ;;
     --abs-url=*) abs_url="${1#*=}"; shift ;;
+    --abs-container) [ $# -ge 2 ] || usage_error "--abs-container needs a name"; abs_container="$2"; shift 2 ;;
+    --abs-container=*) abs_container="${1#*=}"; shift ;;
     --abs-username) [ $# -ge 2 ] || usage_error "--abs-username needs a name"; abs_username="$2"; shift 2 ;;
     --abs-username=*) abs_username="${1#*=}"; shift ;;
     --abs-password) [ $# -ge 2 ] || usage_error "--abs-password needs a password"; abs_password="$2"; shift 2 ;;
     --abs-password=*) abs_password="${1#*=}"; shift ;;
     --no-discover) no_discover=1; shift ;;
     --update) do_update=1; no_discover=1; shift ;;
+    --repair) repair=1; do_update=1; shift ;;
+    --library-volume) [ $# -ge 2 ] || usage_error "--library-volume needs a volume name"; library_volume="$2"; shift 2 ;;
+    --library-volume=*) library_volume="${1#*=}"; shift ;;
     --remote) remote=1; shift ;;                       # kept: it was the old spelling of the default
     --local) bind="127.0.0.1"; shift ;;
     --setup-code) [ $# -ge 2 ] || usage_error "--setup-code needs a value"; setup_code="$2"; shift 2 ;;
@@ -201,6 +232,12 @@ while [ $# -gt 0 ]; do
     *) usage_error "unknown option '$1'" ;;
   esac
 done
+
+# Repairing starts by looking again, whatever --update implies.
+[ "$repair" -eq 1 ] && no_discover=0
+case "$library_volume" in
+  *:/*) library_target="${library_volume#*:}"; library_volume="${library_volume%%:*}" ;;
+esac
 
 interactive() { [ "$assume_yes" -eq 0 ] && [ -t 0 ]; }
 
@@ -256,34 +293,48 @@ is_library_mount() {
   esac
 }
 
+# A published port is on the host, which a container reaches by another name.
+if [ "$in_container" = "1" ]; then probe_host="host.docker.internal"; else probe_host="127.0.0.1"; fi
+
 abs_version_at() {
   curl -s --max-time 3 "http://$1/status" 2>/dev/null \
     | sed -n 's/.*"app":"audiobookshelf".*"serverVersion":"\([^"]*\)".*/\1/p' | head -1
 }
 
 # One tab-separated candidate per line:
-#   name  network  internal_port  host_endpoint  lib_source  lib_dest  version
+#   name  network  internal_port  host_endpoint  lib_type  lib_source  lib_dest  version
+#
+# lib_type is bind or volume. For a volume, lib_source is its name: the path
+# Docker reports for one is inside Docker's own storage, and means nothing to
+# anybody -- it is the volume that can be mounted again, not the path.
 discover_candidates() {
-  docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null \
-    | grep -i 'audiobookshelf' | cut -f1 | while read -r c; do
+  if [ -n "$abs_container" ]; then
+    printf '%s\n' "$abs_container"
+  else
+    docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null | grep -i 'audiobookshelf' | cut -f1
+  fi | while read -r c; do
       [ -n "$c" ] || continue
       dc_net=$(docker inspect "$c" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}')
       dc_iport=$(docker inspect "$c" --format '{{range $p,$conf := .NetworkSettings.Ports}}{{$p}} {{end}}' 2>/dev/null | awk '{print $1}' | cut -d/ -f1)
       dc_hend=$(docker inspect "$c" --format '{{range $p,$conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}' 2>/dev/null | awk '{print $1}')
-      dc_src=""; dc_dst=""
+      dc_type=""; dc_src=""; dc_dst=""
       # shellcheck disable=SC2016
-      docker inspect "$c" --format '{{range .Mounts}}{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' 2>/dev/null > "$TMPDIR_ABS/mounts.$$" || true
-      while IFS='|' read -r m_src m_dst; do
+      docker inspect "$c" --format '{{range .Mounts}}{{.Type}}|{{.Name}}|{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' 2>/dev/null > "$TMPDIR_ABS/mounts.$$" || true
+      while IFS='|' read -r m_type m_name m_src m_dst; do
         [ -n "$m_dst" ] || continue
-        if is_library_mount "$m_dst"; then dc_src="$m_src"; dc_dst="$m_dst"; break; fi
+        if is_library_mount "$m_dst"; then
+          dc_type="$m_type"; dc_dst="$m_dst"
+          if [ "$m_type" = "volume" ]; then dc_src="$m_name"; else dc_src="$m_src"; fi
+          break
+        fi
       done < "$TMPDIR_ABS/mounts.$$"
       rm -f "$TMPDIR_ABS/mounts.$$"
       dc_ver=""
       case "$dc_hend" in
-        *:*) dc_ver=$(abs_version_at "127.0.0.1:${dc_hend##*:}") ;;
+        *:*) dc_ver=$(abs_version_at "$probe_host:${dc_hend##*:}") ;;
       esac
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$c" "$dc_net" "${dc_iport:-80}" "$dc_hend" "$dc_src" "$dc_dst" "$dc_ver"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$c" "$dc_net" "${dc_iport:-80}" "$dc_hend" "$dc_type" "$dc_src" "$dc_dst" "$dc_ver"
     done
 }
 
@@ -291,9 +342,9 @@ discover_candidates() {
 # on the host still answers /status, it just has nothing to introspect.
 discover_bare() {
   for db_p in 13378 13379 8080; do
-    db_v=$(abs_version_at "127.0.0.1:$db_p")
-    [ -n "$db_v" ] && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "(not in a container)" "" "$db_p" "127.0.0.1:$db_p" "" "" "$db_v"
+    db_v=$(abs_version_at "$probe_host:$db_p")
+    [ -n "$db_v" ] && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "(not in a container)" "" "$db_p" "$probe_host:$db_p" "" "" "" "$db_v"
   done
 }
 
@@ -340,6 +391,12 @@ if [ -f "$install_dir/.env" ]; then
   [ -n "$puid" ]        || puid=$(env_value PUID)
   [ -n "$pgid" ]        || pgid=$(env_value PGID)
   [ -n "$library" ]     || library=$(env_value HOST_LIBRARY_PATH)
+  if [ -z "$library" ] && [ -z "$library_volume" ]; then
+    library_volume=$(env_value BUTLER_LIBRARY_VOLUME)
+    library_target=$(env_value BUTLER_LIBRARY_TARGET)
+  fi
+  project=$(env_value COMPOSE_PROJECT_NAME)
+  data_mode=$(env_value BUTLER_DATA)
   [ -n "$setup_code" ]  || setup_code=$(env_value BUTLER_SETUP_CODE)
   installed_version=$(env_value BUTLER_INSTALL_VERSION)
   # Absent means it predates the stamp, which is generation 1.
@@ -347,10 +404,12 @@ if [ -f "$install_dir/.env" ]; then
 else
   existing_env=0
   installed_version="$INSTALL_VERSION"
+  project=""
+  data_mode=""
 fi
 
-# Whatever is still unanswered falls back to the defaults.
-[ -n "$port" ] || port="13380"
+# Whatever is still unanswered falls back to the defaults -- the port once a
+# running install has had its say, below.
 [ -n "$image" ] || image="$IMAGE_DEFAULT"
 
 # ---- preflight -------------------------------------------------------------
@@ -361,7 +420,70 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed. See https://d
 docker compose version >/dev/null 2>&1 || die "'docker compose' (v2) is not available. The old 'docker-compose' script will not do."
 docker info >/dev/null 2>&1 || die "the Docker daemon is not reachable. Start it, or add your user to the 'docker' group."
 
+# ---- what is already running ------------------------------------------------
+#
+# The container is always called abs-butler, so there is only ever one, and a
+# second compose project would collide with it rather than replace it. Whatever
+# project it belongs to is therefore the one to keep -- including an install
+# made by hand from docker-compose.yml, which has no .env to say so, and whose
+# database is in that project's volume.
+existing_project=$(docker inspect abs-butler --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
+if [ -n "$existing_project" ]; then
+  project="$existing_project"
+elif [ -z "$project" ]; then
+  # What compose itself would call it, spelled out so that a run from inside a
+  # container, whose folder has another name, agrees with one from outside.
+  project=$(basename "$install_dir" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+  [ -n "$project" ] || project="abs-butler"
+fi
+# An install with no .env to go by is described by its container instead. Who
+# can reach it is the one thing that must not change on the way through: the
+# compose file publishes on loopback unless told otherwise, and a repair that
+# quietly put it on the network would be a repair nobody asked for.
+if [ "$existing_env" -eq 0 ] && [ -n "$existing_project" ]; then
+  note "found an abs-butler already running (compose project '$existing_project'); keeping its data and its address."
+  eb_binding=$(docker inspect abs-butler \
+    --format '{{range $p,$c := .HostConfig.PortBindings}}{{range $c}}{{.HostIp}} {{.HostPort}}{{end}}{{end}}' 2>/dev/null || true)
+  # shellcheck disable=SC2086
+  set -- $eb_binding
+  if [ $# -eq 2 ]; then
+    [ -n "$bind" ] || bind="$1"
+    [ -n "$port" ] || port="$2"
+  elif [ $# -eq 1 ]; then
+    # No address at all is every address.
+    [ -n "$bind" ] || bind="0.0.0.0"
+    [ -n "$port" ] || port="$1"
+  fi
+fi
+
+[ -n "$port" ] || port="13380"
 case "$port" in ''|*[!0-9]*) usage_error "--port must be a number (got '$port')" ;; esac
+
+# Where the database lives. A folder beside this file is the default, and what
+# an install from this script has always had. A named volume is kept where one
+# already holds a database -- a hand install -- and used on Windows, where
+# SQLite over Docker Desktop's file sharing is slow and its locking unreliable.
+data_volume="${project}_butler-data"
+if [ -z "$data_mode" ]; then
+  if [ -n "$(ls -A "$install_dir/data" 2>/dev/null)" ]; then
+    data_mode="folder"
+  elif docker volume inspect "$data_volume" >/dev/null 2>&1; then
+    data_mode="volume"
+  else
+    case "${ABS_BUTLER_HOST_DIR:-}" in
+      [A-Za-z]:*) data_mode="volume" ;;
+      *) data_mode="folder" ;;
+    esac
+  fi
+fi
+
+# What an install is found to be, and what was done about it. Printed at the end
+# of every run, which is the point of --repair.
+checks=""
+check_ok()  { checks="${checks}  ok   $*
+"; }
+check_bad() { checks="${checks}  FIX  $*
+"; }
 
 if [ -n "$library" ] && [ -n "$nfs" ]; then
   usage_error "--library and --nfs are two answers to the same question; pick one."
@@ -372,6 +494,10 @@ fi
 CANDIDATES="$TMPDIR_ABS/abs-candidates.$$"
 : > "$CANDIDATES"
 trap 'rm -f "$CANDIDATES"' EXIT INT TERM
+
+if [ -n "$abs_container" ] && ! docker inspect "$abs_container" >/dev/null 2>&1; then
+  die "there is no container called $abs_container."
+fi
 
 if [ "$no_discover" -eq 0 ] && [ -z "$nfs" ]; then
   discover_candidates > "$CANDIDATES" 2>/dev/null || true
@@ -385,11 +511,15 @@ if [ "$found" -gt 0 ]; then
   say "Found AudiobookShelf:"
   say ""
   i=0
-  while IFS="$(printf '\t')" read -r c_name c_net c_iport c_hend c_src c_dst c_ver; do
+  while IFS="$(printf '\t')" read -r c_name c_net c_iport c_hend c_type c_src c_dst c_ver; do
     i=$((i + 1))
     printf '  %d) %s%s\n' "$i" "$c_name" "${c_ver:+  (v$c_ver)}"
     [ -n "$c_hend" ] && printf '       reachable at %s\n' "$c_hend"
-    [ -n "$c_src" ] && printf '       library      %s\n' "$c_src"
+    if [ "$c_type" = "volume" ]; then
+      printf '       library      volume %s, which it sees at %s\n' "$c_src" "$c_dst"
+    elif [ -n "$c_src" ]; then
+      printf '       library      %s\n' "$c_src"
+    fi
   done < "$CANDIDATES"
   say ""
 
@@ -416,15 +546,54 @@ if [ -n "$chosen" ]; then
   d_net=$(printf '%s' "$chosen" | cut -f2)
   d_iport=$(printf '%s' "$chosen" | cut -f3)
   d_hend=$(printf '%s' "$chosen" | cut -f4)
-  d_src=$(printf '%s' "$chosen" | cut -f5)
-  d_dst=$(printf '%s' "$chosen" | cut -f6)
+  d_type=$(printf '%s' "$chosen" | cut -f5)
+  d_src=$(printf '%s' "$chosen" | cut -f6)
+  d_dst=$(printf '%s' "$chosen" | cut -f7)
 
-  [ -z "$library" ] && [ -n "$d_src" ] && library="$d_src"
+  if [ -n "$d_src" ] && [ -z "$nfs" ]; then
+    if [ "$d_type" = "volume" ]; then theirs="volume $d_src"; else theirs="$d_src"; fi
+    if [ -n "$library_volume" ]; then ours="volume $library_volume"; else ours="$library"; fi
+
+    adopt=0
+    if [ -z "$ours" ]; then
+      adopt=1
+    elif [ "$ours" != "$theirs" ]; then
+      # Kept unless somebody says otherwise: a library set by hand may be set
+      # that way on purpose. But a repair says so, because this is the commonest
+      # way an install ends up looking at the wrong folder.
+      if [ "$repair" -eq 1 ]; then
+        say ""
+        say "This install mounts:        $ours"
+        say "AudiobookShelf's library is: $theirs"
+        if confirm "Mount AudiobookShelf's library instead?"; then adopt=1; library_changed=1; fi
+      fi
+    else
+      check_ok "the library mounted here is the one AudiobookShelf uses ($theirs)"
+    fi
+
+    if [ "$adopt" -eq 1 ]; then
+      if [ "$d_type" = "volume" ]; then
+        # The same volume, at the same path AudiobookShelf sees it at: every
+        # path it reports is then a path here too, and there is no prefix to
+        # get wrong.
+        library_volume="$d_src"; library_target="$d_dst"; library=""
+      else
+        library="$d_src"; library_volume=""; library_target=""
+      fi
+      if [ "$repair" -eq 1 ]; then
+        library_changed=1
+        check_ok "now mounting AudiobookShelf's library ($theirs)"
+      fi
+    fi
+  fi
 
   # What AudiobookShelf reports for its own folders is the path inside its
   # container, which is only /audiobooks by coincidence. When it differs, that
-  # difference is the path prefix.
-  [ -n "$d_dst" ] && [ "$d_dst" != "/audiobooks" ] && path_prefix="$d_dst"
+  # difference is the path prefix. A volume mounted where ABS mounts it has
+  # none.
+  if [ -z "$library_volume" ] && [ -n "$d_dst" ] && [ "$d_dst" != "/audiobooks" ]; then
+    path_prefix="$d_dst"
+  fi
 
   if [ -z "$abs_url" ]; then
     if [ -n "$d_net" ]; then
@@ -441,7 +610,7 @@ if [ -n "$chosen" ]; then
   note "using $abs_url${library:+, library $library}"
 fi
 
-if [ -z "$library" ] && [ -z "$nfs" ]; then
+if [ -z "$library" ] && [ -z "$nfs" ] && [ -z "$library_volume" ]; then
   say "abs-butler needs to see the same audiobooks AudiobookShelf does."
   say "Give the directory on this machine. An already-mounted NAS share is just a path."
   say ""
@@ -451,8 +620,14 @@ fi
 if [ -n "$library" ]; then
   case "$library" in
     /*) : ;;
+    [A-Za-z]:*) [ "$in_container" = "1" ] || die "the library path must be absolute (got '$library')." ;;
     *) die "the library path must be absolute (got '$library')." ;;
   esac
+fi
+
+# From a container, the host's filesystem is not here to look at; what Docker
+# sees of it is checked below instead.
+if [ -n "$library" ] && [ "$in_container" != "1" ]; then
   [ -e "$library" ] || die "$library does not exist. Create it, or mount the share first."
   [ -d "$library" ] || die "$library is not a directory."
   [ -r "$library" ] || die "$library is not readable by $(id -un)."
@@ -486,6 +661,51 @@ if [ -n "$nfs" ]; then
   nfs_export="${nfs#*:}"
   [ -n "$puid" ] || puid=1000
   [ -n "$pgid" ] || pgid=1000
+fi
+
+# ---- what Docker sees --------------------------------------------------------
+#
+# The question that matters is not whether the library exists but whether a
+# container sees books in it, and only Docker can answer that: a mapped drive
+# exists for Windows and not for Docker Desktop, and a share that was not
+# mounted yet exists as an empty folder. So a throwaway container mounts it
+# exactly as abs-butler will, and says what it finds -- and whose it is, since
+# on a volume or a network share that decides who may write, not the files.
+if [ -n "$library_volume" ]; then library_desc="volume $library_volume"; else library_desc="$library"; fi
+
+probe_library() {
+  if [ -n "$library_volume" ]; then
+    # Mounting a volume that does not exist would create it, empty.
+    docker volume inspect "$library_volume" >/dev/null 2>&1 || return 1
+    pl_mount="type=volume,src=$library_volume,dst=/probe,readonly,volume-nocopy"
+  else
+    pl_mount="type=bind,src=$library,dst=/probe,readonly"
+  fi
+  docker run --rm --user 0:0 --entrypoint sh --mount "$pl_mount" "$image" \
+    -c 'stat -c "%u %g" /probe && ls -A /probe | wc -l' 2>/dev/null | tr '\n' ' '
+}
+
+if [ -n "$library$library_volume" ] && [ "$dry_run" -eq 0 ]; then
+  note "checking what Docker sees in ${library_desc}…"
+  probed=$(probe_library || true)
+  # shellcheck disable=SC2086
+  set -- $probed
+  if [ $# -lt 3 ]; then
+    if [ -n "$library_volume" ]; then
+      die "there is no Docker volume called $library_volume."
+    fi
+    die "Docker cannot mount $library. If it is a mapped drive or a \\\\server\\share path, Docker Desktop cannot see it: mount the share as a volume instead (docs/docker.md, \"Libraries on a NAS\"), or point this at the volume AudiobookShelf uses with --library-volume."
+  fi
+  [ -n "$puid" ] || puid="$1"
+  [ -n "$pgid" ] || pgid="$2"
+  if [ "$3" -eq 0 ]; then
+    check_bad "Docker sees nothing in $library_desc -- if it is a network share, check it is mounted"
+    if [ "$repair" -eq 0 ] && ! confirm "Docker sees nothing in $library_desc. Install with it anyway?"; then
+      die "stopped. Point it at the folder AudiobookShelf uses."
+    fi
+  else
+    check_ok "Docker sees $3 entries in $library_desc"
+  fi
 fi
 
 [ -n "$puid" ] || puid=1000
@@ -543,6 +763,9 @@ env_body="# Written by install.sh on $(date -u '+%Y-%m-%dT%H:%M:%SZ').
 BUTLER_INSTALL_VERSION=$INSTALL_VERSION
 # The AudiobookShelf URL, credentials and library root are NOT here — those are
 # set in the browser and kept in abs-butler's database.
+# Named so that running this from inside a container, from a folder of another
+# name, still means the same install.
+COMPOSE_PROJECT_NAME=$project
 BUTLER_IMAGE=$image
 BUTLER_BIND=$bind
 BUTLER_PORT=$port
@@ -558,6 +781,16 @@ if [ -n "$library" ]; then
   env_body="${env_body}HOST_LIBRARY_PATH=$library
 "
 fi
+if [ -n "$library_volume" ]; then
+  env_body="${env_body}# The library is this Docker volume -- AudiobookShelf's own -- mounted at the
+# same path AudiobookShelf sees it at.
+BUTLER_LIBRARY_VOLUME=$library_volume
+BUTLER_LIBRARY_TARGET=${library_target:-/audiobooks}
+"
+fi
+env_body="${env_body}# Where the database is: folder (./data) or volume ($data_volume).
+BUTLER_DATA=$data_mode
+"
 
 # The database moves to a bind mount, always.
 #
@@ -572,7 +805,23 @@ fi
 #
 # !override replaces the mount list outright. Without it compose appends, and
 # two sources collide on the same target. Needs Compose v2.24 or newer.
-if [ -n "$nfs" ]; then
+if [ "$data_mode" = "volume" ]; then
+  data_line="      - butler-data:/data"
+else
+  data_line="      - ./data:/data"
+fi
+
+if [ -n "$library_volume" ]; then
+  library_mount="      - abs-library:${library_target:-/audiobooks}:rw"
+  # external: this install uses the volume and never creates, changes or
+  # removes it. It belongs to AudiobookShelf, and so do its credentials.
+  nfs_volume="
+volumes:
+  abs-library:
+    external: true
+    name: $library_volume
+"
+elif [ -n "$nfs" ]; then
   library_mount="      - audiobooks:/audiobooks:rw"
   nfs_volume="
 volumes:
@@ -608,19 +857,18 @@ else
   network_decl=""
 fi
 
-override_body="# Written by install.sh.
+override_body="# Written by install.sh. Re-run it (or --repair) rather than editing this.
 #
-# The database lives beside this file rather than in a named volume, so that it
-# is owned by PUID:PGID and stays that way. Back up ./data and you have backed
-# up everything abs-butler knows.
+# The database is in $([ "$data_mode" = "volume" ] && echo "the $data_volume volume" || echo "./data, beside this file, so that it is owned by PUID:PGID and stays that way"). Back
+# that up and you have backed up everything abs-butler knows.
 services:
   butler:
     volumes: !override
-      - ./data:/data
+$data_line
 $library_mount
 $network_block  cli:
     volumes: !override
-      - ./data:/data
+$data_line
 $library_mount
 $network_block$nfs_volume$network_decl"
 
@@ -647,7 +895,10 @@ cd "$install_dir"
 # receives a fix made to it, which is how BUTLER_BIND would have failed to
 # reach anyone who installed before it existed.
 fetch_compose() {
-  if command -v curl >/dev/null 2>&1; then
+  # The installer image carries the compose file of its own release.
+  if [ "$in_container" = "1" ] && [ -f /opt/abs-butler-installer/docker-compose.yml ]; then
+    cp /opt/abs-butler-installer/docker-compose.yml "$1"
+  elif command -v curl >/dev/null 2>&1; then
     curl -fsSL "$COMPOSE_URL" -o "$1"
   elif command -v wget >/dev/null 2>&1; then
     wget -qO "$1" "$COMPOSE_URL"
@@ -692,6 +943,7 @@ note "wrote $install_dir/docker-compose.override.yml"
 
 # ---- start it --------------------------------------------------------------
 
+if [ "$data_mode" = "folder" ]; then
 mkdir -p data || die "could not create $install_dir/data."
 if ! chown "${puid}:${pgid}" data 2>/dev/null; then
   # Fine when the directory already belongs to them; a real problem otherwise,
@@ -700,10 +952,21 @@ if ! chown "${puid}:${pgid}" data 2>/dev/null; then
     warn "could not give $install_dir/data to ${puid}:${pgid} — re-run as root if the log says 'unable to open database file'."
   fi
 fi
+fi
 
 if [ "$do_update" -eq 1 ]; then
   note "pulling the current image"
   docker compose pull butler 2>&1 | grep -viE '^$' | tail -3 || true
+fi
+
+# A named volume starts out owned by the image's own user, and Docker copies that
+# ownership into it again whenever it is empty. So it is created first, given to
+# PUID:PGID, and given a file, so there is never an empty volume to re-copy into.
+if [ "$data_mode" = "volume" ] && [ "$puid:$pgid" != "1000:1000" ]; then
+  docker compose create butler >/dev/null 2>&1 || true
+  docker run --rm --user 0:0 --entrypoint sh -v "$data_volume:/data" "$image" \
+    -c "touch /data/.keep && chown -R $puid:$pgid /data" >/dev/null 2>&1 \
+    || warn "could not give the $data_volume volume to ${puid}:${pgid}."
 fi
 
 note "pulling and starting"
@@ -721,17 +984,57 @@ host_address() {
 }
 
 i=0
-probe_url="http://127.0.0.1:${port}"
 if [ "$bind" = "127.0.0.1" ] || [ "$bind" = "localhost" ]; then
   url="http://127.0.0.1:${port}"
+elif [ "$in_container" = "1" ]; then
+  # A container has no idea what the machine it is on is called.
+  url="http://localhost:${port}"
 else
   url="http://$(host_address):${port}"
 fi
+# Asked from inside the container, the way its own healthcheck asks, so the
+# answer is the same whether this runs on the host or in a container beside it.
 while [ "$i" -lt 60 ]; do
-  if curl -fsS "$probe_url/api/health" >/dev/null 2>&1; then break; fi
+  if docker exec abs-butler node -e "fetch('http://127.0.0.1:'+(process.env.BUTLER_PORT||13380)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+    break
+  fi
   i=$((i + 1))
   sleep 1
 done
+
+if [ "$i" -lt 60 ]; then
+  check_ok "abs-butler is up and answering"
+  # The last word on the library: what the running container itself sees.
+  mount_path="${library_target:-/audiobooks}"
+  seen=$(docker exec abs-butler sh -c "ls -A '$mount_path' 2>/dev/null | wc -l" 2>/dev/null | tr -d ' \n')
+  if [ "${seen:-0}" -gt 0 ]; then
+    check_ok "the container sees the library at $mount_path"
+  else
+    check_bad "the container sees nothing at $mount_path"
+  fi
+  if [ -n "$abs_network" ]; then
+    if docker inspect abs-butler --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | grep -qw "$abs_network"; then
+      check_ok "on AudiobookShelf's network ($abs_network)"
+    else
+      check_bad "not on AudiobookShelf's network ($abs_network)"
+    fi
+  fi
+else
+  check_bad "abs-butler did not answer within 60s -- 'docker compose logs butler' says why"
+fi
+
+# A repair that moved the library tells the saved connection where it went. The
+# same values connecting would have used; Test on the Connection page checks
+# them against real books either way.
+if [ "$library_changed" -eq 1 ] && [ "$i" -lt 60 ]; then
+  set -- configure --library-root "${library_target:-/audiobooks}"
+  if [ -n "$path_prefix" ]; then set -- "$@" --path-prefix "$path_prefix"; else set -- "$@" --path-prefix "${library_target:-/audiobooks}"; fi
+  if cf_out=$(docker compose run --rm -T cli "$@" 2>&1); then
+    check_ok "the connection's library root is now ${library_target:-/audiobooks}"
+  elif ! printf '%s' "$cf_out" | grep -q 'Not connected'; then
+    check_bad "set the library root to ${library_target:-/audiobooks} on the Connection page"
+  fi
+fi
 
 # ---- connect it -----------------------------------------------------------
 #
@@ -739,7 +1042,8 @@ done
 # unauthenticated endpoint AudiobookShelf offers and it reveals nothing else.
 # So the URL and the paths are filled in, and only the login is asked for.
 connected=0
-if [ -n "$abs_url" ]; then
+# A repair leaves the existing connection alone rather than signing in again.
+if [ -n "$abs_url" ] && [ "$repair" -eq 0 ]; then
   if [ -z "$abs_username" ] && interactive; then
     say ""
     say "abs-butler can connect to $abs_url now. It stores the API token it is"
@@ -752,7 +1056,7 @@ if [ -n "$abs_url" ]; then
   if [ -n "$abs_username" ]; then
     # Passed through to the CLI, which prompts for the password itself when it
     # was not given as a flag -- and does not echo it.
-    set -- connect --url "$abs_url" --username "$abs_username" --library-root /audiobooks
+    set -- connect --url "$abs_url" --username "$abs_username" --library-root "${library_target:-/audiobooks}"
     [ -n "$abs_password" ] && set -- "$@" --password "$abs_password"
     [ -n "$path_prefix" ] && set -- "$@" --path-prefix "$path_prefix"
     # -T only without a terminal: with one, the CLI prompts for the password
@@ -767,11 +1071,33 @@ if [ -n "$abs_url" ]; then
   fi
 fi
 
-say ""
-if [ "$i" -ge 60 ]; then
-  warn "started, but $probe_url/api/health did not answer within 60s. Check 'docker compose logs -f butler'."
+show_dir="${ABS_BUTLER_HOST_DIR:-$install_dir}"
+if [ "$in_container" = "1" ]; then
+  repair_cmd='docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer repair'
 else
+  repair_cmd="sh install.sh --repair"
+fi
+
+say ""
+say "Checks:"
+printf '%s' "$checks"
+say ""
+if [ "$i" -lt 60 ]; then
   note "up at $url"
+fi
+
+# A repair is done here: the rest is first-install instructions.
+if [ "$repair" -eq 1 ]; then
+  if printf '%s' "$checks" | grep -q '^  FIX'; then
+    say ""
+    say "Each FIX above says what is still wrong. Put it right and run the repair again,"
+    say "from $show_dir:"
+    say ""
+    say "  $repair_cmd"
+  else
+    say "Nothing left to fix. Test on the Connection page confirms the paths against real books."
+  fi
+  exit 0
 fi
 
 if [ -n "$setup_code" ]; then
@@ -781,7 +1107,7 @@ if [ -n "$setup_code" ]; then
 
       $setup_code
 
-  It is in $install_dir/.env as BUTLER_SETUP_CODE. Because it is set, the
+  It is in the .env file in $show_dir as BUTLER_SETUP_CODE. Because it is set, the
   15-minute window does not apply — nobody can claim the account without the
   code, and there is no rush.
 EOF
@@ -809,16 +1135,19 @@ Next, in the browser — none of this is configured here:
   2. Add your AudiobookShelf server${abs_url:+ at $abs_url}.
      Sign in with an admin username and password, or paste an API token.
 
-  3. For file organizing, set the library root to /audiobooks. That is where
-     this container sees $([ -n "$nfs" ] && echo "the NAS export" || echo "$library"), whatever the path is outside it.
+  3. For file organizing, set the library root to ${library_target:-/audiobooks}. That is where
+     this container sees $([ -n "$nfs" ] && echo "the NAS export" || echo "$library_desc"), whatever the path is outside it.
 EOF
 fi
 cat <<EOF
 
-Useful later:
+Useful later, from $show_dir:
 
-  cd $install_dir
   docker compose logs -f butler
   docker compose run --rm cli status
   docker compose down
+
+If anything stops working, from the same folder:
+
+  $repair_cmd
 EOF

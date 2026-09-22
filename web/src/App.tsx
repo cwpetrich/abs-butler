@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type AuthStatus, type Connection, type Meta, type UpdateStatus } from './api';
+import { api, type AuthStatus, type Connection, type InstallHealth, type Meta, type UpdateStatus } from './api';
 import { Banner, Link, Spinner, useAsync, useRoute } from './lib';
 import { ConnectionPage } from './pages/Connection';
 import { LoginPage } from './pages/Login';
@@ -112,6 +112,7 @@ function Shell({
           >
             Sign out
           </button>
+          <InstallNotice />
           <UpdateNotice />
         </div>
       </nav>
@@ -188,6 +189,38 @@ function isActive(current: string, target: string): boolean {
 }
 
 /**
+ * What is wrong with how abs-butler is installed, when something is, with the
+ * one command that fixes it. abs-butler cannot change its own mounts — that
+ * takes the Docker socket, which it never holds — so the fix is handed to
+ * whoever owns the machine. Silent for an install with nothing wrong.
+ */
+function InstallNotice() {
+  const [health, setHealth] = useState<InstallHealth | null>(null);
+
+  useEffect(() => {
+    api.install().then(setHealth).catch(() => setHealth(null));
+  }, []);
+
+  if (!health?.problems.length || !health.repairCommand) return null;
+
+  return (
+    <div className="update-notice install-notice">
+      <strong>Install needs a repair</strong>
+      {health.problems.map((problem) => (
+        <div className="hint" key={problem.code}>
+          {problem.message}
+        </div>
+      ))}
+      <div className="hint">
+        In the folder abs-butler is installed in, run:
+        <div className="mono update-cmd">{health.repairCommand}</div>
+        It checks the install, offers each fix, and changes nothing without asking.
+      </div>
+    </div>
+  );
+}
+
+/**
  * A quiet line in the sidebar when a newer version has been tagged.
  *
  * Deliberately not a modal or a badge on every page: knowing there is an
@@ -224,9 +257,9 @@ function UpdateNotice() {
         <div className="hint">
           From the directory abs-butler was installed into:
           <div className="mono update-cmd">docker compose pull{'\n'}docker compose up -d</div>
-          Release notes say when a version also needs{' '}
-          <span className="mono">sh install.sh --update</span>, which is only when the compose
-          file or <span className="mono">.env</span> changed.
+          Release notes say when a version also needs the installer&rsquo;s{' '}
+          <span className="mono">update</span>, which is only when the compose file or{' '}
+          <span className="mono">.env</span> changed.
         </div>
       </div>
     </>

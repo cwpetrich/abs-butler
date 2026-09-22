@@ -3,6 +3,7 @@ import {
   detectDeployment,
   explainDenial,
   explainEmpty,
+  REPAIR_COMMAND,
   explainMissing,
   explainReadonlyDatabase,
 } from './deployment.js';
@@ -202,6 +203,16 @@ describe('explainEmpty', () => {
     });
     expect(reason).toContain('although HOST_LIBRARY_PATH is /mnt/media/books');
     expect(reason).not.toContain('mapped network drives');
+  });
+
+  it('names the volume when the installer mounted one, and hands over the repair', () => {
+    const reason = explainEmpty('/nas', {
+      deployment: 'docker',
+      env: { BUTLER_LIBRARY_VOLUME: 'audiobookshelf_synology_media', HOST_LIBRARY_PATH: '' },
+    });
+    expect(reason).toContain('the Docker volume audiobookshelf_synology_media');
+    expect(reason).not.toContain('HOST_LIBRARY_PATH');
+    expect(reason).toContain(REPAIR_COMMAND);
   });
 
   it('makes no claim about HOST_LIBRARY_PATH outside Docker', () => {

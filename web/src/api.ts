@@ -197,6 +197,12 @@ export interface UpdateStatus {
   error?: string;
 }
 
+export interface InstallHealth {
+  deployment: 'snap' | 'docker' | 'native';
+  problems: Array<{ code: string; message: string }>;
+  repairCommand: string | null;
+}
+
 export interface Meta {
   commands: RunCommand[];
   fileCommands: RunCommand[];
@@ -265,6 +271,7 @@ export const api = {
   meta: () => request<Meta>('/api/meta'),
 
   update: () => request<UpdateStatus>('/api/update'),
+  install: () => request<InstallHealth>('/api/install'),
   connection: () => request<{ connection: Connection | null }>('/api/connection'),
   saveConnection: (input: Record<string, unknown>) =>
     request<{ connection: Connection; discoveredPaths: PathMapping | null }>('/api/connection', {

@@ -84,6 +84,16 @@ jobs:
           outputs: type=docker,dest=/tmp/abs-butler-image.tar
           cache-from: type=gha
 
+      # The installer image, built and not run: running it needs a Docker
+      # socket and a machine to install onto.
+      - name: Build the installer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: installer/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+
       - uses: actions/upload-artifact@v4
         with:
           name: docker-image-amd64

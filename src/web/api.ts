@@ -28,6 +28,7 @@ import { getRun, listRuns, type RunCommand, type RunStatus } from '../db/runs.js
 import { countRevisions } from '../db/revisions.js';
 import { openContext } from '../context.js';
 import { checkForUpdate } from '../core/updates.js';
+import { installHealth } from '../core/install.js';
 import { VERSION } from '../version.js';
 import { runRevertTask } from '../core/revert.js';
 import { NOTHING_TO_APPLY } from '../core/apply.js';
@@ -556,6 +557,12 @@ export function buildApiRouter(deps: ApiDeps): Router {
   }));
 
   router.get('/api/health', () => ({ ok: true, version: VERSION }), { isPublic: true });
+
+  /**
+   * What is wrong with how abs-butler is installed, and the command that fixes
+   * it. Signed-in only: it names paths and volumes on the host.
+   */
+  router.get('/api/install', () => installHealth());
 
   /**
    * Whether a newer version exists. Answers with the check switched off rather

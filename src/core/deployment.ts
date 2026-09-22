@@ -12,6 +12,21 @@ import { describeMount, libraryMounts, mountFor, type MountEntry } from './mount
  */
 export type Deployment = 'snap' | 'docker' | 'native';
 
+/**
+ * The one command that checks a Docker install and fixes what it can — run from
+ * the folder abs-butler was installed into. It is the same on Windows, macOS
+ * and Linux: the installer is an image (installer/Dockerfile), so it needs
+ * nothing on the machine but Docker. Quoted for PowerShell and POSIX shells
+ * alike.
+ */
+export const REPAIR_COMMAND =
+  'docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ' +
+  'ghcr.io/cwpetrich/abs-butler-installer repair';
+
+const REPAIR_HINT =
+  ' The installer finds the library AudiobookShelf uses and mounts it here; from the folder ' +
+  `abs-butler was installed into, run: ${REPAIR_COMMAND}`;
+
 /** Roots a strictly-confined snap can reach, via the removable-media interface. */
 const SNAP_VISIBLE_ROOTS = ['/mnt', '/media', '/run/media'];
 
@@ -165,6 +180,17 @@ export function explainEmpty(
   const env = options.env ?? process.env;
   const usual = 'Check that it is the folder AudiobookShelf uses.';
   if (deployment !== 'docker') return `${path} is empty. ${usual}`;
+  return dockerEmpty(path, env, usual) + REPAIR_HINT;
+}
+
+function dockerEmpty(path: string, env: NodeJS.ProcessEnv, usual: string): string {
+  const volume = env.BUTLER_LIBRARY_VOLUME;
+  if (volume) {
+    return (
+      `${path} is empty, although it is the Docker volume ${volume}. If that volume mounts a network ` +
+      'share, check the share is reachable and its credentials still work.'
+    );
+  }
 
   const source = env.HOST_LIBRARY_PATH;
   if (source === undefined) {
@@ -173,15 +199,14 @@ export function explainEmpty(
   if (source.trim() === '') {
     return (
       `${path} is empty. HOST_LIBRARY_PATH is not set, so Docker mounted an empty audiobooks folder ` +
-      'beside docker-compose.yml instead of your library. Set HOST_LIBRARY_PATH in .env to the folder ' +
-      'AudiobookShelf uses, then run docker compose up -d.'
+      'beside docker-compose.yml instead of your library.'
     );
   }
   if (windowsPath(source)) {
     return (
       `${path} is empty, although HOST_LIBRARY_PATH is ${source}. Docker Desktop cannot see mapped ` +
-      'network drives or \\\\server\\share paths, so if that is a NAS share it has to be mounted as a ' +
-      'volume instead — see "Libraries on a NAS" in docs/docker.md.'
+      'network drives or \\\\server\\share paths, so a NAS share has to reach it as a Docker volume ' +
+      'instead — the one AudiobookShelf uses, if it runs in Docker too.'
     );
   }
   return (
