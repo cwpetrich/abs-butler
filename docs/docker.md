@@ -22,6 +22,14 @@ library, including where AudiobookShelf sees it. That last one is the path prefi
 people most often get wrong. Several servers means it asks (`--abs-container NAME` answers up front);
 it never picks one for you.
 
+The folder you run it in has two names: the one you typed (`C:\abs-butler`) and the one Docker's own
+daemon knows it by, which on Docker Desktop is a path inside its Linux VM. The installer works out
+which is which by proof rather than by guessing — it writes a marker into the folder and mounts each
+candidate until one shows the marker — because the two Docker Desktop backends name it differently
+and a wrong guess would fail later as an empty mount. If none of them match, it says what it tried
+and stops; `ABS_BUTLER_DAEMON_DIR` names the path yourself. A network path
+(`\\server\share`) or a drive Docker Desktop does not share cannot be installed into.
+
 **Why it gets the Docker socket, and why that is fine.** The socket is root on the host. The
 installer holds it for as long as the command runs, because you ran it, and never again. abs-butler
 itself — the web UI on your network — never gets it, and cannot change its own mounts. That is the
