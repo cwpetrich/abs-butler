@@ -31,13 +31,18 @@ sudo snap connect abs-butler:removable-media    # only if you want to organize f
 ```
 
 **Docker, with the installer** — recommended when abs-butler runs on the same machine as
-AudiobookShelf. It settles the one thing the UI cannot: which host directory gets mounted in, since
-a bind mount is fixed when the container is created.
+AudiobookShelf. It settles the one thing the UI cannot: which library gets mounted in, since a
+mount is fixed when the container is created. From a new folder, in PowerShell on Windows or any
+shell on macOS and Linux:
 
 ```bash
-curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
-sh install.sh                               # finds AudiobookShelf and asks about it
+docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer
 ```
+
+The same command with `repair` on the end checks an existing install and fixes what it finds —
+including one made by hand. On Linux and macOS the installer also runs as a plain script
+(`curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh && sh install.sh`).
+See [Quick start](docs/docker.md#quick-start) for what it does and why it is given the Docker socket.
 
 It looks for AudiobookShelf running on the same machine and, from the container, reads three things
 at once: the URL, the host directory holding the library, and the path AudiobookShelf itself reports

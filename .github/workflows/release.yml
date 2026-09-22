@@ -84,6 +84,29 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The installer, tagged exactly as the app is: an installer of a given
+      # version carries that version's install.sh and docker-compose.yml, so
+      # `abs-butler-installer:latest` always installs the latest release. In
+      # this job rather than its own so the release page waits for it too --
+      # the repair command the app hands out names this image.
+      - id: installer-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-installer
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: installer/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.installer-meta.outputs.tags }}
+          labels: ${{ steps.installer-meta.outputs.labels }}
+
   # A tag alone gives nothing to read. abs-butler tells an operator that a new
   # version exists and links here for what is in it, so the page has to exist
   # before the notice can point at it.

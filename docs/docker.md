@@ -5,29 +5,94 @@ same database.
 
 ## Quick start
 
-`install.sh` is the shortest path when abs-butler runs beside AudiobookShelf:
+Make a folder for abs-butler, open a terminal in it — PowerShell on Windows, any shell on macOS or
+Linux — and run:
+
+```bash
+docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer
+```
+
+That is the whole install, and the command is the same on all three. Docker is the only thing the
+machine needs. The installer runs once, writes its files into the folder, starts abs-butler, and
+exits.
+
+It finds AudiobookShelf first. A container running it answers three questions at once: its published
+port gives the URL, its network lets abs-butler reach it by name, and its library mount gives the
+library, including where AudiobookShelf sees it. That last one is the path prefix, the setting
+people most often get wrong. Several servers means it asks (`--abs-container NAME` answers up front);
+it never picks one for you.
+
+**Why it gets the Docker socket, and why that is fine.** The socket is root on the host. The
+installer holds it for as long as the command runs, because you ran it, and never again. abs-butler
+itself — the web UI on your network — never gets it, and cannot change its own mounts. That is the
+point of doing this with a separate, short-lived container.
+
+### When something is wrong: repair
+
+Run the same command with `repair` on the end, from the same folder:
+
+```bash
+docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer repair
+```
+
+It does everything an update does, then checks the install from end to end and prints one line per
+check:
+
+```
+Checks:
+  ok   now mounting AudiobookShelf's library (volume audiobookshelf_synology_media)
+  ok   Docker sees 2 entries in volume audiobookshelf_synology_media
+  ok   abs-butler is up and answering
+  ok   the container sees the library at /nas
+  ok   on AudiobookShelf's network (audiobookshelf_default)
+  ok   the connection's library root is now /nas
+```
+
+- It compares the library mounted into abs-butler with the one AudiobookShelf uses, and offers to
+  switch when they differ.
+- It asks Docker what a container actually sees there. An empty folder, an unmounted share, or a
+  mapped drive Docker Desktop cannot see all fail here, by name.
+- It confirms the running container sees books, and that it is on AudiobookShelf's network.
+- It keeps what the install already has: its database, its port, and who can reach it. An install
+  made by hand from `docker-compose.yml` is adopted as it is, including its database.
+
+Each change is offered, not made; `-y` accepts them all. abs-butler shows the same command in its
+sidebar when it can tell from inside that something is wrong — most often, a library folder with
+nothing in it.
+
+### Which setup is yours
+
+| AudiobookShelf runs… | Its library is… | What the installer does |
+| --- | --- | --- |
+| In Docker, on this machine | A folder on this machine | Mounts the same folder |
+| In Docker, on this machine | A Docker volume — how a NAS share usually reaches Docker Desktop on Windows or macOS | Mounts **the same volume**, at the same path AudiobookShelf sees it, so no path prefix is needed and no NAS credentials are copied |
+| Directly on this machine (no container) | A folder | Asks for the folder (`--library PATH`) |
+| On the NAS itself | — | Run abs-butler on the NAS too, where the library is a local folder |
+
+A mapped drive (`S:\AudioBooks`) or a `\\server\share` path is never the answer on Windows. Those
+belong to your login session, and Docker cannot see them. If AudiobookShelf reads the share, it
+does so through a Docker volume, and the installer reuses that.
+
+### Without the installer image
+
+On Linux or macOS the same installer also runs as a script, which is what the image contains:
 
 ```bash
 curl -O https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.sh
-sh install.sh --library /srv/audiobooks
+sh install.sh                 # or: sh install.sh --repair
 ```
-
-It finds AudiobookShelf first. A container running it answers three questions at once — the
-published port gives the URL, and the library bind mount gives both the host path to mount and the
-path AudiobookShelf reports for it, which is the path prefix. `/status` confirms the candidate is
-really AudiobookShelf rather than whatever else holds the port, and a host install with no container
-is found the same way. Several servers means it asks; it never picks one for you.
 
 Where the server is on a Docker network, the generated override joins it and addresses the server by
 container name on its **internal** port. That is deliberate: `host.docker.internal` resolves to the
 bridge gateway on Linux, so a server published on `127.0.0.1` — the sensible default — is
 unreachable from another container that way. Joining the network works regardless of the binding.
 
-It also asks for the library directory if none was found or passed, derives `PUID`/`PGID` from that
-directory so files `organize` creates stay readable by AudiobookShelf, publishes the UI on
-loopback, and writes an override putting the database in `./data` next to the compose file.
-`--nfs HOST:/EXPORT` mounts a NAS export directly for shares that are not already mounted on the
-host, and `--dry-run` prints every file it would write. The rest of this page is what it automates.
+It derives `PUID`/`PGID` from the library, so files `organize` creates stay readable by
+AudiobookShelf. On a volume or a network share that means the owner the mount reports, which is
+what decides who may write. The database goes in `./data` next to the compose file, or in a Docker
+volume on Windows, where SQLite over Docker Desktop's file sharing is slow. `--nfs HOST:/EXPORT`
+mounts a NAS export directly for shares that are not already mounted on the host, and `--dry-run`
+prints every file it would write. The rest of this page is what it automates.
 
 ### By hand
 
@@ -239,8 +304,10 @@ networks:
 
 ## Paths, for `organize`
 
-Only `organize` touches the filesystem. `audit`, `rate`, `metadata` and `normalize` work purely over the API and
-need no mount at all.
+`organize` moves files, and `repair` touches the one file of a book that is a single file at the
+library root, since that is the only way to make AudiobookShelf recompute its length. Everything
+else — `audit`, `rate`, `metadata`, `normalize` — works purely over the API and needs no mount at
+all. The installer sets all of this up; this section is what it does, for doing it by hand.
 
 Point `HOST_LIBRARY_PATH` at the same directory AudiobookShelf uses:
 

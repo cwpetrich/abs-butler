@@ -498,6 +498,11 @@ label .hint {
   margin-top: 3px;
 }
 
+/* Unlike an update, something is wrong: the same box, in the warning colour. */
+.install-notice {
+  border-color: var(--warn);
+}
+
 .update-cmd {
   margin-top: 5px;
   padding: 6px 7px;
