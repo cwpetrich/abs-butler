@@ -11,7 +11,7 @@ import { AUDIT_CODES, ISSUES } from '../core/audit.js';
 import { RUN_ITEM_LABELS } from '../core/report.js';
 import { FILLABLE } from '../core/metadata.js';
 import { NORMALIZABLE } from '../core/normalize.js';
-import { DEFAULT_TEMPLATE, templateHelp, unavailableMessage } from '../core/organize.js';
+import { DEFAULT_TEMPLATE, templateHelp, unavailableMessage, WRITES_DISABLED } from '../core/organize.js';
 import { PROVIDER_NAMES } from '../providers/index.js';
 import { AGE_BANDS, CONTENT_FLAGS } from '../content/ageRating.js';
 import type { Db } from '../db/index.js';
@@ -31,6 +31,7 @@ import { checkForUpdate } from '../core/updates.js';
 import { VERSION } from '../version.js';
 import { runRevertTask } from '../core/revert.js';
 import { NOTHING_TO_APPLY } from '../core/apply.js';
+import { TRACK_REPAIR_DISABLED } from '../core/repair.js';
 import {
   createSchedule,
   deleteSchedule,
@@ -160,10 +161,18 @@ function assertCommandAllowed(
     if (!local.canManageFiles) throw badRequest(unavailableMessage(local.reason));
   }
 
-  // Not refused outright any more: with the switch off a normalize still
-  // applies the additive half of its plan — a work identity on a book that had
-  // none — and holds back only the replacements. The run reports what it held.
-
+  // The switches, read as saved. A box ticked on the Settings page and never
+  // saved is not on, and a run that is going to be refused for it should be
+  // refused here — with the reason — rather than queued to fail a moment later.
+  //
+  // Not normalize: with its switch off it still applies the additive half of
+  // its plan — a work identity on a book that had none — and holds back only
+  // the replacements. The run reports what it held.
+  if (options.apply) {
+    const settings = getSettings(db);
+    if (command === 'organize' && !settings.allowFileChanges) throw badRequest(WRITES_DISABLED);
+    if (command === 'repair' && !settings.allowTrackRepair) throw badRequest(TRACK_REPAIR_DISABLED);
+  }
 }
 
 const RevertInputSchema = z.object({
@@ -431,7 +440,9 @@ export function buildApiRouter(deps: ApiDeps): Router {
     const input = parse(ApplyInputSchema, ctx.body ?? {});
     requireConnection(db);
     if (countRunItemPlans(db, runId) === 0) throw badRequest(NOTHING_TO_APPLY);
-    assertCommandAllowed(db, source.command, source.options);
+    // Judged by what this run will do, not by what the source run did: a dry
+    // run's report applied for real needs the switch the dry run did not.
+    assertCommandAllowed(db, source.command, { ...source.options, apply: Boolean(input.apply) });
 
     return runner.enqueue({
       command: source.command,
