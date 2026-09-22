@@ -55,6 +55,40 @@ describe('AbsClient.login', () => {
   });
 });
 
+describe('AbsClient requests', () => {
+  // AudiobookShelf answers a library scan with a plain-text "OK". Read as JSON,
+  // that threw inside the retry loop, so one scan went out four times and was
+  // reported as a failure every time.
+  it('takes a plain-text success as success, and sends it once', async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((async (url: URL, init: RequestInit) => {
+      calls.push(`${init?.method} ${String(url)}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/plain; charset=utf-8' }),
+        text: async () => 'OK',
+      };
+    }) as unknown as typeof fetch);
+
+    await new AbsClient({ baseUrl: 'http://abs.test', token: 't' }).scanLibrary('lib');
+
+    expect(calls).toEqual(['POST http://abs.test/api/libraries/lib/scan']);
+  });
+
+  it('knows a library is being scanned from the task list', async () => {
+    mockFetch({
+      tasks: [
+        { action: 'watcher-scan', isFinished: false, data: { libraryId: 'lib' } },
+        { action: 'library-scan', isFinished: false, data: { libraryId: 'other' } },
+      ],
+    });
+    const client = new AbsClient({ baseUrl: 'http://abs.test', token: 't' });
+    expect(await client.isScanningLibrary('lib')).toBe(false);
+    expect(await client.isScanningLibrary('other')).toBe(true);
+  });
+});
+
 describe('resolveApiKey', () => {
   it('uses a token as-is, without contacting the server', async () => {
     const { calls } = mockFetch({});

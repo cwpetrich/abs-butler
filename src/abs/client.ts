@@ -76,6 +76,11 @@ export class AbsClient {
 
         if (res.ok) {
           if (res.status === 204) return undefined as T;
+          // Some endpoints answer with a bare "OK" — a library scan, for one.
+          // Parsing that as JSON threw, and a throw in here is retried, so the
+          // scan was asked for four times and reported as failed each time.
+          const type = res.headers?.get('content-type') ?? '';
+          if (type && !type.includes('json')) return undefined as T;
           const text = await res.text();
           return (text ? JSON.parse(text) : undefined) as T;
         }
@@ -196,6 +201,23 @@ export class AbsClient {
     await this.request('POST', `/api/libraries/${libraryId}/scan`, {
       query: options.force ? { force: 1 } : {},
     });
+  }
+
+  /**
+   * Whether AudiobookShelf is scanning this library right now.
+   *
+   * A library scan answers before it starts and finishes in its own time, and a
+   * second one asked for while the first runs is dropped without a word. The
+   * task list is the only place that says which is happening: a scan is on it
+   * from the moment it is asked for until it ends, and gone after.
+   */
+  async isScanningLibrary(libraryId: string): Promise<boolean> {
+    const res = await this.request<{
+      tasks?: Array<{ action?: string; isFinished?: boolean; data?: { libraryId?: string } }>;
+    }>('GET', '/api/tasks');
+    return (res?.tasks ?? []).some(
+      (task) => task.action === 'library-scan' && !task.isFinished && task.data?.libraryId === libraryId,
+    );
   }
 
   /**
