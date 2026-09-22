@@ -1,46 +1,96 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type Meta, type SecurityStatus, type Settings } from '../api';
 import { TemplateHelp } from '../components/TemplateHelp';
 import { Banner, Spinner, useAsync } from '../lib';
 
+/**
+ * Every setting saves itself the moment it changes. There used to be one Save
+ * button at the foot of a long page, and a switch ticked and never saved looks
+ * exactly like one that is on — until a run is refused for it.
+ *
+ * Switches and choices save on click. Typed fields save when they are left or
+ * Enter is pressed, so a half-typed number is never sent; one the server turns
+ * down goes back to what is stored, with the reason.
+ */
 export function SettingsPage({ meta }: { meta: Meta | undefined }) {
   const loaded = useAsync(() => api.settings(), []);
+  // `form` is what is on screen; `saved` is what the server last said is stored.
   const [form, setForm] = useState<Settings | null>(null);
+  const [saved, setSaved] = useState<Settings | null>(null);
   const [googleKey, setGoogleKey] = useState('');
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<
+    { kind: 'saving' } | { kind: 'saved' } | { kind: 'error'; message: string } | null
+  >(null);
+  const pending = useRef(0);
+
+  // "Saved" is a confirmation, not a state to keep on screen; an error stays
+  // until the next change.
+  useEffect(() => {
+    if (saveState?.kind !== 'saved') return;
+    const timer = setTimeout(() => setSaveState(null), 2000);
+    return () => clearTimeout(timer);
+  }, [saveState]);
 
   useEffect(() => {
-    if (loaded.data) setForm(loaded.data.settings);
+    if (loaded.data) {
+      setForm(loaded.data.settings);
+      setSaved(loaded.data.settings);
+    }
   }, [loaded.data]);
 
-  if (loaded.loading || !form) return <Spinner />;
+  if (loaded.loading || !form || !saved) return <Spinner />;
   if (loaded.error) return <Banner tone="err">{loaded.error}</Banner>;
 
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
+  const commit = async (patch: Partial<Settings> & { googleBooksApiKey?: string }) => {
+    pending.current += 1;
+    setSaveState({ kind: 'saving' });
+    const keys = Object.keys(patch).filter((key) => key !== 'googleBooksApiKey') as Array<keyof Settings>;
+    try {
+      const { settings } = await api.updateSettings(patch);
+      setSaved(settings);
+      // Only the fields this save was for: another field may be mid-edit.
+      setForm((f) =>
+        f
+          ? { ...f, ...Object.fromEntries(keys.map((key) => [key, settings[key]])), googleBooksApiKeySet: settings.googleBooksApiKeySet }
+          : f,
+      );
+      pending.current -= 1;
+      if (pending.current === 0) setSaveState({ kind: 'saved' });
+    } catch (err) {
+      pending.current -= 1;
+      setSaveState({ kind: 'error', message: (err as Error).message });
+      setForm((f) => (f ? { ...f, ...Object.fromEntries(keys.map((key) => [key, saved[key]])) } : f));
+    }
+  };
+
+  /** A switch or a choice: shown and saved at once. */
+  const choose = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    setForm((f) => (f ? { ...f, [key]: value } : f));
+    void commit({ [key]: value } as Partial<Settings>);
+  };
+
+  /** A typed field: shown as typed, saved when it is left. */
+  const type = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
 
-  const save = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError(null);
-    setStatus(null);
-    try {
-      const { googleBooksApiKeySet: _ignored, ...rest } = form;
-      await api.updateSettings({
-        ...rest,
-        // Blank leaves the stored key untouched, matching how server API keys behave.
-        ...(googleKey ? { googleBooksApiKey: googleKey } : {}),
-      });
-      setGoogleKey('');
-      setStatus('Settings saved.');
-      loaded.reload();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
+  const settle = (key: keyof Settings) => {
+    if (form[key] !== saved[key]) void commit({ [key]: form[key] } as Partial<Settings>);
+  };
+
+  /** What a typed field needs to save when it is left, or on Enter. */
+  const saveOnLeave = (key: keyof Settings) => ({
+    onBlur: () => settle(key),
+    onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Enter') event.currentTarget.blur();
+    },
+  });
+
+  const saveGoogleKey = () => {
+    // Blank leaves the stored key untouched, matching how server API keys behave.
+    if (!googleKey) return;
+    const key = googleKey;
+    setGoogleKey('');
+    void commit({ googleBooksApiKey: key });
   };
 
   return (
@@ -49,14 +99,24 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
         <h1>Settings</h1>
       </div>
       <p className="subtitle">
-        Everything here is stored in the database and takes effect without a restart. Only the data
-        directory and listen address stay environment variables.
+        Everything here is stored in the database as soon as you change it — a switch when it is
+        clicked, a typed value when you leave the field — and takes effect without a restart. Only
+        the data directory and listen address stay environment variables.
       </p>
 
-      {error && <Banner tone="err">{error}</Banner>}
-      {status && <div className="banner" style={{ borderColor: 'var(--ok)', color: 'var(--ok)' }}>{status}</div>}
+      {/* Fixed to the corner: the page is long, and the change that needs
+          confirming is usually far from the top of it. */}
+      {saveState && (
+        <div className={`save-status ${saveState.kind}`} role="status" aria-live="polite">
+          {saveState.kind === 'saving'
+            ? 'Saving…'
+            : saveState.kind === 'saved'
+              ? 'Saved'
+              : `Not saved: ${saveState.message}`}
+        </div>
+      )}
 
-      <form onSubmit={save}>
+      <div>
         <div className="card">
           <h2>File changes</h2>
           <p className="hint">
@@ -70,7 +130,7 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
             <input
               type="checkbox"
               checked={form.allowFileChanges}
-              onChange={(e) => set('allowFileChanges', e.target.checked)}
+              onChange={(e) => choose('allowFileChanges', e.target.checked)}
             />
             Allow file changes
           </label>
@@ -100,7 +160,8 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
             <input
               className="mono"
               value={form.organizeTemplate}
-              onChange={(e) => set('organizeTemplate', e.target.value)}
+              onChange={(e) => type('organizeTemplate', e.target.value)}
+              {...saveOnLeave('organizeTemplate')}
               placeholder={meta?.defaultTemplate}
             />
           </label>
@@ -121,7 +182,7 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
             <input
               type="checkbox"
               checked={form.allowMetadataRewrite}
-              onChange={(e) => set('allowMetadataRewrite', e.target.checked)}
+              onChange={(e) => choose('allowMetadataRewrite', e.target.checked)}
             />
             Allow metadata rewrite
           </label>
@@ -153,7 +214,7 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
             <input
               type="checkbox"
               checked={form.allowTrackRepair}
-              onChange={(e) => set('allowTrackRepair', e.target.checked)}
+              onChange={(e) => choose('allowTrackRepair', e.target.checked)}
             />
             Allow track repair
           </label>
@@ -180,7 +241,7 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
             <input
               type="checkbox"
               checked={form.crossFormatDuplicates}
-              onChange={(e) => set('crossFormatDuplicates', e.target.checked)}
+              onChange={(e) => choose('crossFormatDuplicates', e.target.checked)}
             />
             Count an ebook and an audiobook as duplicates
           </label>
@@ -206,6 +267,10 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
               type="password"
               value={googleKey}
               onChange={(e) => setGoogleKey(e.target.value)}
+              onBlur={saveGoogleKey}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
               placeholder={loaded.data?.settings.googleBooksApiKeySet ? '••••••••' : 'not set'}
               autoComplete="new-password"
             />
@@ -220,7 +285,8 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
                 min={1}
                 max={16}
                 value={form.providerConcurrency}
-                onChange={(e) => set('providerConcurrency', Number(e.target.value))}
+                onChange={(e) => type('providerConcurrency', Number(e.target.value))}
+                {...saveOnLeave('providerConcurrency')}
               />
             </label>
 
@@ -232,7 +298,7 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
               </span>
               <select
                 value={form.audibleRegion}
-                onChange={(e) => set('audibleRegion', e.target.value)}
+                onChange={(e) => choose('audibleRegion', e.target.value)}
               >
                 {['us', 'ca', 'uk', 'au', 'fr', 'de', 'jp', 'it', 'in', 'es'].map((region) => (
                   <option key={region} value={region}>
@@ -253,7 +319,8 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
                 max={1}
                 step={0.05}
                 value={form.minConfidence}
-                onChange={(e) => set('minConfidence', Number(e.target.value))}
+                onChange={(e) => type('minConfidence', Number(e.target.value))}
+                {...saveOnLeave('minConfidence')}
               />
             </label>
           </div>
@@ -269,7 +336,8 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
                 min={10}
                 max={10000}
                 value={form.historyLimit}
-                onChange={(e) => set('historyLimit', Number(e.target.value))}
+                onChange={(e) => type('historyLimit', Number(e.target.value))}
+                {...saveOnLeave('historyLimit')}
               />
             </label>
 
@@ -280,7 +348,8 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
                 min={1}
                 max={365}
                 value={form.logRetentionDays}
-                onChange={(e) => set('logRetentionDays', Number(e.target.value))}
+                onChange={(e) => type('logRetentionDays', Number(e.target.value))}
+                {...saveOnLeave('logRetentionDays')}
               />
             </label>
 
@@ -296,18 +365,13 @@ export function SettingsPage({ meta }: { meta: Meta | undefined }) {
                 min={1}
                 max={365}
                 value={form.lookupCacheDays}
-                onChange={(e) => set('lookupCacheDays', Number(e.target.value))}
+                onChange={(e) => type('lookupCacheDays', Number(e.target.value))}
+                {...saveOnLeave('lookupCacheDays')}
               />
             </label>
           </div>
         </div>
-
-        <div className="actions">
-          <button className="primary" type="submit" disabled={saving}>
-            {saving ? 'Saving…' : 'Save settings'}
-          </button>
-        </div>
-      </form>
+      </div>
 
       <PasswordCard />
       {loaded.data && <SecurityCard security={loaded.data.security} onRotated={loaded.reload} />}

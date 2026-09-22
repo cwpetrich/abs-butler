@@ -334,7 +334,9 @@ function NewRunForm({
           <input
             type="checkbox"
             checked={apply}
-            disabled={writesBlocked}
+            // Closed until the saved switches are known: a box that can be
+            // ticked before they load is a promise the server will not keep.
+            disabled={writesBlocked || !settings.data}
             onChange={(e) => setApply(e.target.checked)}
           />
           Apply changes (otherwise this is a dry run)

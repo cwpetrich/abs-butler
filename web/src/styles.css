@@ -507,3 +507,27 @@ label .hint {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* The Settings page saves each change as it is made; this confirms it. */
+.save-status {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  max-width: calc(100vw - 32px);
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.save-status.saved {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.save-status.error {
+  border-color: var(--err);
+  color: var(--err);
+}

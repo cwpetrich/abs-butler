@@ -6,6 +6,7 @@ import { saveConnection } from '../db/connection.js';
 import { closeDb, openDb, type Db } from '../db/index.js';
 import { recordRunItems } from '../db/runItems.js';
 import { createRun } from '../db/runs.js';
+import { updateSettings } from '../db/settings.js';
 import { JobRunner } from '../core/jobs.js';
 import { buildApiRouter, type ApiDeps } from './api.js';
 import type { RequestContext, Router } from './router.js';
@@ -228,6 +229,31 @@ describe('GET /api/runs/:id/items', () => {
   });
 });
 
+describe('POST /api/runs', () => {
+  beforeEach(() => {
+    runner.stop();
+    saveConnection(db, { url: 'http://localhost:13378', apiKey: 'k' });
+  });
+
+  it('refuses an applying repair while track repair is off, and allows its dry run', async () => {
+    await expect(post('/api/runs', { command: 'repair', options: { apply: true } })).rejects.toThrow(
+      /Track repair is turned off/,
+    );
+    expect(((await post('/api/runs', { command: 'repair', options: {} })) as { dryRun: boolean }).dryRun).toBe(true);
+
+    updateSettings(db, { allowTrackRepair: true });
+    const applied = (await post('/api/runs', { command: 'repair', options: { apply: true } })) as { dryRun: boolean };
+    expect(applied.dryRun).toBe(false);
+  });
+
+  // Normalize is the exception on purpose: with its switch off it still writes
+  // the additive half of its plan.
+  it('still lets an applying normalize through with metadata rewrite off', async () => {
+    const run = (await post('/api/runs', { command: 'normalize', options: { apply: true } })) as { dryRun: boolean };
+    expect(run.dryRun).toBe(false);
+  });
+});
+
 describe('POST /api/runs/:id/apply', () => {
   // What is under test is that the endpoint queues the right work, not the
   // runner carrying it out — and carrying it out here would have it reach for
@@ -308,6 +334,31 @@ describe('POST /api/runs/:id/apply', () => {
 
   it('404s for a run that does not exist', async () => {
     await expect(post('/api/runs/999/apply', {})).rejects.toThrow(/No such run/);
+  });
+
+  // Saved, not ticked: a report applied while the switch is off is refused up
+  // front with the reason, rather than queued to fail.
+  it('refuses to apply a repair report while track repair is off, but still previews it', async () => {
+    saveConnection(db, { url: 'http://localhost:13378', apiKey: 'k' });
+    const source = createRun(db, { command: 'repair', options: {}, dryRun: true, trigger: 'manual' }).id;
+    recordRunItems(db, source, [
+      {
+        itemId: 'a',
+        title: 'Dune',
+        author: null,
+        path: '/b/dune',
+        status: 'action',
+        codes: ['rescan-one'],
+        detail: [],
+        plan: { kind: 'repair', dead: ['900'], live: ['100'], durationBefore: 20, durationAfter: 10 },
+      },
+    ]);
+
+    await expect(post(`/api/runs/${source}/apply`, { apply: true })).rejects.toThrow(/Track repair is turned off/);
+    expect(((await post(`/api/runs/${source}/apply`, {})) as { dryRun: boolean }).dryRun).toBe(true);
+
+    updateSettings(db, { allowTrackRepair: true });
+    expect(((await post(`/api/runs/${source}/apply`, { apply: true })) as { dryRun: boolean }).dryRun).toBe(false);
   });
 
   // The page needs to know which rows it may offer, and how much is waiting in
