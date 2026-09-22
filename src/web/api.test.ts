@@ -124,6 +124,45 @@ describe('GET /api/runs/:id/items', () => {
     expect(result.total).toBe(4);
   });
 
+  it('pages past the first five hundred', async () => {
+    const runId = createRun(db, { command: 'audit', options: {}, dryRun: true, trigger: 'manual' }).id;
+    recordRunItems(
+      db,
+      runId,
+      Array.from({ length: 700 }, (_, i) => ({
+        itemId: `i${i}`,
+        title: `Book ${i}`,
+        author: null,
+        path: `/b/${i}`,
+        status: 'clean' as const,
+        codes: [],
+        detail: [],
+      })),
+    );
+
+    const result = (await get(`/api/runs/${runId}/items?limit=200&offset=600`)) as {
+      items: Array<{ itemId: string }>;
+      total: number;
+    };
+    expect(result.total).toBe(700);
+    expect(result.items).toHaveLength(100);
+    expect(result.items[0]!.itemId).toBe('i600');
+  });
+
+  it('searches, and counts what the search matched', async () => {
+    const runId = seed();
+    const result = (await get(`/api/runs/${runId}/items?search=austen`)) as {
+      items: Array<{ itemId: string }>;
+      total: number;
+      totals: { total: number };
+    };
+
+    expect(result.items.map((i) => i.itemId)).toEqual(['b', 'd']);
+    expect(result.total).toBe(2);
+    // The chips still count the whole run.
+    expect(result.totals.total).toBe(4);
+  });
+
   it('splits the items with something to do from the ones without', async () => {
     const runId = seed();
 

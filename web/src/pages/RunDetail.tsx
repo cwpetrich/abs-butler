@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type RunItem, type RunItemStatus, type Run, type RevertResult } from '../api';
 import { Banner, formatDuration, formatTime, Link, Spinner, StatusBadge, useAsync } from '../lib';
 import { LogStream } from '../components/LogStream';
@@ -102,6 +102,9 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
   );
 }
 
+/** How many of a run's items make up one page of its report. */
+const PAGE_SIZE = 100;
+
 /**
  * Every book the run looked at, and what it had to say about each.
  *
@@ -122,8 +125,16 @@ export function RunDetailPage({ runId, navigate }: { runId: number; navigate: (p
  * once — the same operation either way, with a shorter list.
  */
 function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) => void }) {
-  const [filter, setFilter] = useState<{ code?: string; status?: RunItemStatus }>({});
-  const [limit, setLimit] = useState(100);
+  const [filter, setFilterState] = useState<{ code?: string; status?: RunItemStatus }>({});
+  // What is typed, and what has been searched for: the second trails the first
+  // by a moment so a title is looked up once rather than once per keystroke.
+  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState('');
+  // One page of the report at a time, fetched by offset. A list that grew with
+  // every "show more" was thousands of rows long by the end of a large library,
+  // and there was no getting to the end of it without passing everything first.
+  const [pageIndex, setPageIndex] = useState(0);
+  const tableRef = useRef<HTMLTableElement>(null);
   // Books picked out of the report by hand. Kept by item id rather than by row,
   // so a selection survives changing the filter underneath it — picking three
   // books out of *Adult* and two out of *Held back* is one apply, not two.
@@ -137,9 +148,43 @@ function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) =
   // without the status in here, nothing fetched again when it finished. The card
   // sat on "Nothing recorded for this run" until the page was reloaded.
   const page = useAsync(
-    () => api.runItems(run.id, { ...filter, limit }),
-    [run.id, run.status, filter.code, filter.status, limit],
+    () =>
+      api.runItems(run.id, {
+        ...filter,
+        search: query,
+        limit: PAGE_SIZE,
+        offset: pageIndex * PAGE_SIZE,
+      }),
+    [run.id, run.status, filter.code, filter.status, query, pageIndex],
   );
+
+  // A different filter or search is a different list, and page 7 of the old one
+  // means nothing in it — so both go back to the start, in the same update so
+  // the stale page is never fetched.
+  const setFilter = (next: { code?: string; status?: RunItemStatus }) => {
+    setFilterState(next);
+    setPageIndex(0);
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const next = search.trim();
+      if (next === query) return;
+      setQuery(next);
+      setPageIndex(0);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search, query]);
+
+  const pageCount = Math.max(1, Math.ceil((page.data?.total ?? 0) / PAGE_SIZE));
+
+  // The pager sits under a long table; a new page should start at its top, not
+  // wherever the old one left the scroll.
+  const goToPage = (index: number) => {
+    setPageIndex(Math.min(Math.max(index, 0), pageCount - 1));
+    const table = tableRef.current;
+    if (table && table.getBoundingClientRect().top < 0) table.scrollIntoView({ block: 'start' });
+  };
 
   if (run.status === 'running' || run.status === 'queued') return null;
 
@@ -276,6 +321,22 @@ function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) =
         ))}
       </div>
 
+      <div className="actions" style={{ marginBottom: 12 }}>
+        <input
+          type="search"
+          placeholder="Find a book by title, author or folder…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: 320, maxWidth: '100%' }}
+          aria-label="Search this run's items"
+        />
+        {search && (
+          <button type="button" className="small" onClick={() => setSearch('')}>
+            Clear
+          </button>
+        )}
+      </div>
+
       {appliable > 0 && (
         <ApplyBar
           run={run}
@@ -293,13 +354,15 @@ function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) =
       {page.loading && !page.data && <Spinner />}
       {page.error && <Banner tone="err">{page.error}</Banner>}
 
-      {page.data && page.data.items.length === 0 && (
-        <p className="hint">No items match that filter.</p>
+      {page.data && rows.length === 0 && (
+        <p className="hint">
+          {query ? `Nothing in this run matches “${query}”.` : 'No items match that filter.'}
+        </p>
       )}
 
-      {page.data && page.data.items.length > 0 && (
+      {page.data && rows.length > 0 && (
         <>
-          <table>
+          <table ref={tableRef}>
             <thead>
               <tr>
                 {appliable > 0 && (
@@ -320,7 +383,7 @@ function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) =
               </tr>
             </thead>
             <tbody>
-              {page.data.items.map((item) => (
+              {rows.map((item) => (
                 <ItemRow
                   key={item.id}
                   item={item}
@@ -334,15 +397,108 @@ function RunItemsPanel({ run, navigate }: { run: Run; navigate: (path: string) =
             </tbody>
           </table>
 
-          {page.data.total > page.data.items.length && (
-            <div className="actions">
-              <button onClick={() => setLimit((n) => n + 200)}>
-                Showing {page.data.items.length} of {page.data.total} — show more
-              </button>
-            </div>
-          )}
         </>
       )}
+
+      {page.data && pageCount > 1 && (
+        <Pager
+          pageIndex={pageIndex}
+          pageCount={pageCount}
+          total={page.data.total}
+          busy={page.loading}
+          onGo={goToPage}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Which page of a report is showing, and a way to any other.
+ *
+ * Numbered around the current page with the ends always reachable, plus a box
+ * for a page number, because in a library of thousands "somewhere near the
+ * end" is forty clicks of Next and one of typing.
+ */
+function Pager({
+  pageIndex,
+  pageCount,
+  total,
+  busy,
+  onGo,
+}: {
+  pageIndex: number;
+  pageCount: number;
+  total: number;
+  busy: boolean;
+  onGo: (index: number) => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const first = pageIndex * PAGE_SIZE + 1;
+  const last = Math.min((pageIndex + 1) * PAGE_SIZE, total);
+
+  // 1 … 4 5 [6] 7 8 … 40: the neighbours of this page and both ends, with a gap
+  // wherever pages are skipped.
+  const shown = [...new Set([0, pageIndex - 2, pageIndex - 1, pageIndex, pageIndex + 1, pageIndex + 2, pageCount - 1])]
+    .filter((n) => n >= 0 && n < pageCount)
+    .sort((a, b) => a - b);
+
+  const jump = () => {
+    const n = Number(typed);
+    if (Number.isInteger(n) && n >= 1) onGo(Math.min(n, pageCount) - 1);
+    setTyped('');
+  };
+
+  return (
+    <div className="actions" style={{ flexWrap: 'wrap', marginTop: 12 }}>
+      <span className="hint" style={{ margin: 0 }}>
+        {first}–{last} of {total}
+      </span>
+      <button className="small" disabled={busy || pageIndex === 0} onClick={() => onGo(pageIndex - 1)}>
+        ‹ Previous
+      </button>
+      {shown.map((n, i) => (
+        <span key={n} style={{ display: 'contents' }}>
+          {i > 0 && n - shown[i - 1]! > 1 && <span className="hint" style={{ margin: 0 }}>…</span>}
+          <button
+            className={n === pageIndex ? 'small primary' : 'small'}
+            disabled={busy}
+            aria-current={n === pageIndex ? 'page' : undefined}
+            onClick={() => onGo(n)}
+          >
+            {n + 1}
+          </button>
+        </span>
+      ))}
+      <button
+        className="small"
+        disabled={busy || pageIndex >= pageCount - 1}
+        onClick={() => onGo(pageIndex + 1)}
+      >
+        Next ›
+      </button>
+      <form
+        className="actions"
+        style={{ gap: 6 }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          jump();
+        }}
+      >
+        <input
+          type="number"
+          min={1}
+          max={pageCount}
+          placeholder="Page"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          style={{ width: 80 }}
+          aria-label={`Go to page, 1 to ${pageCount}`}
+        />
+        <button type="submit" className="small" disabled={busy || typed === ''}>
+          Go
+        </button>
+      </form>
     </div>
   );
 }

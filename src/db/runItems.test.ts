@@ -114,6 +114,33 @@ describe('run items', () => {
     expect(countRunItems(db, { runId, limit: 2 })).toBe(3);
   });
 
+  it('finds items by title, author or folder, without regard to case', () => {
+    const runId = audit();
+    recordRunItems(db, runId, [...sample, clean]);
+
+    expect(listRunItems(db, { runId, search: 'dune' }).map((item) => item.itemId)).toEqual(['a']);
+    expect(listRunItems(db, { runId, search: 'AUSTEN' }).map((item) => item.itemId)).toEqual(['b', 'd']);
+    expect(listRunItems(db, { runId, search: '/b/x' }).map((item) => item.itemId)).toEqual(['c']);
+    // Combined with a filter, both have to hold.
+    expect(listRunItems(db, { runId, search: 'austen', status: 'clean' }).map((item) => item.itemId)).toEqual(['d']);
+    expect(countRunItems(db, { runId, search: 'austen' })).toBe(2);
+    // Blank is no search at all.
+    expect(countRunItems(db, { runId, search: '  ' })).toBe(4);
+  });
+
+  it('searches for wildcard characters as written', () => {
+    const runId = audit();
+    recordRunItems(db, runId, [
+      { ...clean, itemId: 'p', title: '100% Pure' },
+      { ...clean, itemId: 'q', title: '1000 Pure' },
+      { ...clean, itemId: 'r', title: 'snake_case' },
+      { ...clean, itemId: 's', title: 'snakeXcase' },
+    ]);
+
+    expect(listRunItems(db, { runId, search: '100%' }).map((item) => item.itemId)).toEqual(['p']);
+    expect(listRunItems(db, { runId, search: 'e_c' }).map((item) => item.itemId)).toEqual(['r']);
+  });
+
   it('replaces rather than appends when the same run is recorded twice', () => {
     const runId = audit();
     recordRunItems(db, runId, sample);
