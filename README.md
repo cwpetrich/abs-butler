@@ -585,8 +585,13 @@ included. So a repair removes the dead records and then gives a rescan a reason 
   refuses to rescan one of these on its own, so its dead records are removed, its file is touched,
   and the whole library is scanned: a library scan rescans an item whose file changed. Every such
   book in a run shares one scan, and the run waits for it to finish. This needs **Allow file
-  changes** and the library mounted where abs-butler can reach it; without them these books are
-  reported with what to turn on, and a report applied later keeps them waiting until it is.
+  changes** and the library mounted where abs-butler can reach it.
+- **A single file at the library root that abs-butler cannot reach** — repaired **partly**: the
+  dead records are removed and the chapters trimmed, over the API alone, so nothing plays a file
+  that is gone. The stored length stays doubled until AudiobookShelf rescans the file, and the
+  report says what would let abs-butler do that. The run keeps its plan: once the file is in reach,
+  applying the same run again finishes it, and so does a fresh `repair`, which recognises a length
+  the tracks do not add up to even with no dead records left.
 
 Chapters that still run past the new end are trimmed. Every repair is checked afterwards — no dead
 records left, every live track back, and the length the tracks add up to — and one that did not take
