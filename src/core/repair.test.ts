@@ -224,11 +224,18 @@ describe('assessItem', () => {
   });
 
   // Whether one can be mended is a question about this install, not the book —
-  // see repairBlockedReason.
+  // see lengthPendingReason.
   it('does not count a bare file as uncertain', () => {
     const item = migrated('bare', [['book.m4b', 300]]);
     item.isFile = true;
     expect(assessItem(item).problem).toBeNull();
+  });
+
+  it('notices a length its tracks do not add up to once the dead records are gone', () => {
+    const item = migrated('by-hand', [['01.mp3', 300]]);
+    item.media.audioFiles = item.media.audioFiles!.filter((f) => f.ino === '100');
+    expect(assessItem(item)).toMatchObject({ dead: [], staleLength: true, durationAfter: 300, problem: null });
+    expect(assessItem(healthy('fine')).staleLength).toBe(false);
   });
 
   it('leaves alone an item that would have nothing playable left', () => {
@@ -249,6 +256,12 @@ describe('assessItem', () => {
 describe('chooseMethod', () => {
   it('uses the API-only route when there are two tracks to work with', () => {
     expect(chooseMethod(assessItem(migrated('a', [['01.mp3', 1], ['02.mp3', 1]])), true)).toBe('rescan-one');
+  });
+
+  it('drops only the records of a bare file it may not touch', () => {
+    const assessment = assessItem(migrated('bare', [['book.m4b', 300]]));
+    expect(chooseMethod(assessment, true, true)).toBe('library-scan');
+    expect(chooseMethod(assessment, false, true)).toBe('records-only');
   });
 
   it('touches a one-file book when it may, and clears it when it may not', () => {
@@ -451,18 +464,56 @@ describe('bare files at the library root', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('leaves one alone when it cannot touch the file, and says what would change that', async () => {
+  it('plans a partial repair when it cannot touch the file, and says what would finish it', async () => {
     bareFiles(root, ['bare']);
     const ctx = touchingContext(root, { dryRun: true, allowFileChanges: false });
 
     const result = await runRepairTask(ctx);
 
-    expect(result).toMatchObject({ affected: 1, repairable: 0, ambiguous: 0, needsFileChanges: 1 });
+    expect(result).toMatchObject({ affected: 1, repairable: 1, needsFileChanges: 0, methods: { 'records-only': 1 } });
     const row = listRunItems(db, { runId: ctx.runId! })[0]!;
-    expect(row.status).toBe('skipped');
-    expect(row.codes).toContain('needs-file-changes');
+    expect(row.status).toBe('action');
+    expect(row.codes).toContain('records-only');
+    expect(row.detail.join(' ')).toContain('its length stays doubled');
     expect(row.detail.join(' ')).toContain('"Allow file changes" is off');
-    expect(row.plan).toBeNull();
+    expect(row.plan).toMatchObject({ kind: 'repair', dead: ['1900'] });
+    expect(calls).toEqual([]);
+  });
+
+  it('drops the dead record of one it cannot touch, over the API alone, and keeps its plan', async () => {
+    bareFiles(root, ['bare']);
+    const ctx = touchingContext(root, { allowFileChanges: false });
+
+    const result = await runRepairTask(ctx, { apply: true });
+
+    expect(result).toMatchObject({ repaired: 0, partlyRepaired: 1, failed: 0 });
+    // No touch and no scan: the records and the chapters, and nothing else.
+    expect(calls).toEqual(['tracks bare 1100', 'chapters bare 1']);
+    const item = items.get('bare')!;
+    expect(item.media.audioFiles!.map((f) => f.ino)).toEqual(['1100']);
+    expect(item.media.chapters).toEqual([{ id: 0, start: 0, end: 120, title: 'bare' }]);
+    expect(item.media.duration).toBe(240);
+    expect(statSync(join(root, 'bare.m4b')).mtimeMs).toBe(new Date('2020-01-01T00:00:00Z').getTime());
+
+    const row = listRunItems(db, { runId: ctx.runId! })[0]!;
+    expect(row.status).toBe('action');
+    expect(row.codes).toEqual(expect.arrayContaining(['partly-repaired', 'records-only']));
+    expect(row.detail.join(' ')).toContain('Its length is still 4m00s');
+    expect(countRunItemPlans(db, ctx.runId!)).toBe(1);
+  });
+
+  it('finds the doubled length a partial repair left, and finishes it once it may touch the file', async () => {
+    bareFiles(root, ['bare']);
+    await runRepairTask(touchingContext(root, { allowFileChanges: false }), { apply: true });
+
+    const blocked = await runRepairTask(touchingContext(root, { dryRun: true, allowFileChanges: false }));
+    expect(blocked).toMatchObject({ affected: 1, repairable: 0, needsFileChanges: 1 });
+
+    const ctx = touchingContext(root);
+    const done = await runRepairTask(ctx, { apply: true });
+    expect(done).toMatchObject({ affected: 1, repaired: 1, methods: { 'library-scan': 1 } });
+    expect(listRunItems(db, { runId: ctx.runId! })[0]!.codes).toContain('stale-length');
+    expect(items.get('bare')!.media.duration).toBe(120);
   });
 
   it('plans a library scan for one when it may touch the file', async () => {
@@ -520,7 +571,7 @@ describe('bare files at the library root', () => {
     expect(row.detail.join(' ')).toContain('The next scan of the library sets its length');
   });
 
-  it('keeps the plan of a report applied while file changes are off, so it can be applied later', async () => {
+  it('keeps the plan of a report applied while file changes are off, so it can be finished later', async () => {
     bareFiles(root, ['bare']);
     const dry = touchingContext(root, { dryRun: true });
     await runRepairTask(dry);
@@ -529,9 +580,18 @@ describe('bare files at the library root', () => {
       applyFrom: dry.runId!,
       apply: true,
     });
-    expect(held).toMatchObject({ written: 0, blocked: 1 });
+    expect(held).toMatchObject({ written: 1, blocked: 0 });
     expect(countRunItemPlans(db, dry.runId!)).toBe(1);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(['tracks bare 1100', 'chapters bare 1']);
+    expect(items.get('bare')!.media.duration).toBe(240);
+
+    // With its dead records gone, there is nothing the API alone can do.
+    const still = await runApplyTask(touchingContext(root, { allowFileChanges: false }), {
+      applyFrom: dry.runId!,
+      apply: true,
+    });
+    expect(still).toMatchObject({ written: 0, blocked: 1 });
+    expect(countRunItemPlans(db, dry.runId!)).toBe(1);
 
     const done = await runApplyTask(touchingContext(root), { applyFrom: dry.runId!, apply: true });
     expect(done).toMatchObject({ written: 1 });
@@ -550,7 +610,7 @@ describe('verifyRepair', () => {
 });
 
 describe('apply of a repair run', () => {
-  it('carries out the recorded repair, and leaves a book whose damage has changed', async () => {
+  it('carries out the recorded repair, and finishes one whose dead records were removed by hand', async () => {
     migrated('double', [['01.mp3', 300], ['02.mp3', 300]]);
     migrated('moved-on', [['01.mp3', 300], ['02.mp3', 300]]);
     const dry = context();
@@ -565,8 +625,25 @@ describe('apply of a repair run', () => {
       { applyFrom: dry.runId!, apply: true },
     );
 
-    expect(result).toMatchObject({ written: 1, unchanged: 1 });
+    expect(result).toMatchObject({ written: 2, unchanged: 0 });
     expect(items.get('double')!.media.duration).toBe(600);
+    // Removed by hand, it kept the doubled length; the rescan is what was left.
+    expect(items.get('moved-on')!.media.duration).toBe(600);
+  });
+
+  it('leaves a book whose dead records are different ones now', async () => {
+    migrated('moved-on', [['01.mp3', 300], ['02.mp3', 300]]);
+    const dry = context();
+    await runRepairTask(dry);
+
+    items.get('moved-on')!.media.audioFiles![0]!.ino = '555';
+    const result = await runApplyTask(
+      { ...context({ dryRun: false }), settings: { ...DEFAULT_SETTINGS, allowTrackRepair: true } },
+      { applyFrom: dry.runId!, apply: true },
+    );
+
+    expect(result).toMatchObject({ written: 0 });
+    expect(calls).toEqual([]);
   });
 
   it('is refused while the switch is off', async () => {

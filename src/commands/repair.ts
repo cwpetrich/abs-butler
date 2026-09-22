@@ -27,7 +27,9 @@ export async function runRepair(options: RepairOptions): Promise<void> {
     return;
   }
 
-  const damaged = result.report.filter((row) => row.codes.includes('dead-audio-record'));
+  const damaged = result.report.filter(
+    (row) => row.codes.includes('dead-audio-record') || row.codes.includes('stale-length'),
+  );
   if (damaged.length === 0) {
     if (options.details) printDetails('repair', result.report, { onlyAction: options.onlyChanged });
     else log.info('re-run with --details to list every item checked');
@@ -55,7 +57,7 @@ export async function runRepair(options: RepairOptions): Promise<void> {
 
   if (!result.applied) {
     if (result.repairable > 0) log.info(`re-run with --apply, or carry this one out with: abs-butler apply ${run.id}`);
-  } else if (result.repaired + result.failed > 0) {
+  } else if (result.repaired + result.partlyRepaired + result.failed > 0) {
     // Named here because an undo nobody can find is not an undo.
     log.info(`run ${run.id} — put the track lists back with: abs-butler revert ${run.id}`);
   }

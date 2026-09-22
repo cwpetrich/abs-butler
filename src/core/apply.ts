@@ -25,7 +25,7 @@ import { brief, itemPath, plural, reportItems } from './report.js';
 import {
   assessItem,
   describeDamage,
-  repairBlockedReason,
+  lengthPendingReason,
   repairItems,
   touchAccess,
   TRACK_REPAIR_DISABLED,
@@ -309,9 +309,11 @@ export async function runApplyTask(
 
     if (outcome.act === 'repair') {
       // Waiting on a switch, like a held-back field: the plan stays, so the
-      // book is appliable again once file changes are allowed.
-      const reason = repairBlockedReason(ctx, item, outcome.assessment, access!);
-      if (reason) {
+      // book is appliable again once file changes are allowed. Only when
+      // there is nothing the API can do meanwhile — dead records still there
+      // are dropped now, records-only, and the length waits.
+      const reason = lengthPendingReason(ctx, item, outcome.assessment, access!);
+      if (reason && outcome.assessment.dead.length === 0) {
         blocked += 1;
         report.push({
           ...identity,
@@ -360,8 +362,11 @@ export async function runApplyTask(
       continue;
     }
     // Settled either way: a failed repair has an undo record, and trying
-    // again blindly is not what somebody reading the failure would want.
-    settled.push(row.itemId);
+    // again blindly is not what somebody reading the failure would want. A
+    // partial one is not settled: its length is still owed, and applying the
+    // same run once the file is in reach is how it gets paid.
+    const partial = result.ok && result.method === 'records-only';
+    if (!partial) settled.push(row.itemId);
     if (result.ok) written += 1;
     else blocked += 1;
     report.push({
@@ -369,7 +374,7 @@ export async function runApplyTask(
       status: result.ok ? 'action' : 'skipped',
       codes: result.codes,
       detail: [...lines, ...result.lines],
-      plan: null,
+      plan: partial ? row.plan : null,
     });
   }
 
@@ -465,9 +470,16 @@ function decide(
  * dead records. Any other set — some gone, new ones appeared — means the item
  * has been rescanned or edited since, and its certainty has to be worked out
  * again rather than borrowed.
+ *
+ * None at all, with the length still doubled, is the one exception: that is
+ * where a records-only repair (or somebody's hand) left it, and what remains
+ * is a rescan, which has no certainty to borrow.
  */
 function decideRepair(dead: string[], item: AbsLibraryItem): Outcome {
   const assessment = assessItem(item);
+  if (assessment.dead.length === 0 && assessment.staleLength && !assessment.problem) {
+    return { act: 'repair', assessment, lines: describeDamage(assessment) };
+  }
   if (assessment.dead.length === 0) {
     return {
       act: 'none',
