@@ -189,6 +189,7 @@ export function summarizeResult(command: RunCommand, result: TaskResult): Record
         affected: r.affected,
         repairable: r.repairable,
         ambiguous: r.ambiguous,
+        needsFileChanges: r.needsFileChanges,
         repaired: r.repaired,
         failed: r.failed,
         applied: r.applied,

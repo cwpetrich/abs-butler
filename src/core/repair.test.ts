@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -6,7 +6,7 @@ import type { AbsAudioFile, AbsChapter, AbsLibrary, AbsLibraryItem, AbsMediaPatc
 import type { TaskContext } from '../context.js';
 import { openMemoryDb, type Db } from '../db/index.js';
 import { listRevisions } from '../db/revisions.js';
-import { listRunItems } from '../db/runItems.js';
+import { countRunItemPlans, listRunItems } from '../db/runItems.js';
 import { createRun } from '../db/runs.js';
 import { DEFAULT_SETTINGS, updateSettings } from '../db/settings.js';
 import { runApplyTask } from './apply.js';
@@ -130,19 +130,22 @@ function fakeClient() {
     },
     async scanItem(id: string) {
       calls.push(`scan ${id}`);
-      const item = items.get(id)!;
-      const media = item.media;
-      const files = item.libraryFiles!;
-      const changed = files.some((file) => touched.has(file.ino));
-      if (!changed && files.length === media.audioFiles!.length) return 'UPTODATE';
-      for (const file of files) {
-        if (!media.audioFiles!.some((a) => a.ino === file.ino)) {
-          media.audioFiles!.push(record(file.ino, file.metadata.filename, file.metadata.size / 1000));
+      // As ABS does: a bare file is rescanned only by a library scan.
+      if (items.get(id)!.isFile) throw new Error('500 Internal Server Error');
+      return rescan(id);
+    },
+    async isScanningLibrary() {
+      return false;
+    },
+    async scanLibrary(libraryId: string) {
+      calls.push(`library-scan ${libraryId}`);
+      // A library scan passes over any item whose files have not changed.
+      for (const [id, item] of items) {
+        if (item.libraryId === libraryId && item.libraryFiles!.some((file) => touched.has(file.ino))) {
+          rescan(id, false);
         }
       }
-      media.duration = media.audioFiles!.reduce((sum, file) => sum + file.duration, 0);
       touched.clear();
-      return 'UPDATED';
     },
     async updateChapters(id: string, chapters: AbsChapter[]) {
       calls.push(`chapters ${id} ${chapters.length}`);
@@ -155,6 +158,23 @@ function fakeClient() {
       return [{ libraryItemId: 'double', duration: 1200, currentTime: 700, isFinished: false }];
     },
   };
+
+  /** ABS's rescan of one item: records for files it lacks, and a length from every record. */
+  function rescan(id: string, clearTouched = true) {
+    const item = items.get(id)!;
+    const media = item.media;
+    const files = item.libraryFiles!;
+    const changed = files.some((file) => touched.has(file.ino));
+    if (!changed && files.length === media.audioFiles!.length) return 'UPTODATE';
+    for (const file of files) {
+      if (!media.audioFiles!.some((a) => a.ino === file.ino)) {
+        media.audioFiles!.push(record(file.ino, file.metadata.filename, file.metadata.size / 1000));
+      }
+    }
+    media.duration = media.audioFiles!.reduce((sum, file) => sum + file.duration, 0);
+    if (clearTouched) touched.clear();
+    return 'UPDATED';
+  }
 }
 
 function context(options: { dryRun?: boolean; command?: 'repair' } = {}): TaskContext {
@@ -203,10 +223,12 @@ describe('assessItem', () => {
     expect(assessItem(item).problem).toBeNull();
   });
 
-  it('leaves alone a book that is a bare file, which ABS will not rescan', () => {
+  // Whether one can be mended is a question about this install, not the book —
+  // see repairBlockedReason.
+  it('does not count a bare file as uncertain', () => {
     const item = migrated('bare', [['book.m4b', 300]]);
     item.isFile = true;
-    expect(assessItem(item).problem).toContain('single file');
+    expect(assessItem(item).problem).toBeNull();
   });
 
   it('leaves alone an item that would have nothing playable left', () => {
@@ -368,6 +390,153 @@ describe('runRepairTask', () => {
     const row = listRunItems(db, { runId: ctx.runId! })[0]!;
     expect(row.status).toBe('skipped');
     expect(row.detail.join(' ')).toContain('did not come back');
+  });
+});
+
+/**
+ * Books that are a single file at the library root, each with its old record
+ * still beside the new one — the shape that reached this from a real library.
+ * The files are real, in a directory of their own, so a touch has something to
+ * change; and each book has inodes of its own, so touching one is not taken
+ * for touching another.
+ */
+function bareFiles(root: string, ids: string[]): void {
+  const old = new Date('2020-01-01T00:00:00Z');
+  for (const [n, id] of ids.entries()) {
+    const file = join(root, `${id}.m4b`);
+    writeFileSync(file, 'audio');
+    utimesSync(file, old, old);
+    const item = migrated(id, [[`${id}.m4b`, 120]], {
+      chapters: [
+        { id: 0, start: 0, end: 120, title: id },
+        { id: 1, start: 120, end: 240, title: id },
+      ],
+    });
+    item.isFile = true;
+    item.path = file;
+    for (const f of [...item.media.audioFiles!, ...item.libraryFiles!]) {
+      f.ino = `${n + 1}${f.ino}`;
+      f.metadata.path = file;
+    }
+  }
+}
+
+/** A context that may touch files under `root`, with a scan that notices a touch the way ABS does. */
+function touchingContext(root: string, options: { dryRun?: boolean; allowFileChanges?: boolean } = {}): TaskContext {
+  const ctx = {
+    ...context({ dryRun: options.dryRun ?? false }),
+    connection: { url: 'http://x', libraryRoot: root, pathPrefix: null } as TaskContext['connection'],
+    settings: { ...DEFAULT_SETTINGS, allowTrackRepair: true, allowFileChanges: options.allowFileChanges ?? true },
+  };
+  const client = ctx.client as unknown as { scanLibrary: (id: string) => Promise<void> };
+  const scan = client.scanLibrary;
+  client.scanLibrary = async (id) => {
+    for (const item of items.values()) {
+      for (const file of item.libraryFiles!) {
+        if (!existsSync(file.metadata.path)) continue;
+        if (statSync(file.metadata.path).mtimeMs > new Date('2020-01-02').getTime()) touched.add(file.ino);
+      }
+    }
+    return scan(id);
+  };
+  return ctx;
+}
+
+describe('bare files at the library root', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'butler-bare-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('leaves one alone when it cannot touch the file, and says what would change that', async () => {
+    bareFiles(root, ['bare']);
+    const ctx = touchingContext(root, { dryRun: true, allowFileChanges: false });
+
+    const result = await runRepairTask(ctx);
+
+    expect(result).toMatchObject({ affected: 1, repairable: 0, ambiguous: 0, needsFileChanges: 1 });
+    const row = listRunItems(db, { runId: ctx.runId! })[0]!;
+    expect(row.status).toBe('skipped');
+    expect(row.codes).toContain('needs-file-changes');
+    expect(row.detail.join(' ')).toContain('"Allow file changes" is off');
+    expect(row.plan).toBeNull();
+  });
+
+  it('plans a library scan for one when it may touch the file', async () => {
+    bareFiles(root, ['bare']);
+    const ctx = touchingContext(root, { dryRun: true });
+
+    const result = await runRepairTask(ctx);
+
+    expect(result).toMatchObject({ repairable: 1, methods: { 'library-scan': 1 } });
+    const row = listRunItems(db, { runId: ctx.runId! })[0]!;
+    expect(row.status).toBe('action');
+    expect(row.codes).toContain('library-scan');
+    expect(row.plan).toMatchObject({ kind: 'repair', dead: ['1900'], live: ['1100'] });
+    expect(calls).toEqual([]);
+  });
+
+  it('mends them with one library scan between them, and trims their chapters', async () => {
+    bareFiles(root, ['first', 'second']);
+    migrated('folder', [['01.mp3', 300], ['02.mp3', 300]]);
+    const ctx = touchingContext(root);
+
+    const result = await runRepairTask(ctx, { apply: true });
+
+    expect(result).toMatchObject({ repaired: 3, failed: 0, methods: { 'library-scan': 2, 'rescan-one': 1 } });
+    expect(calls).toEqual([
+      'tracks first 1100',
+      'tracks second 2100',
+      'tracks folder 100',
+      'scan folder',
+      'library-scan lib',
+      'chapters first 1',
+      'chapters second 1',
+    ]);
+    for (const id of ['first', 'second']) {
+      expect(items.get(id)!.media.duration).toBe(120);
+      expect(items.get(id)!.media.chapters).toEqual([{ id: 0, start: 0, end: 120, title: id }]);
+      // Only the time moved; what is in the file is untouched.
+      expect(statSync(join(root, `${id}.m4b`)).size).toBe(5);
+    }
+  });
+
+  it('says what state a book is left in when the library scan fails', async () => {
+    bareFiles(root, ['bare']);
+    const ctx = touchingContext(root);
+    (ctx.client as unknown as { scanLibrary: () => Promise<void> }).scanLibrary = async () => {
+      throw new Error('503 Service Unavailable');
+    };
+
+    const result = await runRepairTask(ctx, { apply: true });
+
+    expect(result).toMatchObject({ repaired: 0, failed: 1 });
+    const row = listRunItems(db, { runId: ctx.runId! })[0]!;
+    expect(row.status).toBe('skipped');
+    expect(row.detail.join(' ')).toContain('the library scan failed: 503 Service Unavailable');
+    expect(row.detail.join(' ')).toContain('The next scan of the library sets its length');
+  });
+
+  it('keeps the plan of a report applied while file changes are off, so it can be applied later', async () => {
+    bareFiles(root, ['bare']);
+    const dry = touchingContext(root, { dryRun: true });
+    await runRepairTask(dry);
+
+    const held = await runApplyTask(touchingContext(root, { allowFileChanges: false }), {
+      applyFrom: dry.runId!,
+      apply: true,
+    });
+    expect(held).toMatchObject({ written: 0, blocked: 1 });
+    expect(countRunItemPlans(db, dry.runId!)).toBe(1);
+    expect(calls).toEqual([]);
+
+    const done = await runApplyTask(touchingContext(root), { applyFrom: dry.runId!, apply: true });
+    expect(done).toMatchObject({ written: 1 });
+    expect(items.get('bare')!.media.duration).toBe(120);
+    expect(countRunItemPlans(db, dry.runId!)).toBe(0);
   });
 });
 

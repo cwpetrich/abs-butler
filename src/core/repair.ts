@@ -25,7 +25,7 @@ import { breakdown, itemIdentity, plural, reportItems } from './report.js';
  * rescan recomputes, and a rescan adds up every record — excluded ones too. So
  * the dead records have to leave the item entirely, and then a rescan has to be
  * given a reason to recompute: it does so only when a file changed on disk or
- * the number of records disagrees with the number of files. There are three
+ * the number of records disagrees with the number of files. There are four
  * ways to arrange that, all verified against AudiobookShelf 2.36:
  *
  *   rescan-one  Drop the dead records and one live track. The rescan finds a
@@ -38,6 +38,12 @@ import { breakdown, itemIdentity, plural, reportItems } from './report.js';
  *               a one-file book when touching is not possible. The item has no
  *               tracks until the rescan finishes, and it relies on a field ABS
  *               has marked for removal.
+ *   library-scan  For a book that is a bare file at the library root, which
+ *               ABS refuses to rescan on its own. Drop the dead records and
+ *               touch the file, then scan the whole library: a library scan
+ *               rescans an item whose file changed, and recomputes its length
+ *               from the records left. Needs the same access as a touch, and
+ *               every such book in a run shares one scan.
  *
  * Chapters are rebuilt by the same rescan when the book has several files or
  * chapters embedded in one. A one-file book without them keeps its doubled
@@ -56,9 +62,13 @@ export const TRACK_REPAIR_DISABLED =
   "It rewrites an item's track list and rescans it. It never changes what is in a file, but " +
   'it does change what AudiobookShelf plays, so it is something to choose rather than a default.';
 
-export type RepairMethod = 'rescan-one' | 'touch' | 'clear';
+export type RepairMethod = 'rescan-one' | 'touch' | 'clear' | 'library-scan';
 
-export const REPAIR_METHODS: readonly RepairMethod[] = ['rescan-one', 'touch', 'clear'];
+export const REPAIR_METHODS: readonly RepairMethod[] = ['rescan-one', 'touch', 'clear', 'library-scan'];
+
+/** How often to ask whether a library scan has finished, and how long to wait for one. */
+const SCAN_POLL_MS = 2000;
+const SCAN_TIMEOUT_MS = 30 * 60_000;
 
 /** What an item's audio records say, and whether they can be mended safely. */
 export interface Assessment {
@@ -106,7 +116,7 @@ export function assessItem(item: AbsLibraryItem): Assessment {
   const assessment = { dead, live, durationBefore, durationAfter, problem: null, synthetic };
   if (dead.length === 0) return assessment;
 
-  return { ...assessment, problem: ambiguity(item, dead, live) };
+  return { ...assessment, problem: ambiguity(dead, live) };
 }
 
 /**
@@ -118,10 +128,7 @@ export function assessItem(item: AbsLibraryItem): Assessment {
  * copies of a book (an m4b beside an mp3 set) are not this at all: both are on
  * disk, so neither is dead, and they never reach here.
  */
-function ambiguity(item: AbsLibraryItem, dead: AbsAudioFile[], live: AbsAudioFile[]): string | null {
-  if (item.isFile) {
-    return 'It is a single file at the library root, which AudiobookShelf will not rescan on its own';
-  }
+function ambiguity(dead: AbsAudioFile[], live: AbsAudioFile[]): string | null {
   if (!live.some((record) => !record.exclude)) {
     return 'No playable track would remain once the dead records were gone';
   }
@@ -172,7 +179,31 @@ function touchTarget(ctx: TaskContext, assessment: Assessment, access: TouchAcce
   return null;
 }
 
-export function chooseMethod(assessment: Assessment, canTouch: boolean): RepairMethod {
+/**
+ * Why a book that could be mended cannot be mended from here — a matter of this
+ * install rather than of the book, so it is worth saying what would change it.
+ *
+ * Only a bare file has such a reason. AudiobookShelf rescans one of those only
+ * as part of a library scan, and only once its file has changed, so the file
+ * has to be touched; every other book has a route that needs nothing but the
+ * API.
+ */
+export function repairBlockedReason(
+  ctx: TaskContext,
+  item: AbsLibraryItem,
+  assessment: Assessment,
+  access: TouchAccess,
+): string | null {
+  if (!item.isFile || touchTarget(ctx, assessment, access) !== null) return null;
+  const why = access.allowed ? 'its file is not somewhere this machine can reach' : access.reason;
+  return (
+    'It is a single file at the library root, which AudiobookShelf rescans only in a library scan ' +
+    `and only once the file has changed — so repairing it means touching the file, and ${why}`
+  );
+}
+
+export function chooseMethod(assessment: Assessment, canTouch: boolean, isFile = false): RepairMethod {
+  if (isFile) return 'library-scan';
   if (assessment.live.filter((record) => !record.exclude).length >= 2) return 'rescan-one';
   return canTouch ? 'touch' : 'clear';
 }
@@ -186,6 +217,8 @@ function methodLine(method: RepairMethod, apply: boolean): string {
       return `${verb} by dropping the dead records and touching one of its files, so a rescan of the item recomputes the length`;
     case 'clear':
       return `${verb} by emptying the track list and rescanning the item, which rebuilds it from the files on disk`;
+    case 'library-scan':
+      return `${verb} by dropping the dead records and touching its file, then scanning the library — AudiobookShelf will not rescan a bare file on its own`;
   }
 }
 
@@ -283,8 +316,24 @@ export interface RepairOutcome {
   codes: string[];
 }
 
+export interface RepairTarget {
+  item: AbsLibraryItem;
+  assessment: Assessment;
+}
+
+/** A repair whose writes are done, waiting on the rescan that makes them count. */
+interface Begun extends RepairTarget {
+  method: RepairMethod;
+  revisionId: number | undefined;
+}
+
 /**
- * Carries out one repair and checks it took.
+ * Carries out repairs and checks each one took.
+ *
+ * A book in a folder is rescanned the moment it has been mended. A bare file
+ * cannot be — AudiobookShelf refuses — so those are all readied first and then
+ * share one scan of their library, since each scan is a walk of the whole
+ * library and a run can hold hundreds of them.
  *
  * The undo record is written before the first call, like every other write, and
  * holds the track and chapter lists whole. It is completed with what the rescan
@@ -292,17 +341,58 @@ export interface RepairOutcome {
  * cannot put back is the length: nothing but a rescan sets that, and a revert
  * restoring the dead records leaves the next rescan to double it again.
  *
- * Never throws for a failure on the server; a half-done repair is reported as
- * a failure of this item, and the run moves on to the next.
+ * Never throws for a failure on the server; a half-done repair is reported as a
+ * failure of that book, and the run moves on to the next. The outcomes come
+ * back in the order given, with null for a book the run was stopped before
+ * reaching.
  */
-export async function repairItem(
+export async function repairItems(
   ctx: TaskContext,
-  item: AbsLibraryItem,
-  assessment: Assessment,
+  targets: RepairTarget[],
   access: TouchAccess,
-): Promise<RepairOutcome> {
+): Promise<Array<RepairOutcome | null>> {
+  const outcomes: Array<RepairOutcome | null> = targets.map(() => null);
+  const waiting = new Map<string, Array<{ index: number; begun: Begun }>>();
+
+  for (const [index, target] of targets.entries()) {
+    // Between whole items, so a stopped run never leaves one half-mended.
+    if (ctx.signal?.aborted) break;
+    const begun = await beginRepair(ctx, target, access);
+    if ('ok' in begun) {
+      outcomes[index] = begun;
+    } else if (begun.method === 'library-scan') {
+      const group = waiting.get(begun.item.libraryId) ?? [];
+      group.push({ index, begun });
+      waiting.set(begun.item.libraryId, group);
+    } else {
+      outcomes[index] = await rescanAndFinish(ctx, begun);
+    }
+    if ((index + 1) % 25 === 0) log.info(`  repaired ${index + 1}/${targets.length}`);
+  }
+
+  // Scanned even when the run has been stopped: these books have already lost
+  // their dead records and been touched, and the scan is what finishes them.
+  for (const [libraryId, group] of waiting) {
+    log.info(`scanning the library so AudiobookShelf rescans ${plural(group.length, 'bare-file book')}…`);
+    const problem = await scanLibraryAndWait(ctx, libraryId);
+    for (const { index, begun } of group) {
+      outcomes[index] = problem ? unfinished(begun, problem) : await finishRepair(ctx, begun);
+    }
+  }
+  return outcomes;
+}
+
+/** Records the undo and makes the writes, stopping short of the rescan. */
+async function beginRepair(
+  ctx: TaskContext,
+  { item, assessment }: RepairTarget,
+  access: TouchAccess,
+): Promise<Begun | RepairOutcome> {
   const touchPath = touchTarget(ctx, assessment, access);
-  const method = chooseMethod(assessment, touchPath !== null);
+  const method = chooseMethod(assessment, touchPath !== null, Boolean(item.isFile));
+
+  const blocked = repairBlockedReason(ctx, item, assessment, access);
+  if (blocked) return { ok: false, method, lines: [`Not repaired: ${blocked}`], codes: ['needs-file-changes'] };
 
   const revisionId =
     ctx.runId === undefined
@@ -328,7 +418,8 @@ export async function repairItem(
         await ctx.client.updateTracks(item.id, keep);
         break;
       }
-      case 'touch': {
+      case 'touch':
+      case 'library-scan': {
         await ctx.client.updateTracks(item.id, keep);
         // The modification time only; the contents are not opened.
         const { atime } = await stat(touchPath!);
@@ -339,9 +430,27 @@ export async function repairItem(
         await ctx.client.patchItemMedia(item.id, { audioFiles: [] });
         break;
     }
+    return { item, assessment, method, revisionId };
+  } catch (err) {
+    if (ctx.signal?.aborted) throw err;
+    return failedPartWay(method, err);
+  }
+}
 
-    const verdict = await ctx.client.scanItem(item.id);
-    log.debug(`rescanned ${item.id}: ${verdict}`);
+async function rescanAndFinish(ctx: TaskContext, begun: Begun): Promise<RepairOutcome> {
+  try {
+    const verdict = await ctx.client.scanItem(begun.item.id);
+    log.debug(`rescanned ${begun.item.id}: ${verdict}`);
+  } catch (err) {
+    if (ctx.signal?.aborted) throw err;
+    return failedPartWay(begun.method, err);
+  }
+  return finishRepair(ctx, begun);
+}
+
+/** After the rescan: trims what it left too long, completes the undo, and checks. */
+async function finishRepair(ctx: TaskContext, { item, assessment, method, revisionId }: Begun): Promise<RepairOutcome> {
+  try {
     let after = await ctx.client.getItem(item.id);
 
     const lines = [methodLine(method, true)];
@@ -366,13 +475,72 @@ export async function repairItem(
     return { ok: true, method, lines, codes: ['repaired', method] };
   } catch (err) {
     if (ctx.signal?.aborted) throw err;
-    return {
-      ok: false,
-      method,
-      lines: [`Repair failed part-way: ${(err as Error).message}`, 'Its earlier track list is kept — `revert` puts it back'],
-      codes: ['failed', method],
-    };
+    return failedPartWay(method, err);
   }
+}
+
+function failedPartWay(method: RepairMethod, err: unknown): RepairOutcome {
+  return {
+    ok: false,
+    method,
+    lines: [`Repair failed part-way: ${(err as Error).message}`, 'Its earlier track list is kept — `revert` puts it back'],
+    codes: ['failed', method],
+  };
+}
+
+/** A bare file that was readied but never saw the scan that would finish it. */
+function unfinished(begun: Begun, problem: string): RepairOutcome {
+  return {
+    ok: false,
+    method: begun.method,
+    lines: [
+      `Its dead records are gone and its file was touched, but ${problem}`,
+      'The next scan of the library sets its length; run repair again afterwards to check it',
+    ],
+    codes: ['failed', begun.method],
+  };
+}
+
+/**
+ * Scans a library and waits for the scan to end, or says why it did not.
+ *
+ * A scan already running would swallow this one, and may already be past the
+ * books that need it, so that one is waited out first.
+ */
+async function scanLibraryAndWait(ctx: TaskContext, libraryId: string): Promise<string | null> {
+  const deadline = Date.now() + SCAN_TIMEOUT_MS;
+  const settle = async () => {
+    while (await ctx.client.isScanningLibrary(libraryId)) {
+      if (Date.now() > deadline) return false;
+      await pause(SCAN_POLL_MS, ctx.signal);
+    }
+    return true;
+  };
+  try {
+    if (!(await settle())) return 'a library scan already running had not finished after 30 minutes';
+    await ctx.client.scanLibrary(libraryId);
+    if (!(await settle())) return 'the library scan had not finished after 30 minutes';
+    return null;
+  } catch (err) {
+    return ctx.signal?.aborted
+      ? 'the run was stopped before the library scan finished'
+      : `the library scan failed: ${(err as Error).message}`;
+  }
+}
+
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('stopped'));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('stopped'));
+      },
+      { once: true },
+    );
+  });
 }
 
 /**
@@ -422,6 +590,8 @@ export interface RepairTaskResult {
   repairable: number;
   /** Damaged, and left alone because the dead records could not be matched. */
   ambiguous: number;
+  /** Bare files that could be mended, but only with their file touched, which this install cannot do. */
+  needsFileChanges: number;
   repaired: number;
   failed: number;
   applied: boolean;
@@ -460,13 +630,17 @@ export async function runRepairTask(
   const report: RunItemInput[] = [];
   const methods: Partial<Record<RepairMethod, number>> = {};
   let ambiguous = 0;
+  let needsFileChanges = 0;
   let repairable = 0;
   let repaired = 0;
   let failed = 0;
   let notReached = 0;
   let syntheticInodes = 0;
+  const targets: Array<
+    RepairTarget & { identity: ReturnType<typeof itemIdentity>; lines: string[]; codes: string[] }
+  > = [];
 
-  for (const [index, { item, assessment }] of assessed.entries()) {
+  for (const { item, assessment } of assessed) {
     const identity = itemIdentity(item);
 
     if (assessment.dead.length === 0) {
@@ -496,10 +670,25 @@ export async function runRepairTask(
       });
       continue;
     }
+
+    // Mendable, but not from this install as it is set up. Said plainly, with
+    // what would change it, rather than filed with the uncertain ones.
+    const blocked = repairBlockedReason(ctx, item, assessment, access);
+    if (blocked) {
+      needsFileChanges += 1;
+      report.push({
+        ...identity,
+        status: 'skipped',
+        codes: [...codes, 'needs-file-changes'],
+        detail: [...lines, `Left alone: ${blocked}`],
+        plan: null,
+      });
+      continue;
+    }
     repairable += 1;
 
     if (!options.apply) {
-      const method = chooseMethod(assessment, touchTarget(ctx, assessment, access) !== null);
+      const method = chooseMethod(assessment, touchTarget(ctx, assessment, access) !== null, Boolean(item.isFile));
       methods[method] = (methods[method] ?? 0) + 1;
       const extra =
         method === 'clear' && !access.allowed
@@ -515,8 +704,15 @@ export async function runRepairTask(
       continue;
     }
 
-    // Between whole items, so a stopped run never leaves one half-mended.
-    if (ctx.signal?.aborted) {
+    // Carried out together once every item has been read, so the bare files
+    // among them can share one library scan.
+    targets.push({ item, assessment, identity, lines, codes });
+  }
+
+  const outcomes = await repairItems(ctx, targets, access);
+  for (const [index, { assessment, identity, lines, codes }] of targets.entries()) {
+    const outcome = outcomes[index];
+    if (!outcome) {
       notReached += 1;
       report.push({
         ...identity,
@@ -527,8 +723,6 @@ export async function runRepairTask(
       });
       continue;
     }
-
-    const outcome = await repairItem(ctx, item, assessment, access);
     methods[outcome.method] = (methods[outcome.method] ?? 0) + 1;
     if (outcome.ok) repaired += 1;
     else failed += 1;
@@ -539,7 +733,6 @@ export async function runRepairTask(
       detail: [...lines, ...outcome.lines],
       plan: null,
     });
-    if ((index + 1) % 25 === 0) log.info(`  checked ${index + 1}/${assessed.length}`);
   }
 
   const doubledTotal = progress ? [...progress.values()].reduce((a, b) => a + b, 0) : null;
@@ -550,7 +743,7 @@ export async function runRepairTask(
   } else {
     log.info(
       `${plural(damaged.length, 'item')} list audio files no longer on disk — ` +
-        `${repairable} repairable, ${ambiguous} left alone` +
+        `${repairable} repairable, ${ambiguous + needsFileChanges} left alone` +
         (Object.keys(methods).length > 0 ? ` (${breakdown(methods as Record<string, number>, REPAIR_METHODS)})` : ''),
     );
     if (options.apply) {
@@ -558,6 +751,17 @@ export async function runRepairTask(
       if (failed > 0) log.warn('Open the run to see what went wrong with each; revert puts their track lists back.');
     } else if (repairable > 0) {
       log.info(ctx.settings.allowTrackRepair ? 'Apply to repair them.' : TRACK_REPAIR_DISABLED.split('\n')[0]!);
+    }
+    if (needsFileChanges > 0) {
+      log.warn(
+        `${plural(needsFileChanges, 'item')} ${needsFileChanges === 1 ? 'is a bare file' : 'are bare files'} at the ` +
+          'library root, which can be repaired only by touching the file and scanning the library. ' +
+          (!ctx.settings.allowFileChanges
+            ? 'Turn on "Allow file changes" in Settings, then run repair again.'
+            : access.allowed
+              ? 'Their files are not somewhere this machine can reach — check the library root on the Connection page.'
+              : `This install cannot touch them: ${access.reason}.`),
+      );
     }
     if (doubledTotal) {
       log.warn(
@@ -580,6 +784,7 @@ export async function runRepairTask(
     affected: damaged.length,
     repairable,
     ambiguous,
+    needsFileChanges,
     repaired,
     failed,
     applied: Boolean(options.apply),
