@@ -5,15 +5,29 @@ same database.
 
 ## Quick start
 
-Make a folder for abs-butler, open a terminal in it — PowerShell on Windows, any shell on macOS or
-Linux — and run:
+Make a folder for abs-butler, open a terminal in it, and run one line.
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.ps1 | iex
+```
+
+**macOS and Linux**:
 
 ```bash
 docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer
 ```
 
-That is the whole install, and the command is the same on all three. Docker is the only thing the
-machine needs. The installer runs once, writes its files into the folder, starts abs-butler, and
+Docker is the only thing the machine needs. `install.ps1` is a wrapper and nothing more: it checks
+Docker is installed and answering, picks the folder, and runs exactly the command above — which it
+prints, so nothing is hidden. Run it a second time in a folder that already holds an install and it
+repairs rather than reinstalls. To read it before running it, or to pass a word of your own:
+
+```powershell
+irm https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.ps1 -OutFile abs-butler.ps1
+.\abs-butler.ps1 repair
+``` The installer runs once, writes its files into the folder, starts abs-butler, and
 exits.
 
 It finds AudiobookShelf first. A container running it answers three questions at once: its published
@@ -37,7 +51,8 @@ point of doing this with a separate, short-lived container.
 
 ### When something is wrong: repair
 
-Run the same command with `repair` on the end, from the same folder:
+Run the same command with `repair` on the end, from the same folder — or on Windows,
+`.\abs-butler.ps1 repair`, or simply the one-liner again, which repairs an install it finds:
 
 ```bash
 docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer repair
