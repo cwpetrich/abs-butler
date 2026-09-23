@@ -27,20 +27,71 @@ esac
 [ -S /var/run/docker.sock ] || die "the Docker socket is not mounted. Add: -v /var/run/docker.sock:/var/run/docker.sock"
 docker info >/dev/null 2>&1 || die "Docker is not answering on the mounted socket."
 
-src=$(docker inspect "$(hostname)" \
-  --format '{{range .Mounts}}{{if eq .Destination "/install"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
+src="${ABS_BUTLER_HOST_DIR:-}"
+if [ -z "$src" ]; then
+  src=$(docker inspect "$(hostname)" \
+    --format '{{range .Mounts}}{{if eq .Destination "/install"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
+fi
 [ -n "$src" ] || die 'no folder is mounted to install into. Run it from that folder with: -v "${PWD}:/install"'
 
-# Docker Desktop on Windows reports a folder as C:\... ; the daemon, which runs
-# in Linux, knows the same folder under /run/desktop/mnt/host/c/...
+# The same folder has two names: the one the person typed (C:\abs-butler) and
+# the one the daemon knows it by, which on Docker Desktop is a path inside its
+# own Linux VM. Compose sends the daemon's name, so that is the one needed
+# here -- and it is not guessable: the two Docker Desktop backends differ, and
+# a wrong guess would fail much later, as a bind mount of an empty folder.
+#
+# So each candidate is tried rather than assumed: a marker is written here, and
+# a throwaway container mounts the candidate and looks for it. The one that
+# finds it is the folder, proven rather than believed.
+marker=".abs-butler-installer-probe.$$"
+: > "/install/$marker" 2>/dev/null || die "/install is not writable. Mount a folder you own."
+# The installer's own image, so the probe pulls nothing.
+probe_image=$(docker inspect "$(hostname)" --format '{{.Config.Image}}' 2>/dev/null || true)
+[ -n "$probe_image" ] || probe_image="alpine"
+
+sees_marker() {
+  docker run --rm --pull never --entrypoint sh \
+    --mount "type=bind,src=$1,dst=/probe,readonly" "$probe_image" \
+    -c "[ -f '/probe/$marker' ]" >/dev/null 2>&1
+}
+
+# Named outright, for a setup neither backend below matches.
+if [ -n "${ABS_BUTLER_DAEMON_DIR:-}" ]; then
+  candidates="$ABS_BUTLER_DAEMON_DIR"
+else
+  candidates="$src"
+fi
 case "$src" in
   [A-Za-z]:\\*|[A-Za-z]:/*)
     drive=$(printf '%s' "$src" | cut -c1 | tr '[:upper:]' '[:lower:]')
     rest=$(printf '%s' "$src" | cut -c3- | tr '\\' '/')
-    work="/run/desktop/mnt/host/$drive$rest"
+    # WSL 2 backend, then the Hyper-V one.
+    [ -n "${ABS_BUTLER_DAEMON_DIR:-}" ] || candidates="$src
+/run/desktop/mnt/host/$drive$rest
+/host_mnt/$drive$rest"
     ;;
-  *) work="$src" ;;
 esac
+
+# One candidate per line, and a folder name may hold spaces.
+work=""
+old_ifs="$IFS"
+IFS='
+'
+for candidate in $candidates; do
+  IFS="$old_ifs"
+  [ -n "$candidate" ] || continue
+  if sees_marker "$candidate"; then work="$candidate"; break; fi
+  IFS='
+'
+done
+IFS="$old_ifs"
+rm -f "/install/$marker"
+
+if [ -z "$work" ]; then
+  printf 'abs-butler: could not work out where %s is, as Docker knows it. Tried:\n' "$src" >&2
+  printf '%s\n' "$candidates" | sed 's/^/  /' >&2
+  die "install into a folder on a local drive that Docker Desktop shares -- a network path (\\\\server\\share) or a drive it cannot see will not work. To name the path yourself, set ABS_BUTLER_DAEMON_DIR."
+fi
 
 if [ "$work" != "/install" ]; then
   [ -e "$work" ] && [ ! -L "$work" ] && die "$work already exists inside the installer; run it from another folder."
