@@ -32,8 +32,13 @@ sudo snap connect abs-butler:removable-media    # only if you want to organize f
 
 **Docker, with the installer** — recommended when abs-butler runs on the same machine as
 AudiobookShelf. It settles the one thing the UI cannot: which library gets mounted in, since a
-mount is fixed when the container is created. From a new folder, in PowerShell on Windows or any
-shell on macOS and Linux:
+mount is fixed when the container is created. From a new folder — on Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/cwpetrich/abs-butler/main/install.ps1 | iex
+```
+
+On macOS and Linux, the same installer, which is what that one-liner runs:
 
 ```bash
 docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer
