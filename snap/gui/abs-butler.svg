@@ -7,6 +7,13 @@
     <!-- Upright spines, slightly varied in height the way a real shelf is. -->
     <rect x="52"  y="62"  width="34" height="126" rx="7" fill="#6ea3dd"/>
     <rect x="94"  y="48"  width="34" height="140" rx="7" fill="#f6f7f9"/>
+    <!-- The butler: a black bow tie at the white spine's collar. Two wings
+         and a knot, large enough to survive being drawn at 16px. -->
+    <g fill="#14161a">
+      <path d="M111 84 L96 74 Q92 84 96 94 Z"/>
+      <path d="M111 84 L126 74 Q130 84 126 94 Z"/>
+      <rect x="106" y="78.5" width="10" height="11" rx="3"/>
+    </g>
     <rect x="136" y="72"  width="34" height="116" rx="7" fill="#58c07a"/>
     <!-- One leaning against the rest, which is what makes it read as books
          rather than a bar chart. -->
