@@ -17,6 +17,7 @@ export interface NormalizeOptions extends GlobalOptions {
   fields?: string[];
   providers?: string[];
   noConsensus?: boolean;
+  seriesTags?: boolean;
 }
 
 export async function runNormalize(options: NormalizeOptions): Promise<void> {

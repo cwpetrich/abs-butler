@@ -259,7 +259,7 @@ abs-butler disconnect                   # forget the connection, keep history
 
 abs-butler audit --details              # metadata and file problems, book by book
 abs-butler metadata                     # fill blank description/year/publisher/ISBN
-abs-butler normalize                    # make titles, authors, narrators, series consistent
+abs-butler normalize                    # make titles, authors, narrators, series, genres consistent
 abs-butler normalize --fields work      # stamp Open Library work identities only
 abs-butler rate                         # age bands and content flags
 abs-butler organize                     # plan a folder reorganization
@@ -281,7 +281,7 @@ Two of these depend on each other; the rest is preference.
 
 1. **`audit`** — read-only. What is wrong, and how much of it.
 2. **`metadata`** — fills blank description, year, publisher, language and **ISBN**.
-3. **`normalize`** — titles, subtitles, authors, narrators, series.
+3. **`normalize`** — titles, subtitles, authors, narrators, series, genres.
 4. **`rate`** — age bands and content flags.
 5. **`organize`** — moves folders on disk. Last, always.
 
@@ -453,7 +453,8 @@ Rewriting a value someone can already read is a different question, and lives in
 
 `normalize` is the command for mismatches: the same series spelled two ways, an author stored as
 "King, Stephen" on one book and "Stephen King" on the next, a title carrying "(Unabridged)" that
-none of its siblings do. It covers `title`, `subtitle`, `author`, `narrator` and `series`.
+none of its siblings do. It covers `title`, `subtitle`, `author`, `narrator`, `series` and `genre`,
+and `tag` when asked for.
 
 Every proposed change carries the evidence it rests on, and there are three tiers:
 
@@ -502,6 +503,47 @@ holds back every change that would overwrite something, saying how many it held.
 for a multi-server client should not require consenting to have your titles rewritten.
 
 Take a dry run first and read the `WHY` column. It is the whole point of the output.
+
+### Who counts as an author
+
+A wrong name on an author list is the most visible mistake metadata can make, so the rules for
+changing one are stricter than for any other field:
+
+- **No single source can add a person.** A provider list that puts somebody new on a book needs two
+  independent catalogues to agree (Audnexus and Audible count as one). Google Books credits a print
+  edition's illustrator as an author, which is how Brandon Dorman ended up beside Brandon Mull on
+  *Fablehaven*; one source saying so is no longer enough. An empty author list can still be filled
+  from one source.
+- **A co-author the identified sources don't credit is removed.** It has to be left out by at least
+  two catalogues, by more than credit them, and by at least one that describes the written work (Open
+  Library or Google Books). That last condition protects real collaborations, since Audible often
+  lists only the lead author. The first-credited author is never removed this way.
+- **A series agrees on its author.** If at least three books and a strict majority of a series
+  credit the same people, a book in it that credits those people *plus someone else* has the extra
+  name proposed for removal. That doesn't happen if an identified source credits the extra person on
+  that very book, so a genuine guest co-author stays. A book in the series by somebody else entirely
+  is left alone.
+
+```
+-> author  "Dakota Krout, Luke Daniels" => "Dakota Krout"
+           [consensus: 12 of 14 books in The Completionist Chronicles credit Dakota Krout]
+```
+
+### Genres and tags a series shares
+
+Genres come from whatever AudiobookShelf matched each book against on the day it matched it, so a
+series often ends up with LitRPG on three books and not the other eleven. `normalize` treats a genre
+carried by **at least two books and at least a quarter of a series** as the series' genre, and adds
+it to the books that lack one. It also respells genres the way most of the library writes them
+("Litrpg" → "LitRPG").
+
+Adding a genre replaces nothing, so it goes through with **Allow metadata rewrite** off; respelling
+one is a replacement and is held back like any other.
+
+Tags work the same way but are off by default, because tags are also where people keep their own
+lists ("Favorites", "Read with Sam"). Turn them on with `--series-tags`, or **Also copy tags a series
+shares** in the web UI. abs-butler's own tags (age bands, content flags, work identity) are never
+copied.
 
 ### Work identity, for clients reading several servers
 
