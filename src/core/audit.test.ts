@@ -8,7 +8,7 @@ import { closeDb, openDb, type Db } from '../db/index.js';
 import { countRunItems, listRunItems } from '../db/runItems.js';
 import { createRun } from '../db/runs.js';
 import { DEFAULT_SETTINGS } from '../db/settings.js';
-import { auditItems, findDuplicates, runAuditTask } from './audit.js';
+import { auditItems, findDuplicates, isMisnumberedBoxSet, runAuditTask } from './audit.js';
 
 /**
  * An audit that only counts is not actionable: "37 books have no narrator"
@@ -267,5 +267,56 @@ describe('runAuditTask', () => {
     expect(result.findings).toHaveLength(5);
     expect(countRunItems(db, { runId: 0 })).toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS n FROM run_items').get()).toMatchObject({ n: 0 });
+  });
+});
+
+describe('isMisnumberedBoxSet', () => {
+  const boxSet = (title: string, sequence: string | null, subtitle: string | null = null): AbsLibraryItem =>
+    ({
+      id: 'box',
+      media: {
+        id: 'm',
+        tags: [],
+        metadata: { title, subtitle, series: [{ id: 's', name: 'The 13th Paladin', sequence }] },
+      },
+    }) as unknown as AbsLibraryItem;
+
+  // A series-gap finder reading "1" sees book 1, and reports 2 and 3 as missing.
+  it('flags a box set numbered as one book, or not at all', () => {
+    expect(isMisnumberedBoxSet(boxSet('The 13th Paladin Box Set', '1'))).toBe(true);
+    expect(isMisnumberedBoxSet(boxSet('The 13th Paladin', null, 'Books 1-3'))).toBe(true);
+    expect(isMisnumberedBoxSet(boxSet('The 13th Paladin: Books 4 through 6', '4'))).toBe(true);
+    expect(isMisnumberedBoxSet(boxSet('The Complete Omnibus', ''))).toBe(true);
+  });
+
+  it('passes a box set numbered by its range', () => {
+    expect(isMisnumberedBoxSet(boxSet('The 13th Paladin Box Set', '1-3'))).toBe(false);
+    expect(isMisnumberedBoxSet(boxSet('The 13th Paladin Boxed Set', '01-03'))).toBe(false);
+  });
+
+  it('leaves ordinary books and standalone sets alone', () => {
+    expect(isMisnumberedBoxSet(boxSet('The 13th Paladin', '1'))).toBe(false);
+    expect(isMisnumberedBoxSet(boxSet('The Collected Stories', '1'))).toBe(false);
+    expect(isMisnumberedBoxSet(boxSet('Book 1: The Beginning', '1'))).toBe(false);
+    const standalone = boxSet('Short Story Box Set', null);
+    standalone.media!.metadata!.series = [];
+    expect(isMisnumberedBoxSet(standalone)).toBe(false);
+  });
+
+  // Audit reads the minified listing, where the sequence is folded into the name.
+  it('reads the sequence out of a minified item', () => {
+    const minified = (title: string, seriesName: string): AbsLibraryItem =>
+      ({ id: 'box', media: { id: 'm', tags: [], metadata: { title, seriesName } } }) as unknown as AbsLibraryItem;
+
+    expect(isMisnumberedBoxSet(minified('Barsoom Boxed Set', 'Barsoom #3'))).toBe(true);
+    expect(isMisnumberedBoxSet(minified('Barsoom Boxed Set', 'Barsoom'))).toBe(true);
+    expect(isMisnumberedBoxSet(minified('Oz Box Set', 'Oz #1-3'))).toBe(false);
+    expect(isMisnumberedBoxSet(minified('Oz Box Set', 'Oz #1-3, Land of Oz #2'))).toBe(false);
+    expect(isMisnumberedBoxSet(minified('Oz Box Set', ''))).toBe(false);
+  });
+
+  it('is part of a whole-library audit', () => {
+    const [finding] = auditItems([boxSet('The 13th Paladin Box Set', '1')], ['box-set-sequence']);
+    expect(finding?.issues).toEqual(['box-set-sequence']);
   });
 });

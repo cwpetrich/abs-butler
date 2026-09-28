@@ -3,9 +3,11 @@ import {
   normalizeAuthor,
   normalizeTitle,
   normalizePersonName,
+  isSequenceRange,
   padSequence,
   pathComparisonKey,
   sanitizePathSegment,
+  sequenceNumbers,
   stripCreditRoles,
   stripSeriesReference,
 } from './text.js';
@@ -87,6 +89,50 @@ describe('padSequence', () => {
   it('passes through non-numeric and empty sequences', () => {
     expect(padSequence('Prequel')).toBe('Prequel');
     expect(padSequence(null)).toBe('');
+  });
+
+  it('pads both ends of a box set range', () => {
+    expect(padSequence('1-3')).toBe('01-03');
+    expect(padSequence('4 – 6')).toBe('04-06');
+    expect(padSequence('1-3.5')).toBe('01-03.5');
+    expect(padSequence('10-12')).toBe('10-12');
+  });
+});
+
+describe('sequenceNumbers', () => {
+  it('reads a single position', () => {
+    expect(sequenceNumbers('2')).toEqual([2]);
+    expect(sequenceNumbers(' 2.5 ')).toEqual([2.5]);
+  });
+
+  it('expands a box set range into the books it holds', () => {
+    expect(sequenceNumbers('1-3')).toEqual([1, 2, 3]);
+    expect(sequenceNumbers('04-06')).toEqual([4, 5, 6]);
+    expect(sequenceNumbers('4—6')).toEqual([4, 5, 6]);
+  });
+
+  it('keeps a fractional end as a book of its own', () => {
+    expect(sequenceNumbers('1-3.5')).toEqual([1, 2, 3, 3.5]);
+    expect(sequenceNumbers('0.5-2')).toEqual([0.5, 1, 2]);
+  });
+
+  it('refuses anything that is not a position', () => {
+    expect(sequenceNumbers('Prequel')).toBeNull();
+    expect(sequenceNumbers('')).toBeNull();
+    expect(sequenceNumbers(null)).toBeNull();
+    expect(sequenceNumbers('3-1')).toBeNull();
+    expect(sequenceNumbers('1-2024')).toBeNull();
+  });
+});
+
+describe('isSequenceRange', () => {
+  it('is true only when a sequence covers more than one book', () => {
+    expect(isSequenceRange('1-3')).toBe(true);
+    expect(isSequenceRange('1-3.5')).toBe(true);
+    expect(isSequenceRange('2')).toBe(false);
+    expect(isSequenceRange('2-2')).toBe(false);
+    expect(isSequenceRange('Prequel')).toBe(false);
+    expect(isSequenceRange(undefined)).toBe(false);
   });
 });
 

@@ -5,6 +5,7 @@ import { log } from '../logger.js';
 import { mapLimitPartial } from '../providers/http.js';
 import {
   isBlank,
+  isSequenceRange,
   normalizeAuthor,
   normalizePersonName,
   normalizeTitle,
@@ -83,6 +84,9 @@ export const DEFAULT_NORMALIZE_FIELDS: readonly Normalizable[] = NORMALIZABLE.fi
  * has no use for it, and nothing here depends on it either — a library that
  * never runs this is not worse off, it just leaves its readers' other tools
  * guessing from titles.
+ *
+ * A box set holds several works, so it may carry several tags — one per book
+ * inside it. Those are written by hand; see the work tier in planNormalize.
  */
 export const WORK_TAG_PREFIX = 'abs-butler:work:';
 
@@ -90,10 +94,37 @@ export function workTag(key: string): string {
   return `${WORK_TAG_PREFIX}${key}`;
 }
 
-/** The work key already recorded on an item, if any. */
+/** Every work key recorded on an item: one for a book, one per book for a box set. */
+export function itemWorkKeys(item: AbsLibraryItem): string[] {
+  return (item.media?.tags ?? [])
+    .filter((t) => t.startsWith(WORK_TAG_PREFIX))
+    .map((t) => t.slice(WORK_TAG_PREFIX.length));
+}
+
+/** The work keys already recorded on an item, as text, or null for none. */
 export function itemWorkKey(item: AbsLibraryItem): string | null {
-  const found = (item.media?.tags ?? []).find((t) => t.startsWith(WORK_TAG_PREFIX));
-  return found ? found.slice(WORK_TAG_PREFIX.length) : null;
+  return itemWorkKeys(item).join(', ') || null;
+}
+
+/**
+ * Whether an item holds more than one book of its series — a box set numbered
+ * "1-3" — and so is more than one work.
+ */
+export function isBoxSet(item: AbsLibraryItem): boolean {
+  return (item.media?.metadata?.series ?? []).some((s) => isSequenceRange(s.sequence));
+}
+
+/**
+ * Whether the work tier may write this item's identity at all.
+ *
+ * Not a box set: it is several works, and one match can only ever name one of
+ * them — usually the first book, whose title the set shares. Writing that would
+ * tell every other server this item *is* book 1, and hide books 2 and 3 from
+ * anything counting what the series is missing. Nor an item already carrying
+ * several work keys, which someone set by hand and a single one would replace.
+ */
+export function takesWorkKey(item: AbsLibraryItem): boolean {
+  return !isBoxSet(item) && itemWorkKeys(item).length <= 1;
 }
 
 /**
@@ -996,7 +1027,7 @@ export function planNormalize(
     }
   }
 
-  if (wanted.has('work')) {
+  if (wanted.has('work') && takesWorkKey(item)) {
     // Open Library specifically: it is the only provider here that models a
     // work at all. Audnexus answers for one audio edition and Google Books for
     // one printing, so neither can say what this book *is* independently of the
@@ -1279,7 +1310,7 @@ export async function runNormalizeTask(
       // The work tier needs Open Library whether or not the item carries an
       // identifier, since a work key is what an unidentified book most needs;
       // the rewrite tiers still ignore anything below identifier grade.
-      const needsLookup = identified || wanted.has('work');
+      const needsLookup = identified || (wanted.has('work') && takesWorkKey(item));
       const candidates = needsLookup ? (await lookupItem(deps, query)).candidates : [];
 
       return planNormalize(item, candidates, consensus, {
