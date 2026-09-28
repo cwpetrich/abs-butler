@@ -28,6 +28,8 @@ import {
   outvotedAuthors,
   voteOn,
   workKeyFrom,
+  itemWorkKeys,
+  isBoxSet,
   WORK_TAG_PREFIX,
   type Consensus,
 } from './normalize.js';
@@ -686,6 +688,43 @@ describe('work identity', () => {
       proposals: [{ field: 'work', from: null, to: 'OL27482W', source: 'provider', detail: 'openlibrary' }],
     })
     expect(patch.tags).toEqual(['fiction', 'age:middle-grade', 'abs-butler:rated', `${WORK_TAG_PREFIX}OL27482W`])
+  })
+
+  it('reads every work key off a box set', () => {
+    const item = book({ tags: [`${WORK_TAG_PREFIX}OL1W`, 'fiction', `${WORK_TAG_PREFIX}OL2W`] })
+    expect(itemWorkKeys(item)).toEqual(['OL1W', 'OL2W'])
+    expect(itemWorkKey(item)).toBe('OL1W, OL2W')
+  })
+
+  // One match names one work — for a box set, usually book 1, whose title the
+  // set shares. Stamping that on would tell other servers the set *is* book 1.
+  it('proposes no single work for a box set', () => {
+    const boxed = book({ series: [{ id: 's', name: 'The 13th Paladin', sequence: '1-3' }] })
+    expect(isBoxSet(boxed)).toBe(true)
+    const plan = planNormalize(boxed, [olCandidate(0.95)], noConsensus, { fields: ['work'] })
+    expect(plan.proposals).toEqual([])
+  })
+
+  it('leaves a hand-kept set of work keys alone', () => {
+    const item = book({ tags: [`${WORK_TAG_PREFIX}OL1W`, `${WORK_TAG_PREFIX}OL2W`] })
+    const plan = planNormalize(item, [olCandidate(0.95)], noConsensus, { fields: ['work'] })
+    expect(plan.proposals).toEqual([])
+  })
+
+  it('still identifies a single book in a series', () => {
+    const single = book({ series: [{ id: 's', name: 'The 13th Paladin', sequence: '4' }] })
+    expect(isBoxSet(single)).toBe(false)
+    const plan = planNormalize(single, [olCandidate(0.95)], noConsensus, { fields: ['work'] })
+    expect(plan.proposals).toHaveLength(1)
+  })
+
+  it('keeps every work tag of a box set when writing its other tags', () => {
+    const item = book({ tags: ['Favorites', `${WORK_TAG_PREFIX}OL1W`, `${WORK_TAG_PREFIX}OL2W`] })
+    const patch = planToPatch(item, {
+      itemId: item.id, title: 'x', author: null,
+      proposals: [{ field: 'tag', from: 'Favorites', to: 'Favorites, Fantasy', source: 'consensus', detail: 'series', values: ['Favorites', 'Fantasy'] }],
+    })
+    expect(patch.tags).toEqual(['Favorites', 'Fantasy', `${WORK_TAG_PREFIX}OL1W`, `${WORK_TAG_PREFIX}OL2W`])
   })
 
   it('replaces an existing work tag rather than adding a second', () => {

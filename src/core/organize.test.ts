@@ -144,6 +144,15 @@ describe('planMove', () => {
     );
   });
 
+  it('numbers a box set by the range it holds, padded to sort beside single books', () => {
+    const boxed = item();
+    boxed.media!.metadata!.title = 'The 13th Paladin Box Set';
+    boxed.media!.metadata!.series = [{ id: 's1', name: 'The Stormlight Archive', sequence: '1-3' }];
+
+    const plan = planMove(boxed, library, DEFAULT_TEMPLATE, localServer);
+    expect(plan?.to).toBe('Brandon Sanderson/The Stormlight Archive/01-03 - The 13th Paladin Box Set');
+  });
+
   /**
    * A bare `The Hobbit.m4b` in a library root is a perfectly ordinary
    * AudiobookShelf item, and for many libraries it is most of them.

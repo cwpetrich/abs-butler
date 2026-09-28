@@ -54,12 +54,60 @@ export function sanitizePathSegment(value: string, options: { maxLength?: number
   return (cleaned.length > max ? cleaned.slice(0, max).trim() : cleaned) || 'Unknown';
 }
 
-/** Pads a series sequence so "2" sorts before "10". Non-numeric sequences pass through. */
+const SEQUENCE_NUMBER = /^(\d+)(\.\d+)?$/;
+/** "1-3", "4–6", "1-3.5": a box set or omnibus, numbered by the books it holds. */
+const SEQUENCE_RANGE = /^(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)$/;
+/** Past this a "range" is a typo or a year, not a box set anyone owns. */
+const MAX_RANGE_SPAN = 100;
+
+function padNumber(value: string, width: number): string {
+  const match = SEQUENCE_NUMBER.exec(value)!;
+  return match[1]!.padStart(width, '0') + (match[2] ?? '');
+}
+
+/**
+ * Pads a series sequence so "2" sorts before "10". A range pads at both ends,
+ * so a box set's "1-3" becomes "01-03" and sorts beside "04" rather than after
+ * every single-digit book. Anything else passes through.
+ */
 export function padSequence(sequence: string | null | undefined, width = 2): string {
   if (!sequence) return '';
-  const match = /^(\d+)(\.\d+)?$/.exec(sequence.trim());
-  if (!match) return sequence.trim();
-  return match[1]!.padStart(width, '0') + (match[2] ?? '');
+  const trimmed = sequence.trim();
+  const range = SEQUENCE_RANGE.exec(trimmed);
+  if (range) return `${padNumber(range[1]!, width)}-${padNumber(range[2]!, width)}`;
+  return SEQUENCE_NUMBER.test(trimmed) ? padNumber(trimmed, width) : trimmed;
+}
+
+/**
+ * The positions in a series a sequence covers: "2" is [2], "1-3" is [1, 2, 3].
+ *
+ * A fractional end counts as itself, so an omnibus "1-3.5" — three novels and
+ * the novella after them — is [1, 2, 3, 3.5], and "0.5-2" is [0.5, 1, 2]. What
+ * a range skips between whole numbers is unknowable from the label, so only
+ * the whole numbers are assumed.
+ *
+ * `null` for anything that is not a position: "Prequel", a blank, a backwards
+ * or implausibly wide range.
+ */
+export function sequenceNumbers(sequence: string | null | undefined): number[] | null {
+  const trimmed = sequence?.trim() ?? '';
+  if (SEQUENCE_NUMBER.test(trimmed)) return [Number(trimmed)];
+
+  const range = SEQUENCE_RANGE.exec(trimmed);
+  if (!range) return null;
+  const start = Number(range[1]);
+  const end = Number(range[2]);
+  if (end < start || end - start > MAX_RANGE_SPAN) return null;
+
+  const numbers = new Set<number>([start]);
+  for (let n = Math.ceil(start); n <= end; n += 1) numbers.add(n);
+  numbers.add(end);
+  return [...numbers].sort((a, b) => a - b);
+}
+
+/** Whether a sequence names more than one book — a box set or omnibus. */
+export function isSequenceRange(sequence: string | null | undefined): boolean {
+  return (sequenceNumbers(sequence)?.length ?? 0) > 1;
 }
 
 export function truncate(value: string, length: number): string {

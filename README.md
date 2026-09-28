@@ -388,7 +388,7 @@ A run stopped partway leaves the books it decided on but never wrote — those a
 
 Issue codes: `missing-on-disk`, `invalid`, `no-audio`, `missing-title`, `missing-author`,
 `missing-cover`, `unmatched`, `missing-description`, `missing-year`, `missing-narrator`, `unrated`,
-`duplicate`.
+`box-set-sequence`, `duplicate`.
 
 Duplicates are found by normalizing title and author, so `The Hobbit` by `J.R.R. Tolkien` and
 `Hobbit, The (Unabridged)` by `Tolkien, J.R.R.` land in the same group.
@@ -407,6 +407,13 @@ want to see them.
 `normalize` will not write a narrator onto a reading copy either. That one mattered: an ISBN match
 scores 0.97, above the rewrite threshold, so a source carrying narrators for a recording could have
 written an audiobook's cast onto an EPUB — plausible enough that nobody would question it.
+
+**Box sets are numbered by the books they hold.** A box set of books 1–3 belongs in its series with
+the sequence `1-3`, not `1`. AudiobookShelf keeps the sequence as text, so a range saves as written,
+and a tool counting what a series is missing can then read the set as books 1, 2 and 3 rather than
+reporting 2 and 3 as gaps. A fractional end counts too: an omnibus `1-3.5` holds the novella after
+book 3. `box-set-sequence` flags an item in a series whose title or subtitle says it is a set — "Box
+Set", "Boxed Set", "Omnibus", "Books 1-3" — but whose sequence names one book or none.
 
 **A first audit flags everything, and that is not a fault.** `unrated` is true of every book until
 `rate` has run once, so a fresh library reports 100% affected. Read the breakdown, not the total.
@@ -574,6 +581,12 @@ split.** Two copies that disagree, or where only one carries a tag, are no worse
 than before and should fall back to matching on title and author. Used that way it
 can only add correct merges.
 
+**A box set is several works**, so it carries one tag per book inside it. `normalize` never writes
+those: a lookup can only name one work, and for a set that is usually book 1, whose title it shares
+— telling every other server the set *is* book 1. An item whose sequence is a range (`1-3`), or that
+already carries more than one work tag, is left to the tags you give it by hand, and those are kept
+through every other write.
+
 The bar to write one is deliberately higher than for filling a blank field: a wrong
 description is noise on one server, while a wrong identity is repeated to every
 client that reads it. In practice the author has to have actually agreed, not merely
@@ -660,7 +673,8 @@ since nothing but a rescan sets that, and the next rescan would double it again.
 
 Default layout is `Author/Series/01 - Title`. Placeholders: `{author}`, `{title}`, `{series}`,
 `{sequence}`, `{year}`. Empty segments collapse, so a standalone book renders `Author/Title` rather
-than leaving an empty series folder. Sequence numbers are zero-padded so book 2 sorts before book 10.
+than leaving an empty series folder. Sequence numbers are zero-padded so book 2 sorts before book 10,
+and a box set's range is padded at both ends — `1-3` becomes `01-03` — so it sorts beside `04`.
 
 **This is the one command that touches the filesystem.** `audit`, `rate`, and `metadata` work purely
 over the API and need no mount at all.

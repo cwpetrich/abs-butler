@@ -4,7 +4,7 @@ import { TAG_PREFIX } from '../content/ageRating.js';
 import { collectItems, itemAuthor, itemTitle, resolveLibraries, type TaskContext } from '../context.js';
 import { itemPath, reportItems } from './report.js';
 import { log } from '../logger.js';
-import { isBlank, normalizeAuthor, normalizeTitle } from '../util/text.js';
+import { isBlank, isSequenceRange, normalizeAuthor, normalizeTitle } from '../util/text.js';
 
 export type IssueCode =
   | 'missing-title'
@@ -18,6 +18,7 @@ export type IssueCode =
   | 'missing-on-disk'
   | 'invalid'
   | 'unrated'
+  | 'box-set-sequence'
   | 'duplicate';
 
 export interface IssueSpec {
@@ -45,8 +46,48 @@ export const ISSUES: IssueSpec[] = [
   // holding both an audiobook and an ebook is still asked.
   { code: 'missing-narrator', severity: 'info', label: 'No narrator', test: (i) => !isEbookOnly(i) && isBlank(i.media?.metadata?.narratorName) && (i.media?.metadata?.narrators?.length ?? 0) === 0 },
   { code: 'unrated', severity: 'info', label: 'No age rating from abs-butler', test: (i) => !(i.media?.tags ?? []).includes(TAG_PREFIX.marker) },
+  { code: 'box-set-sequence', severity: 'warn', label: 'Box set numbered as a single book', test: isMisnumberedBoxSet },
   { code: 'duplicate', severity: 'warn', label: 'Possible duplicates' },
 ];
+
+/**
+ * What a box set calls itself: "Box Set", "Boxed Set", "Omnibus", "Books 1-3",
+ * "Books 1 through 3". Deliberately not "Collection" or "Trilogy", which name
+ * too many single books and whole series to be read as a set.
+ */
+const BOX_SET_TITLE =
+  /\bbox(?:ed)?[\s-]*set\b|\bomnibus\b|\bbooks?\s*#?\d+(?:\.\d+)?\s*(?:-|–|—|to|through|thru|&|and)\s*#?\d+/i;
+
+/**
+ * The sequence of each series an item is in, from either shape of item.
+ *
+ * Audit reads the minified listing, which has no series list — only
+ * `seriesName`, with each sequence folded in after a "#": "Oz #1-3", or
+ * "Oz #1-3, Land of Oz #2" for a book in two. A series with no sequence has no
+ * "#", and counts as one entry with none.
+ */
+function seriesSequences(item: AbsLibraryItem): Array<string | null> {
+  const metadata = item.media?.metadata;
+  if (metadata?.series) return metadata.series.map((s) => s.sequence);
+  const flat = metadata?.seriesName?.trim();
+  if (!flat) return [];
+  const sequences = [...flat.matchAll(/#\s*([^,]+)/g)].map((m) => m[1]!.trim());
+  return sequences.length > 0 ? sequences : [null];
+}
+
+/**
+ * A box set in a series whose sequence names one book, or none — "1" where it
+ * should say "1-3". Anything counting what a series is missing then sees book
+ * 1 and reports 2 and 3 as gaps. Only asked of an item that is in a series:
+ * without one there is no sequence to correct.
+ */
+export function isMisnumberedBoxSet(item: AbsLibraryItem): boolean {
+  const metadata = item.media?.metadata;
+  const sequences = seriesSequences(item);
+  if (sequences.length === 0) return false;
+  if (!BOX_SET_TITLE.test(`${metadata?.title ?? ''} ${metadata?.subtitle ?? ''}`)) return false;
+  return !sequences.some((sequence) => isSequenceRange(sequence));
+}
 
 export const AUDIT_CODES = ISSUES.map((i) => i.code);
 
