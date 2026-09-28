@@ -16,6 +16,7 @@ import { itemQuery } from './query.js';
 import type { RunItemInput } from '../db/runItems.js';
 import { breakdown, brief, itemPath, plural, reportItems } from './report.js';
 import { applyPatch } from './revisions.js';
+import { isButlerTag } from '../content/ageRating.js';
 
 /**
  * Bringing a library's metadata into one consistent shape.
@@ -52,8 +53,22 @@ export const NORMALIZABLE = [
   'author',
   'narrator',
   'series',
+  'genre',
+  'tag',
   'work',
 ] as const;
+
+/**
+ * What a run looks at when it is not told otherwise: everything but tags.
+ *
+ * Genres are a shared vocabulary — a publisher's shelf, copied onto the book by
+ * a match — so a genre most of a series carries is a fact about the series.
+ * Tags are that too, but they are also where people keep their own lists:
+ * "Favorites", "Read with Sam". Copying one of those across a series because
+ * four of its books happen to carry it would be writing someone's reading
+ * habits onto books they never chose, so tags are something to ask for.
+ */
+export const DEFAULT_NORMALIZE_FIELDS: readonly Normalizable[] = NORMALIZABLE.filter((f) => f !== 'tag');
 
 /**
  * Namespace for the work identity, written as a tag because AudiobookShelf has
@@ -106,12 +121,19 @@ export interface FieldProposal {
   /** Where it came from in detail: a provider name, or the rule that fired. */
   detail: string;
   /**
-   * For the list-valued fields — author, narrator, series — the exact values to
-   * write, positionally. `to` is never split back apart to recover these: a
+   * For the list-valued fields — author, narrator, series, genre, tag — the
+   * exact values to write, positionally. For tags, only the ones abs-butler
+   * does not own; its own are kept as the book has them when this is written. `to` is never split back apart to recover these: a
    * name like "Martin Luther King, Jr." would come apart into two people, and
    * AudiobookShelf replaces the whole list with whatever it is sent.
    */
   values?: string[];
+  /**
+   * Set when a list only grows: every value the book had is still there,
+   * written the same way. That is supplying, not replacing, whatever `from`
+   * holds.
+   */
+  additive?: boolean;
 }
 
 export interface NormalizePlan {
@@ -144,6 +166,23 @@ export interface Consensus {
    * An author reading their own work is ordinary, especially in non-fiction.
    */
   narratorsByTrade: Set<string>;
+  /** Library spelling of each genre and tag, the same vote as series names. */
+  genres: Map<string, string>;
+  tags: Map<string, string>;
+  /** What each series agrees on, keyed by normalized series name. */
+  bySeries: Map<string, SeriesProfile>;
+}
+
+export function emptyConsensus(): Consensus {
+  return {
+    series: new Map(),
+    authors: new Map(),
+    narrators: new Map(),
+    narratorsByTrade: new Set(),
+    genres: new Map(),
+    tags: new Map(),
+    bySeries: new Map(),
+  };
 }
 
 /** Narrations before someone counts as a narrator by trade, and by what margin. */
@@ -230,6 +269,8 @@ export function buildConsensus(items: AbsLibraryItem[]): Consensus {
   const seriesNames: string[] = [];
   const authorNames: string[] = [];
   const narratorNames: string[] = [];
+  const genreNames: string[] = [];
+  const tagNames: string[] = [];
 
   for (const item of items) {
     const metadata = item.media?.metadata;
@@ -241,6 +282,8 @@ export function buildConsensus(items: AbsLibraryItem[]): Consensus {
     // excluded from both rather than voting under a misreading.
     for (const author of itemAuthors(item)) authorNames.push(author);
     for (const narrator of itemNarrators(item)) narratorNames.push(narrator);
+    genreNames.push(...itemGenres(item));
+    tagNames.push(...itemTags(item));
   }
 
   return {
@@ -248,7 +291,176 @@ export function buildConsensus(items: AbsLibraryItem[]): Consensus {
     authors: pickPersonConsensus(authorNames),
     narrators: pickPersonConsensus(narratorNames),
     narratorsByTrade: findNarratorsByTrade(items),
+    genres: pickConsensus(genreNames),
+    tags: pickConsensus(tagNames),
+    bySeries: profileSeries(items),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Series consensus
+// ---------------------------------------------------------------------------
+
+/**
+ * What the books of one series agree on.
+ *
+ * A series is the strongest evidence a library holds about its own books. The
+ * fourteen volumes of one saga were written by the same person and shelved in
+ * the same genre, so when twelve of them say "Dakota Krout" and two say
+ * "Dakota Krout, Luke Daniels", the two are the ones that are wrong — whatever
+ * put the extra name there, a file tag or a match against the wrong edition.
+ * And when AudiobookShelf matched three of them on a day the publisher called
+ * them LitRPG and the rest on a day it did not, the genre belongs to all of
+ * them.
+ */
+export interface SeriesProfile {
+  /** The series as the library spells it, for the dry run to name. */
+  name: string;
+  /**
+   * The person on most of the series' books. Only books crediting them count
+   * as members: two unrelated series that share a name — there is more than
+   * one "Legacy" — are then not mistaken for one series with a disputed author.
+   */
+  lead: string;
+  /** Books in the series crediting the lead. */
+  members: number;
+  /** The author list a strict majority of members share, if one does. */
+  authors: { names: string[]; count: number } | null;
+  /** Genres and tags enough members carry to be the series', by normalized key. */
+  genres: Map<string, { value: string; count: number }>;
+  tags: Map<string, { value: string; count: number }>;
+}
+
+/**
+ * Below this many agreeing books a series proves nothing about its authors.
+ * Two books against one is a coin that landed twice.
+ */
+const SERIES_MIN_AGREEING = 3;
+
+/**
+ * How widely a genre has to be carried before the rest of the series gets it.
+ *
+ * Deliberately below a majority. The problem this answers is a genre that only
+ * a few books happened to be matched with, so requiring most of them to have
+ * it already would leave exactly that case alone. Two books is the floor so a
+ * single book's own subject — the Christmas novella in a fantasy series — does
+ * not spread to its siblings, and a quarter keeps two books out of forty from
+ * speaking for the other thirty-eight.
+ */
+const SERIES_MIN_CARRIERS = 2;
+const SERIES_MIN_SHARE = 0.25;
+
+/** Tags abs-butler writes itself: age bands, content flags, the work identity. */
+export function isOwnedTag(tag: string): boolean {
+  return isButlerTag(tag) || tag.startsWith(WORK_TAG_PREFIX);
+}
+
+export function itemGenres(item: AbsLibraryItem): string[] {
+  return (item.media?.metadata?.genres ?? []).map((g) => g.trim()).filter((g) => g !== '');
+}
+
+/** The tags a person or a match put there, leaving out the ones abs-butler owns. */
+export function itemTags(item: AbsLibraryItem): string[] {
+  return (item.media?.tags ?? []).map((t) => t.trim()).filter((t) => t !== '' && !isOwnedTag(t));
+}
+
+function seriesKeys(item: AbsLibraryItem): string[] {
+  const keys = (item.media?.metadata?.series ?? []).map((s) => normalizeTitle(s.name)).filter(Boolean);
+  return [...new Set(keys)];
+}
+
+/** An author list as a set: the same people in any order are the same credit. */
+function creditKey(names: string[]): string {
+  return [...new Set(names.map((name) => normalizeAuthor(name)).filter(Boolean))].sort().join('|');
+}
+
+export function profileSeries(items: AbsLibraryItem[]): Map<string, SeriesProfile> {
+  const groups = new Map<string, { names: string[]; items: AbsLibraryItem[] }>();
+  for (const item of items) {
+    for (const series of item.media?.metadata?.series ?? []) {
+      const key = normalizeTitle(series.name);
+      if (!key) continue;
+      const group = groups.get(key) ?? { names: [], items: [] };
+      group.names.push(series.name);
+      if (!group.items.includes(item)) group.items.push(item);
+      groups.set(key, group);
+    }
+  }
+
+  const profiles = new Map<string, SeriesProfile>();
+  for (const [key, group] of groups) {
+    const credited = group.items.map((item) => itemAuthors(item));
+
+    // The lead has to be on more than half the books. A "series" with no such
+    // person is a name two unrelated sets of books share, and it says nothing.
+    const people = new Map<string, number>();
+    for (const names of credited) {
+      for (const person of new Set(names.map((n) => normalizeAuthor(n)).filter(Boolean))) {
+        people.set(person, (people.get(person) ?? 0) + 1);
+      }
+    }
+    const [lead, leadCount] = [...people.entries()].sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+    if (!lead || leadCount * 2 <= group.items.length) continue;
+
+    const members = group.items.filter((_, i) => credited[i]!.some((n) => normalizeAuthor(n) === lead));
+
+    const lists = new Map<string, { names: string[]; count: number }>();
+    for (const item of members) {
+      const names = itemAuthors(item).map((n) => normalizePersonName(n) ?? n);
+      const id = creditKey(names);
+      const entry = lists.get(id) ?? { names, count: 0 };
+      entry.count += 1;
+      lists.set(id, entry);
+    }
+    const top = [...lists.values()].sort((a, b) => b.count - a.count)[0] ?? null;
+    const authors =
+      top && top.count >= SERIES_MIN_AGREEING && top.count * 2 > members.length ? top : null;
+
+    profiles.set(key, {
+      name: pickConsensus(group.names).get(key) ?? group.names[0]!,
+      lead,
+      members: members.length,
+      authors,
+      genres: sharedValues(members.map(itemGenres), members.length),
+      tags: sharedValues(members.map(itemTags), members.length),
+    });
+  }
+  return profiles;
+}
+
+function sharedValues(
+  perBook: string[][],
+  members: number,
+): Map<string, { value: string; count: number }> {
+  const counts = new Map<string, { forms: Map<string, number>; count: number }>();
+  for (const values of perBook) {
+    const seen = new Set<string>();
+    for (const value of values) {
+      const key = normalizeTitle(value);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const entry = counts.get(key) ?? { forms: new Map(), count: 0 };
+      entry.count += 1;
+      entry.forms.set(value, (entry.forms.get(value) ?? 0) + 1);
+      counts.set(key, entry);
+    }
+  }
+
+  const shared = new Map<string, { value: string; count: number }>();
+  for (const [key, entry] of counts) {
+    if (entry.count < SERIES_MIN_CARRIERS || entry.count < members * SERIES_MIN_SHARE) continue;
+    const value = [...entry.forms.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
+    shared.set(key, { value, count: entry.count });
+  }
+  return shared;
+}
+
+/** The profiles of every series this book belongs to and is a member of. */
+function profilesFor(item: AbsLibraryItem, consensus: Consensus): SeriesProfile[] {
+  const authors = new Set(itemAuthors(item).map((n) => normalizeAuthor(n)));
+  return seriesKeys(item)
+    .map((key) => consensus.bySeries.get(key))
+    .filter((p): p is SeriesProfile => !!p && authors.has(p.lead));
 }
 
 /**
@@ -422,6 +634,120 @@ function attribution(vote: ProviderVote<unknown>): string {
   return vote.providers.join(' + ');
 }
 
+/**
+ * One voice per catalogue. Audnexus is Audible's catalogue served another way,
+ * so the two agreeing is one source saying something twice, not two sources.
+ */
+function voice(provider: string): string {
+  return provider === 'audnexus' ? 'audible' : provider;
+}
+
+/** Sources that describe the written work, not one audio edition of it. */
+const WORK_SOURCES: ReadonlySet<string> = new Set(['openlibrary', 'googlebooks']);
+
+/**
+ * Whether a provider list may put a person on a book who is not there now.
+ *
+ * Replacing a list is how a respelling lands, and for that one source is
+ * plenty. Adding somebody is a different claim, and one source alone has been
+ * wrong about it in exactly the way nobody notices: Google Books credits a
+ * print edition's illustrator as its author, so an ISBN match wrote Brandon
+ * Dorman onto every Fablehaven audiobook beside Brandon Mull. A person is only
+ * added when two independent catalogues credit them.
+ */
+export function mayAddPeople(current: string[], proposed: string[], vote: ProviderVote<string[]>): boolean {
+  if (current.length === 0) return true;
+  const have = new Set(current.map((name) => normalizeAuthor(name)));
+  if (proposed.every((name) => have.has(normalizeAuthor(name)))) return true;
+  return new Set(vote.providers.map(voice)).size >= 2;
+}
+
+/**
+ * Co-authors the identified sources, taken together, say are not authors.
+ *
+ * Each catalogue that identified this edition and lists authors either credits
+ * the person or does not. They are removed only when at least two catalogues
+ * leave them out, more leave them out than credit them, and one of those is a
+ * source describing the written work. That last condition is the guard for a
+ * real collaboration: Audible often credits only the lead author, and a rule
+ * the audiobook catalogues could satisfy on their own would delete co-authors
+ * they merely did not bother to list.
+ *
+ * The first-credited author is never removed. Whoever put a wrong name on a
+ * book added it, and a list with its lead wrong needs a person, not this.
+ */
+export function outvotedAuthors(
+  names: string[],
+  rewritable: Candidate[],
+): { removed: string[]; detail: string } {
+  const none = { removed: [], detail: '' };
+  if (names.length < 2) return none;
+
+  const lists = rewritable
+    .filter((c) => (c.result.authors ?? []).length > 0)
+    .map((c) => ({
+      voice: voice(c.result.provider),
+      keys: new Set((c.result.authors ?? []).map((name) => normalizeAuthor(name))),
+    }));
+
+  const removed: string[] = [];
+  const against = new Set<string>();
+  for (const name of names.slice(1)) {
+    const key = normalizeAuthor(name);
+    const support = new Set(lists.filter((l) => l.keys.has(key)).map((l) => l.voice));
+    const opposed = new Set(lists.filter((l) => !l.keys.has(key) && !support.has(l.voice)).map((l) => l.voice));
+    const fromWork = [...opposed].some((v) => WORK_SOURCES.has(v));
+    if (opposed.size >= 2 && opposed.size > support.size && fromWork) {
+      removed.push(key);
+      for (const v of opposed) against.add(v);
+    }
+  }
+  if (removed.length === 0) return none;
+  return { removed, detail: `not credited by ${[...against].join(' + ')}` };
+}
+
+/**
+ * People on this book who are not on the author list the rest of its series
+ * agrees on.
+ *
+ * Only ever a removal, and only when the book already credits everyone the
+ * series does: a book by somebody else entirely is left alone, since a series
+ * can genuinely change hands and a spin-off can sit inside it. Anyone an
+ * identified source credits on this very book is kept, which is what lets a
+ * real guest co-author on one volume survive.
+ */
+export function seriesExtras(
+  item: AbsLibraryItem,
+  names: string[],
+  consensus: Consensus,
+  rewritable: Candidate[],
+): { removed: string[]; detail: string } | null {
+  const profiles = profilesFor(item, consensus).filter((p) => p.authors);
+  if (profiles.length === 0) return null;
+
+  const agreed = profiles.map((p) => creditKey(p.authors!.names));
+  // A book in two series that credit different people has no one answer.
+  if (new Set(agreed).size > 1) return null;
+
+  const expected = new Set(agreed[0]!.split('|'));
+  const keys = names.map((name) => normalizeAuthor(name));
+  if (![...expected].every((key) => keys.includes(key))) return null;
+
+  const credited = new Set(
+    rewritable.flatMap((c) => (c.result.authors ?? []).map((name) => normalizeAuthor(name))),
+  );
+  const removed = keys.filter((key) => !expected.has(key) && !credited.has(key));
+  if (removed.length === 0) return null;
+
+  const profile = profiles[0]!;
+  return {
+    removed,
+    detail:
+      `${profile.authors!.count} of ${profile.members} books in ${profile.name} ` +
+      `credit ${profile.authors!.names.join(', ')}`,
+  };
+}
+
 function propose(
   list: FieldProposal[],
   field: Normalizable,
@@ -509,6 +835,10 @@ export function currentText(item: AbsLibraryItem, field: Normalizable): string |
       return itemNarrators(item).join(', ') || null;
     case 'series':
       return (metadata?.series ?? []).map((s) => s.name).filter(Boolean).join(', ') || null;
+    case 'genre':
+      return itemGenres(item).join(', ') || null;
+    case 'tag':
+      return itemTags(item).join(', ') || null;
     case 'work':
       return itemWorkKey(item);
   }
@@ -572,8 +902,42 @@ export function planNormalize(
     // collaboration, which makes this the common case rather than the odd one.
     const vote = voteOn(rewritable, (r) => nonEmpty(r.authors), peopleKey);
     const fromProvider = vote?.value ?? [];
-    if (vote && fromProvider.length >= current.length) {
+    if (vote && fromProvider.length >= current.length && mayAddPeople(current, fromProvider, vote)) {
       propose(proposals, 'author', currentText, fromProvider.join(', '), 'provider', attribution(vote), fromProvider);
+    }
+
+    // Then take away the people the evidence says are not authors of this book,
+    // from whichever list the tiers above settled on — so a respelling and a
+    // removal land as one change rather than the stronger discarding the other.
+    const settled = proposals.find((p) => p.field === 'author');
+    const base = settled?.values ?? current;
+    const outvoted = outvotedAuthors(base, rewritable);
+    const bySeries = options.noConsensus ? null : seriesExtras(item, base, consensus, rewritable);
+    const removed = new Set([...outvoted.removed, ...(bySeries?.removed ?? [])]);
+    const kept = base.filter((name) => !removed.has(normalizeAuthor(name)));
+
+    if (removed.size > 0 && kept.length > 0) {
+      const reasons = [
+        ...(outvoted.removed.length > 0 ? [outvoted.detail] : []),
+        ...(bySeries && bySeries.removed.length > 0 ? [bySeries.detail] : []),
+      ];
+      const source: ProposalSource = outvoted.removed.length > 0 ? 'provider' : 'consensus';
+      const to = joinIfChanged(kept, current);
+      if (to) {
+        // Replaces rather than competes: it already contains whatever the
+        // stronger tiers decided, minus the people it has reason to remove.
+        const index = proposals.findIndex((p) => p.field === 'author');
+        const proposal: FieldProposal = {
+          field: 'author',
+          from: currentText,
+          to,
+          source: settled && SOURCE_RANK[settled.source] > SOURCE_RANK[source] ? settled.source : source,
+          detail: [...(settled ? [settled.detail] : []), ...reasons].join('; '),
+          values: kept,
+        };
+        if (index === -1) proposals.push(proposal);
+        else proposals[index] = proposal;
+      }
     }
   }
 
@@ -623,6 +987,15 @@ export function planNormalize(
     }
   }
 
+  if (!options.noConsensus) {
+    if (wanted.has('genre')) {
+      planShared(proposals, 'genre', itemGenres(item), consensus.genres, profilesFor(item, consensus), (p) => p.genres);
+    }
+    if (wanted.has('tag')) {
+      planShared(proposals, 'tag', itemTags(item), consensus.tags, profilesFor(item, consensus), (p) => p.tags);
+    }
+  }
+
   if (wanted.has('work')) {
     // Open Library specifically: it is the only provider here that models a
     // work at all. Audnexus answers for one audio edition and Google Books for
@@ -636,6 +1009,62 @@ export function planNormalize(
   }
 
   return { itemId: item.id, title: itemTitle(item), author: itemAuthor(item), proposals };
+}
+
+/**
+ * Genres and tags, settled against the library and the book's series.
+ *
+ * Two things, composed into one proposal. The library's own spelling first —
+ * "Litrpg" becomes "LitRPG" where most books write it that way — and then
+ * whatever the series carries that this book is missing. Nothing is ever taken
+ * away that is not respelled, so a proposal that only adds is marked additive
+ * and goes through with the rewrite switch off: supplying a genre contradicts
+ * nothing anyone chose.
+ */
+function planShared(
+  proposals: FieldProposal[],
+  field: 'genre' | 'tag',
+  current: string[],
+  spelling: Map<string, string>,
+  profiles: SeriesProfile[],
+  shared: (profile: SeriesProfile) => Map<string, { value: string; count: number }>,
+): void {
+  const next: string[] = [];
+  const keys = new Set<string>();
+  for (const value of current) {
+    const key = normalizeTitle(value);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    next.push(spelling.get(key) ?? value);
+  }
+  const respelled = next.some((value, i) => value !== current[i]) || next.length !== current.length;
+
+  const reasons: string[] = [];
+  if (respelled) reasons.push('library spelling');
+  for (const profile of profiles) {
+    const added: string[] = [];
+    for (const [key, { value, count }] of shared(profile)) {
+      if (keys.has(key)) continue;
+      keys.add(key);
+      next.push(spelling.get(key) ?? value);
+      added.push(`${value} (${count} of ${profile.members})`);
+    }
+    if (added.length > 0) reasons.push(`${profile.name}: ${added.join(', ')}`);
+  }
+  if (reasons.length === 0) return;
+
+  const from = current.join(', ') || null;
+  const to = next.join(', ');
+  if (to === from) return;
+  proposals.push({
+    field,
+    from,
+    to,
+    source: 'consensus',
+    detail: reasons.join('; '),
+    values: next,
+    ...(respelled ? {} : { additive: true }),
+  });
 }
 
 function joinIfChanged(next: string[], previous: string[]): string | null {
@@ -659,6 +1088,10 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
   const patch: AbsMediaPatch = { metadata: {} };
   const metadata = patch.metadata!;
   const existingSeries = item.media?.metadata?.series ?? [];
+  // Tags can be written by two proposals, the work identity and the series'
+  // tags, so they are assembled once after both have been read.
+  let userTags: string[] | null = null;
+  let workKey: string | null = null;
 
   for (const proposal of plan.proposals) {
     const values = proposal.values ?? [proposal.to];
@@ -675,16 +1108,15 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
       case 'narrator':
         metadata.narrators = values;
         break;
-      case 'work': {
-        // Every other tag survives, including the age bands `rate` writes: this
-        // owns the work namespace and nothing else in it.
-        const existing = item.media?.tags ?? [];
-        patch.tags = [
-          ...existing.filter((t) => !t.startsWith(WORK_TAG_PREFIX)),
-          workTag(proposal.to),
-        ];
+      case 'genre':
+        metadata.genres = values;
         break;
-      }
+      case 'tag':
+        userTags = values;
+        break;
+      case 'work':
+        workKey = proposal.to;
+        break;
       case 'series':
         // No id: ABS resolves a series by name and creates it when new, so an
         // id would suggest a stability the endpoint does not actually offer.
@@ -694,6 +1126,16 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
         }));
         break;
     }
+  }
+
+  if (userTags || workKey) {
+    // Every other tag survives, including the age bands `rate` writes: the
+    // work proposal owns the work namespace and nothing else in it, and the
+    // tag proposal owns only the tags abs-butler did not write.
+    const existing = item.media?.tags ?? [];
+    let tags = userTags ? [...userTags, ...existing.filter(isOwnedTag)] : [...existing];
+    if (workKey) tags = [...tags.filter((t) => !t.startsWith(WORK_TAG_PREFIX)), workTag(workKey)];
+    patch.tags = tags;
   }
   return patch;
 }
@@ -718,7 +1160,7 @@ export function planToPatch(item: AbsLibraryItem, plan: NormalizePlan): AbsMedia
  * well, which is a bad trade and not one the guard was ever meant to force.
  */
 export function isAdditive(proposal: FieldProposal): boolean {
-  return isBlank(proposal.from);
+  return isBlank(proposal.from) || proposal.additive === true;
 }
 
 export const REWRITE_DISABLED =
@@ -735,6 +1177,8 @@ export interface NormalizeTaskOptions {
   fields?: string[];
   providers?: string[];
   noConsensus?: boolean;
+  /** Also copy tags a series shares onto its books that lack them. */
+  seriesTags?: boolean;
 }
 
 export interface NormalizeTaskResult {
@@ -791,7 +1235,8 @@ export async function runNormalizeTask(
   options: NormalizeTaskOptions = {},
 ): Promise<NormalizeTaskResult> {
 
-  const requested = (options.fields ?? [...NORMALIZABLE]) as Normalizable[];
+  const requested = [...(options.fields ?? DEFAULT_NORMALIZE_FIELDS)] as Normalizable[];
+  if (options.seriesTags && !requested.includes('tag')) requested.push('tag');
   const invalid = requested.filter((f) => !NORMALIZABLE.includes(f));
   if (invalid.length > 0) {
     throw new Error(`Unknown field(s): ${invalid.join(', ')}. Valid: ${NORMALIZABLE.join(', ')}`);
@@ -807,13 +1252,12 @@ export async function runNormalizeTask(
   // Consensus is built from everything that was read, before any single item is
   // planned: the whole point is that one book's spelling is judged against the
   // rest of the library rather than against itself.
-  const consensus = options.noConsensus
-    ? { series: new Map(), authors: new Map(), narrators: new Map(), narratorsByTrade: new Set<string>() }
-    : buildConsensus(items);
+  const consensus = options.noConsensus ? emptyConsensus() : buildConsensus(items);
   if (!options.noConsensus) {
     log.info(
       `library disagrees with itself on ${consensus.series.size} series, ` +
-        `${consensus.authors.size} author(s), ${consensus.narrators.size} narrator(s)`,
+        `${consensus.authors.size} author(s), ${consensus.narrators.size} narrator(s); ` +
+        `${plural(consensus.bySeries.size, 'series', 'series')} to check books against`,
     );
   }
 

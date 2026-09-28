@@ -10,6 +10,7 @@ import { createRun } from '../db/runs.js';
 import { DEFAULT_SETTINGS } from '../db/settings.js';
 import {
   buildConsensus,
+  emptyConsensus,
   itemAuthors,
   itemNarrators,
   normalizePersonName,
@@ -23,6 +24,8 @@ import {
   dropNarratorsFromAuthors,
   findNarratorsByTrade,
   itemWorkKey,
+  mayAddPeople,
+  outvotedAuthors,
   voteOn,
   workKeyFrom,
   WORK_TAG_PREFIX,
@@ -39,6 +42,8 @@ function book(partial: {
   narratorName?: string | null;
   narrators?: string[];
   series?: Array<{ id: string; name: string; sequence: string | null }>;
+  genres?: string[];
+  tags?: string[];
 }): AbsLibraryItem {
   return {
     id: partial.id ?? 'item-1',
@@ -53,7 +58,7 @@ function book(partial: {
     media: {
       id: 'media',
       coverPath: null,
-      tags: [],
+      tags: partial.tags ?? [],
       metadata: {
         title: partial.title ?? 'A Book',
         subtitle: partial.subtitle ?? null,
@@ -62,6 +67,7 @@ function book(partial: {
         narratorName: partial.narratorName ?? null,
         ...(partial.narrators ? { narrators: partial.narrators } : {}),
         ...(partial.series ? { series: partial.series } : {}),
+        ...(partial.genres ? { genres: partial.genres } : {}),
         publishedYear: null,
         publisher: null,
         description: null,
@@ -74,12 +80,7 @@ function book(partial: {
   } as AbsLibraryItem;
 }
 
-const noConsensus: Consensus = {
-  series: new Map(),
-  authors: new Map(),
-  narrators: new Map(),
-  narratorsByTrade: new Set(),
-};
+const noConsensus: Consensus = emptyConsensus();
 
 function trusted(partial: Record<string, unknown>): Candidate {
   return {
@@ -868,5 +869,263 @@ describe('runNormalizeTask reporting', () => {
     // which is the misreading the wording exists to prevent.
     expect(bent.detail[0]).toContain('Held back title:');
     expect(bent.detail[0]).toContain('Allow metadata rewrite');
+  });
+});
+
+function credited(provider: string, authors: string[], basis: 'asin' | 'isbn' = 'isbn'): Candidate {
+  return {
+    result: { provider, authors, signals: [] },
+    match: { score: basis === 'asin' ? 1 : 0.97, basis, reasons: [] },
+  } as Candidate;
+}
+
+function inSeries(
+  id: string,
+  authors: string[],
+  extra: { genres?: string[]; tags?: string[]; series?: string } = {},
+): AbsLibraryItem {
+  return book({
+    id,
+    title: `Book ${id}`,
+    authors: authors.map((name, i) => ({ id: `${id}-a${i}`, name })),
+    series: [{ id: 's', name: extra.series ?? 'The Completionist Chronicles', sequence: id }],
+    ...(extra.genres ? { genres: extra.genres } : {}),
+    ...(extra.tags ? { tags: extra.tags } : {}),
+  });
+}
+
+describe('adding a person to an author list', () => {
+  const fablehaven = book({ title: 'Fablehaven', authors: [{ id: 'a', name: 'Brandon Mull' }] });
+
+  it('takes more than one catalogue to credit somebody new', () => {
+    // Google Books credits the print edition's illustrator as an author.
+    const plan = planNormalize(fablehaven, [credited('googlebooks', ['Brandon Mull', 'Brandon Dorman'])], noConsensus, {
+      fields: ['author'],
+    });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('does not count Audnexus as a second opinion on Audible', () => {
+    const vote = { value: ['Brandon Mull', 'Brandon Dorman'], providers: ['audible', 'audnexus'] };
+    expect(mayAddPeople(['Brandon Mull'], vote.value, vote)).toBe(false);
+  });
+
+  it('adds a co-author two independent catalogues agree on', () => {
+    const both = ['Terry Pratchett', 'Neil Gaiman'];
+    const plan = planNormalize(
+      book({ authors: [{ id: 'a', name: 'Terry Pratchett' }] }),
+      [credited('audible', both, 'asin'), credited('openlibrary', both)],
+      noConsensus,
+      { fields: ['author'] },
+    );
+    expect(plan.proposals[0]).toMatchObject({ field: 'author', values: both, source: 'provider' });
+  });
+
+  it('still fills an empty author list from one source', () => {
+    const plan = planNormalize(book({ authors: [] }), [credited('audible', ['Brandon Mull'], 'asin')], noConsensus, {
+      fields: ['author'],
+    });
+    expect(plan.proposals[0]).toMatchObject({ field: 'author', to: 'Brandon Mull' });
+  });
+});
+
+describe('authors the identified sources do not credit', () => {
+  const damaged = book({
+    title: 'Fablehaven',
+    authors: [
+      { id: 'a', name: 'Brandon Mull' },
+      { id: 'b', name: 'Brandon Dorman' },
+    ],
+  });
+
+  it('removes a name only the illustrator-crediting source gives', () => {
+    const plan = planNormalize(
+      damaged,
+      [
+        credited('audible', ['Brandon Mull'], 'asin'),
+        credited('audiosilo', ['Brandon Mull'], 'asin'),
+        credited('openlibrary', ['Brandon Mull']),
+        credited('googlebooks', ['Brandon Mull', 'Brandon Dorman']),
+      ],
+      noConsensus,
+      { fields: ['author'] },
+    );
+    expect(plan.proposals).toHaveLength(1);
+    expect(plan.proposals[0]).toMatchObject({ values: ['Brandon Mull'], source: 'provider' });
+    expect(plan.proposals[0]!.detail).toContain('openlibrary');
+  });
+
+  it('keeps a co-author the audiobook catalogues merely left off', () => {
+    const plan = planNormalize(
+      book({
+        authors: [
+          { id: 'a', name: 'Terry Pratchett' },
+          { id: 'b', name: 'Neil Gaiman' },
+        ],
+      }),
+      [credited('audible', ['Terry Pratchett'], 'asin'), credited('audiosilo', ['Terry Pratchett'], 'asin')],
+      noConsensus,
+      { fields: ['author'] },
+    );
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('keeps a co-author the sources split evenly on', () => {
+    const result = outvotedAuthors(
+      ['Terry Pratchett', 'Neil Gaiman'],
+      [
+        credited('audible', ['Terry Pratchett'], 'asin'),
+        credited('openlibrary', ['Terry Pratchett']),
+        credited('googlebooks', ['Terry Pratchett', 'Neil Gaiman']),
+        credited('audiosilo', ['Terry Pratchett', 'Neil Gaiman'], 'asin'),
+      ],
+    );
+    expect(result.removed).toEqual([]);
+  });
+
+  it('never removes the first-credited author', () => {
+    const result = outvotedAuthors(
+      ['Brandon Dorman', 'Brandon Mull'],
+      [credited('audible', ['Brandon Mull'], 'asin'), credited('openlibrary', ['Brandon Mull'])],
+    );
+    expect(result.removed).toEqual([]);
+  });
+
+  it('ignores sources that only matched on the title', () => {
+    const fuzzy = (provider: string) =>
+      ({
+        result: { provider, authors: ['Brandon Mull'], signals: [] },
+        match: { score: 0.85, basis: 'fuzzy', reasons: [] },
+      }) as Candidate;
+    const plan = planNormalize(damaged, [fuzzy('audible'), fuzzy('openlibrary')], noConsensus, { fields: ['author'] });
+    expect(plan.proposals).toEqual([]);
+  });
+});
+
+describe('series consensus on authors', () => {
+  const krout = ['Dakota Krout'];
+  const series = [
+    inSeries('1', krout),
+    inSeries('2', krout),
+    inSeries('3', krout),
+    inSeries('4', krout),
+    inSeries('5', ['Dakota Krout', 'Luke Daniels']),
+  ];
+
+  it('removes a name the rest of the series does not credit', () => {
+    const consensus = buildConsensus(series);
+    const plan = planNormalize(series[4]!, [], consensus, { fields: ['author'] });
+    expect(plan.proposals).toHaveLength(1);
+    expect(plan.proposals[0]).toMatchObject({ values: krout, source: 'consensus' });
+    expect(plan.proposals[0]!.detail).toContain('4 of 5 books in The Completionist Chronicles');
+  });
+
+  it('keeps a guest co-author an identified source credits on that book', () => {
+    const consensus = buildConsensus(series);
+    const plan = planNormalize(
+      series[4]!,
+      [credited('audible', ['Dakota Krout', 'Luke Daniels'], 'asin')],
+      consensus,
+      { fields: ['author'] },
+    );
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('leaves a book by somebody else entirely alone', () => {
+    const books = [...series.slice(0, 4), inSeries('9', ['Somebody Else'])];
+    const plan = planNormalize(books[4]!, [], buildConsensus(books), { fields: ['author'] });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('proves nothing with fewer than three agreeing books', () => {
+    const books = [inSeries('1', krout), inSeries('2', krout), inSeries('3', ['Dakota Krout', 'Luke Daniels'])];
+    const plan = planNormalize(books[2]!, [], buildConsensus(books), { fields: ['author'] });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('needs a strict majority to agree', () => {
+    const books = [
+      ...series.slice(0, 3),
+      inSeries('6', ['Dakota Krout', 'Luke Daniels']),
+      inSeries('7', ['Dakota Krout', 'Luke Daniels']),
+      inSeries('8', ['Dakota Krout', 'Luke Daniels']),
+    ];
+    const plan = planNormalize(books[5]!, [], buildConsensus(books), { fields: ['author'] });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('is switched off with the rest of consensus', () => {
+    const plan = planNormalize(series[4]!, [], buildConsensus(series), { fields: ['author'], noConsensus: true });
+    expect(plan.proposals).toEqual([]);
+  });
+});
+
+describe('series consensus on genres and tags', () => {
+  const krout = ['Dakota Krout'];
+  const books = [
+    inSeries('1', krout, { genres: ['Fantasy', 'LitRPG'] }),
+    inSeries('2', krout, { genres: ['Fantasy', 'LitRPG'] }),
+    inSeries('3', krout, { genres: ['Fantasy'] }),
+    inSeries('4', krout, { genres: ['Fantasy'] }),
+    inSeries('5', krout, { genres: ['Fantasy'] }),
+    inSeries('6', krout, { genres: ['Fantasy', 'Christmas'] }),
+  ];
+
+  it('gives a book a genre enough of its series carries', () => {
+    const plan = planNormalize(books[2]!, [], buildConsensus(books), { fields: ['genre'] });
+    expect(plan.proposals).toHaveLength(1);
+    expect(plan.proposals[0]).toMatchObject({
+      field: 'genre',
+      values: ['Fantasy', 'LitRPG'],
+      source: 'consensus',
+      additive: true,
+    });
+    expect(plan.proposals[0]!.detail).toContain('LitRPG (2 of 6)');
+    expect(isAdditive(plan.proposals[0]!)).toBe(true);
+  });
+
+  it('does not spread a genre only one book carries', () => {
+    const plan = planNormalize(books[0]!, [], buildConsensus(books), { fields: ['genre'] });
+    expect(plan.proposals).toEqual([]);
+  });
+
+  it('respells a genre the way the library does, as a replacement', () => {
+    const library = [...books, inSeries('7', krout, { genres: ['Fantasy', 'Litrpg'] })];
+    const plan = planNormalize(library[6]!, [], buildConsensus(library), { fields: ['genre'] });
+    expect(plan.proposals[0]).toMatchObject({ values: ['Fantasy', 'LitRPG'] });
+    expect(isAdditive(plan.proposals[0]!)).toBe(false);
+  });
+
+  it('writes genres as a list', () => {
+    const plan = planNormalize(books[2]!, [], buildConsensus(books), { fields: ['genre'] });
+    expect(planToPatch(books[2]!, plan).metadata?.genres).toEqual(['Fantasy', 'LitRPG']);
+  });
+
+  it('copies tags only when asked, and never abs-butler\'s own', () => {
+    const tagged = [
+      inSeries('1', krout, { tags: ['LitRPG', 'age:teen'] }),
+      inSeries('2', krout, { tags: ['LitRPG', 'age:teen'] }),
+      inSeries('3', krout, { tags: ['age:adult', `${WORK_TAG_PREFIX}OL1W`] }),
+    ];
+    const consensus = buildConsensus(tagged);
+    expect(planNormalize(tagged[2]!, [], consensus, { fields: ['genre'] }).proposals).toEqual([]);
+
+    const plan = planNormalize(tagged[2]!, [], consensus, { fields: ['tag'] });
+    expect(plan.proposals[0]).toMatchObject({ field: 'tag', values: ['LitRPG'], additive: true });
+    expect(planToPatch(tagged[2]!, plan).tags).toEqual(['LitRPG', 'age:adult', `${WORK_TAG_PREFIX}OL1W`]);
+  });
+
+  it('writes series tags and a work identity together', () => {
+    const item = inSeries('1', krout, { tags: ['age:teen'] });
+    const patch = planToPatch(item, {
+      itemId: item.id,
+      title: 'x',
+      author: null,
+      proposals: [
+        { field: 'work', from: null, to: 'OL2W', source: 'provider', detail: 'openlibrary' },
+        { field: 'tag', from: null, to: 'LitRPG', source: 'consensus', detail: 'x', values: ['LitRPG'], additive: true },
+      ],
+    });
+    expect(patch.tags).toEqual(['LitRPG', 'age:teen', `${WORK_TAG_PREFIX}OL2W`]);
   });
 });

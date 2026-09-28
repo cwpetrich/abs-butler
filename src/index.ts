@@ -146,12 +146,13 @@ program
 
 program
   .command('normalize')
-  .description('Make titles, authors, narrators and series names consistent across the library')
+  .description('Make titles, authors, narrators, series names and genres consistent across the library')
   .option('--apply', 'write changes to AudiobookShelf (default is a dry run)')
   .option('--json', 'emit JSON instead of a table')
   .addOption(new Option('--fields <names...>', 'fields to normalize').choices(NORMALIZE_FIELDS))
   .option('--providers <names...>', 'restrict to these providers')
   .option('--no-consensus', 'ignore what the rest of the library spells, and use providers only')
+  .option('--series-tags', 'also copy tags most of a series shares onto its books that lack them')
   .option('--details', 'list every item the run looked at, with what it had to say about each')
   .option('--only-changed', 'with --details, leave out the items it had nothing to do to')
   .option('--limit <n>', 'stop after N items', Number)

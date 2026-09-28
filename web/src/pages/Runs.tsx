@@ -188,6 +188,7 @@ function NewRunForm({
   const [force, setForce] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const [noConsensus, setNoConsensus] = useState(false);
+  const [seriesTags, setSeriesTags] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
@@ -237,6 +238,7 @@ function NewRunForm({
       if (command === 'rate' && force) options.force = true;
       if (command === 'metadata' && overwrite) options.overwrite = true;
       if (command === 'normalize' && noConsensus) options.noConsensus = true;
+      if (command === 'normalize' && seriesTags) options.seriesTags = true;
 
       const run = await api.startRun({ command, options });
       onStarted(run.id);
@@ -368,6 +370,17 @@ function NewRunForm({
               onChange={(e) => setNoConsensus(e.target.checked)}
             />
             Ignore what the rest of the library spells
+          </label>
+        )}
+
+        {command === 'normalize' && !noConsensus && (
+          <label className="checkbox" style={{ marginBottom: 0 }}>
+            <input
+              type="checkbox"
+              checked={seriesTags}
+              onChange={(e) => setSeriesTags(e.target.checked)}
+            />
+            Also copy tags a series shares
           </label>
         )}
       </div>
