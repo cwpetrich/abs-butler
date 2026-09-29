@@ -1,3 +1,5 @@
+[abs-butler](../README.md) › Content ratings: sources, method, and limits
+
 # Content ratings: sources, method, and limits
 
 The goal of `abs-butler rate` is to make an AudiobookShelf library filterable by age
