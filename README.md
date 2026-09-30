@@ -88,6 +88,12 @@ keeps a per-book report, can be applied later exactly as you read it, and can be
 - [Development](docs/development.md)
 - [Releasing](docs/releasing.md)
 
+## Support
+
+abs-butler is free and always will be. If it saves you time on your library and you'd like to say
+thanks, you can [buy me a coffee on Ko-fi](https://ko-fi.com/conradigan) — no account needed.
+Bug reports and ideas in [Issues](https://github.com/cwpetrich/abs-butler/issues) help just as much.
+
 ## License
 
 MIT

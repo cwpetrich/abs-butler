@@ -536,3 +536,15 @@ label .hint {
   border-color: var(--err);
   color: var(--err);
 }
+
+/* A quiet way to say thanks: dim until hovered, so it never competes with the
+   page or with an update notice. */
+.support-link {
+  margin-top: 8px;
+}
+.support-link a {
+  color: var(--text-dim);
+}
+.support-link a:hover {
+  color: var(--accent);
+}

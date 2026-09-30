@@ -114,6 +114,11 @@ function Shell({
           </button>
           <InstallNotice />
           <UpdateNotice />
+          <div className="support-link">
+            <a href="https://ko-fi.com/conradigan" target="_blank" rel="noreferrer noopener">
+              ☕ Support abs-butler
+            </a>
+          </div>
         </div>
       </nav>
 
