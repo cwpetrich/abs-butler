@@ -1,3 +1,5 @@
+[abs-butler](../README.md) › Running abs-butler as a snap
+
 # Running abs-butler as a snap
 
 The snap installs abs-butler as a system service, supervised by systemd, with the same CLI available
