@@ -23,7 +23,8 @@
     "serve": "node dist/index.js serve",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "site:publish": "gh api -H 'Accept: application/vnd.github.raw' repos/cwpetrich/sidequestered-site/contents/tools/publish-section.mjs > \"${TMPDIR:-/tmp}/sq-publish.mjs\" && node \"${TMPDIR:-/tmp}/sq-publish.mjs\" absbutler"
   },
   "dependencies": {
     "commander": "^12.1.0",

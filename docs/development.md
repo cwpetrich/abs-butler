@@ -23,3 +23,7 @@ accident.
 CI runs typecheck, tests (on Node 24 and on 22.13, the floor `engines` declares), and a build on
 every push, plus the Docker image for amd64 and arm64 and the snap for amd64. Releases are cut by
 pushing a `v*` tag, which publishes the multi-arch image and both snap architectures.
+
+The project page at [sidequestered.com/absbutler](https://sidequestered.com/absbutler/) is in
+`site/absbutler/`. The website itself is built and deployed from a separate, private repository;
+the maintainer publishes changes to this folder there with `npm run site:publish`.
