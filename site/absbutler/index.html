@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ABS Butler — a butler for your Audiobookshelf library</title>
+<meta name="description" content="ABS Butler is a free, open-source, self-hosted helper that keeps an Audiobookshelf library correct and consistent: audits, metadata, file organisation and content tags. A Side Questered project.">
+<!--sq:head-->
+</head>
+<body>
+<!--sq:header current="projects"-->
+
+<main>
+  <div class="wrap">
+    <div class="hero-app">
+      <img src="/absbutler/img/abs-butler.svg" alt="ABS Butler logo" width="112" height="112">
+      <div>
+        <h1>ABS Butler</h1>
+        <p class="lede">A butler for your Audiobookshelf library. Set it up once and it keeps the library's metadata correct and consistent.</p>
+        <p>
+          <span class="pill">Free · open source · MIT licence</span>
+        </p>
+        <p><a class="button" href="https://github.com/cwpetrich/abs-butler">View on GitHub</a></p>
+      </div>
+    </div>
+
+    <h2>What it does</h2>
+    <p>
+      ABS Butler runs beside your <a href="https://www.audiobookshelf.org">Audiobookshelf</a>
+      server. It discovers what is missing from your library and fills it in, and it
+      normalises what is already there — titles, authors, narrators, series names — so
+      the same book is described the same way wherever it appears.
+    </p>
+    <div class="grid two">
+      <div class="card">
+        <h3>Audit</h3>
+        <p class="muted">Finds problems across the whole library: missing metadata, inconsistent names, books whose files are listed twice.</p>
+      </div>
+      <div class="card">
+        <h3>Fill in and normalise metadata</h3>
+        <p class="muted">Looks books up in several sources — Audible, Audnexus, AudioSilo Meta, Open Library, Google Books and Apple Books — and lets them vote field by field.</p>
+      </div>
+      <div class="card">
+        <h3>Organise files</h3>
+        <p class="muted">Enforces a consistent folder naming scheme on disk, when it shares the library with Audiobookshelf and you have allowed it to.</p>
+      </div>
+      <div class="card">
+        <h3>Age bands and content flags</h3>
+        <p class="muted">Tags books so a library can be filtered by what is appropriate for whom — useful for a server shared with a family.</p>
+      </div>
+    </div>
+
+    <h2>Safe by default</h2>
+    <ul class="ticks">
+      <li>Every operation is a <strong>dry run</strong> unless you say otherwise, and a dry run's findings can be applied book by book from the web interface.</li>
+      <li>Changing files, rewriting metadata and repairing tracks are each <strong>switched off</strong> after a fresh install, and each has its own switch.</li>
+      <li>Runs can be <strong>undone</strong>, and every run keeps a full log.</li>
+      <li>Setup is protected by a one-time code and failed sign-ins are throttled, so a butler on a home network cannot be taken over by the first visitor.</li>
+    </ul>
+
+    <h2>Install</h2>
+    <p>Runs on Linux, macOS and Windows as a Snap, a Docker container, or from source. The Docker installer finds Audiobookshelf on the same machine and fills in the settings for you:</p>
+    <pre>docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer</pre>
+    <p>Or as a Snap:</p>
+    <pre>sudo snap install abs-butler</pre>
+    <p>Then open the web interface on port 13380. Full instructions, including Windows and building from source, are in the <a href="https://github.com/cwpetrich/abs-butler#readme">README</a>.</p>
+
+    <h2>Price</h2>
+    <p>Free, and open source under the MIT licence. There is nothing to buy.</p>
+
+    <h2>Support</h2>
+    <p>
+      Bug reports and feature requests go to
+      <a href="https://github.com/cwpetrich/abs-butler/issues">GitHub issues</a>, where
+      everyone can see and follow them. For anything else, email
+      <a href="mailto:support@sidequestered.com">support@sidequestered.com</a>.
+    </p>
+    <p class="muted small">
+      ABS Butler curates a library, which <a href="/audiobookcoop/">Audiobook Co-op</a>
+      deliberately never does — the two are designed to be used together.
+    </p>
+  </div>
+</main>
+
+<!--sq:footer links='<a href="https://github.com/cwpetrich/abs-butler">GitHub</a>'-->
+</body>
+</html>
