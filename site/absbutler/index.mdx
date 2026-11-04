@@ -1,0 +1,58 @@
+---
+title: ABS Butler — a butler for your Audiobookshelf library
+description: ABS Butler is a free, open-source, self-hosted helper that keeps an Audiobookshelf library correct and consistent: audits, metadata, file organisation and content tags. A Side Questered project.
+footer: "[GitHub](https://github.com/cwpetrich/abs-butler)"
+---
+
+<AppHero icon="/absbutler/img/abs-butler.svg" iconAlt="ABS Butler logo" name="ABS Butler" tagline="A butler for your Audiobookshelf library. Set it up once and it keeps the library's metadata correct and consistent.">
+  <p><Pill>Free · open source · MIT licence</Pill></p>
+  <p><Button href="https://github.com/cwpetrich/abs-butler">View on GitHub</Button></p>
+</AppHero>
+
+## What it does
+
+ABS Butler runs beside your [Audiobookshelf](https://www.audiobookshelf.org) server. It discovers what is missing from your library and fills it in, and it normalises what is already there — titles, authors, narrators, series names — so the same book is described the same way wherever it appears.
+
+<Features>
+  <Feature title="Audit">Finds problems across the whole library: missing metadata, inconsistent names, books whose files are listed twice.</Feature>
+  <Feature title="Fill in and normalise metadata">Looks books up in several sources — Audible, Audnexus, AudioSilo Meta, Open Library, Google Books and Apple Books — and lets them vote field by field.</Feature>
+  <Feature title="Organise files">Enforces a consistent folder naming scheme on disk, when it shares the library with Audiobookshelf and you have allowed it to.</Feature>
+  <Feature title="Age bands and content flags">Tags books so a library can be filtered by what is appropriate for whom — useful for a server shared with a family.</Feature>
+</Features>
+
+## Safe by default
+
+<Ticks>
+
+- Every operation is a **dry run** unless you say otherwise, and a dry run's findings can be applied book by book from the web interface.
+- Changing files, rewriting metadata and repairing tracks are each **switched off** after a fresh install, and each has its own switch.
+- Runs can be **undone**, and every run keeps a full log.
+- Setup is protected by a one-time code and failed sign-ins are throttled, so a butler on a home network cannot be taken over by the first visitor.
+
+</Ticks>
+
+## Install
+
+Runs on Linux, macOS and Windows as a Snap, a Docker container, or from source. The Docker installer finds Audiobookshelf on the same machine and fills in the settings for you:
+
+```
+docker run --rm -it -v /var/run/docker.sock:/var/run/docker.sock -v "${PWD}:/install" ghcr.io/cwpetrich/abs-butler-installer
+```
+
+Or as a Snap:
+
+```
+sudo snap install abs-butler
+```
+
+Then open the web interface on port 13380. Full instructions, including Windows and building from source, are in the [README](https://github.com/cwpetrich/abs-butler#readme).
+
+## Price
+
+Free, and open source under the MIT licence. There is nothing to buy.
+
+## Support
+
+Bug reports and feature requests go to [GitHub issues](https://github.com/cwpetrich/abs-butler/issues), where everyone can see and follow them. For anything else, email [support@sidequestered.com](mailto:support@sidequestered.com).
+
+<Note>ABS Butler curates a library, which [Audiobook Co-op](/audiobookcoop/) deliberately never does — the two are designed to be used together.</Note>
